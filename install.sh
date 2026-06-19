@@ -35,10 +35,22 @@ printf 'tokens.env\n.credentials.json\n*.key\n*.pem\n' > "$DEST/.gitignore"
 
 # 전역 gitignore 안전망 (git 있을 때)
 if command -v git >/dev/null 2>&1; then
-  GIG="${HOME}/.gitignore_global"; touch "$GIG"
-  grep -qx 'tokens.env' "$GIG" 2>/dev/null || printf 'tokens.env\n.claude/tokens.env\n' >> "$GIG"
-  git config --global core.excludesfile "$GIG" || true
-  echo "✓ 전역 gitignore: $GIG"
+  # 기존 core.excludesfile 보존: set -eu 에서 미설정 키의 비제로 rc 로 중단되지 않게 || true 가드
+  CUR="$(git config --global --get core.excludesfile 2>/dev/null || true)"
+  if [ -n "$CUR" ]; then
+    # 이미 설정됨 → 덮어쓰지 말고 그 파일에 패턴만 추가. 변수에 담긴 ~ 는 셸이 확장하지 않으므로 직접 확장.
+    case "$CUR" in "~") CUR="$HOME" ;; "~/"*) CUR="$HOME/${CUR#\~/}" ;; esac
+    GIG="$CUR"
+  else
+    GIG="${HOME}/.gitignore_global"
+  fi
+  if touch "$GIG" 2>/dev/null; then
+    grep -qx 'tokens.env' "$GIG" 2>/dev/null || printf 'tokens.env\n.claude/tokens.env\n' >> "$GIG"
+    [ -n "$CUR" ] || git config --global core.excludesfile "$GIG" || true
+    echo "✓ 전역 gitignore: $GIG"
+  else
+    echo "⚠ 전역 gitignore 경로 접근 불가(건너뜀): $GIG"
+  fi
 fi
 
 # 셸 rc 에 source 추가 (멱등). cc/ㅊㅊ alias 는 강제하지 않음(빌드 PC의 cc=컴파일러 충돌 회피)
@@ -51,7 +63,14 @@ for RC in "${HOME}/.zshrc" "${HOME}/.bashrc"; do
   fi
   touched=1
 done
-[ -n "$touched" ] || { printf '\n# Claude Code 계정 스위처(cct)\n%s\n' "$LINE" >> "${HOME}/.bashrc"; echo "✓ ~/.bashrc 생성·추가"; }
+if [ -z "$touched" ]; then
+  # rc 파일이 하나도 없으면 로그인 셸($SHELL)에 맞는 rc 선택 (새 macOS=zsh 인데 .bashrc 에만 넣어 안 읽히는 문제 방지)
+  case "$(basename "${SHELL:-}")" in
+    zsh) RC="${HOME}/.zshrc" ;;
+    *)   RC="${HOME}/.bashrc" ;;
+  esac
+  printf '\n# Claude Code 계정 스위처(cct)\n%s\n' "$LINE" >> "$RC"; echo "✓ $RC 생성·추가"
+fi
 
 echo
 echo "설치 완료. 새 터미널을 열거나:  source ~/.claude/cct.sh"
