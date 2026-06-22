@@ -2,9 +2,7 @@
 
 ## Unreleased — security & correctness remediation
 
-Verified-bug remediation across `cct.sh` and `install.sh`. Read paths are unchanged,
-so an existing `~/.claude/tokens.env` keeps working and every previously working
-`cct <label>` invocation still works.
+Verified-bug remediation across `cct.sh` and `install.sh`.
 
 ### Breaking changes
 
@@ -15,20 +13,17 @@ so an existing `~/.claude/tokens.env` keeps working and every previously working
 - **Bare `cct` clears the ambient token** — running `cct` with no label now removes any
   inherited `CLAUDE_CODE_OAUTH_TOKEN` before launching `claude`, so it truly uses the
   "currently authenticated profile" as documented (instead of a stale exported token).
-- **`cct add` label rules** — labels must match `[A-Za-z0-9_-]+`; characters outside that
-  set (spaces, `@`, non-ASCII such as Hangul, …) are rejected. Labels that collide with a
-  subcommand (`help ls list add check fp who`) are rejected (`use` is still allowed). When a
-  new label normalizes to the same key as an existing different label (e.g. `Work` vs `work`,
-  or `a-b` vs `ab`), `cct add` now **warns and asks for confirmation** before overwriting,
-  instead of silently clobbering the existing token.
+- **Strict label rules** — labels must match `[a-z0-9_][a-z0-9_]*`. Dashes, uppercase
+  letters, spaces, `@`, and non-ASCII labels are rejected. Labels that collide with a
+  subcommand (`help ls list add check fp who`) are rejected (`use` is still allowed).
+  `cct`, `cct check`, and `cct fp` now apply the same validation, so invalid labels cannot
+  alias an existing normalized token key.
 
 ### Migration
 
-If your existing `tokens.env` contains **collided keys** (two labels that normalize to one
-`CCT_TOKEN_*` key) or an **empty-key** entry (`CCT_TOKEN_=`), re-add those accounts under
-clean `[A-Za-z0-9_-]+` labels. Old entries remain readable but cannot be cleanly
-disambiguated until re-added. (An automated `cct doctor`/`cct ls` advisory is a planned
-follow-up and is not part of this change.)
+If your existing `tokens.env` used a dashed or uppercase label, use the normalized lowercase
+key form shown by `cct ls` (for example old `a-b` becomes `ab`) or re-add the account under
+a clean `[a-z0-9_][a-z0-9_]*` label.
 
 ### Fixes
 
@@ -36,6 +31,11 @@ follow-up and is not part of this change.)
   It reads the current value (guarded so `set -eu` cannot abort on the missing key),
   tilde-expands a stored `~`-path, and appends the ignore patterns to the existing file
   without changing the config; only when none is configured does it set `~/.gitignore_global`.
+- **install.sh / local ignore** — no longer overwrites a pre-existing
+  `~/.claude/.gitignore`; required patterns are appended only when missing.
+- **install.sh / global ignore idempotence** — `tokens.env` and `.claude/tokens.env` are
+  checked independently, so partial pre-existing ignore files are completed without
+  duplicate lines.
 - **install.sh / N1** — picks the fallback shell rc from `$SHELL` (`zsh` → `~/.zshrc`,
   else `~/.bashrc`), guarded for `set -u`, so a fresh zsh machine with no rc files gets the
   `source` line where zsh actually reads it.
@@ -48,6 +48,8 @@ follow-up and is not part of this change.)
 - **cct.sh / N6** — `cct check` probes the real `claude` binary (resolved via `type -P` /
   `whence -p`), immune to a user-defined `claude` shell function/alias, and reports cleanly
   if `claude` is not on `PATH`.
+- **cct.sh / set -u** — `cct` and `cct check` can be called without positional arguments
+  in `set -u` shells.
 
 ### Added
 

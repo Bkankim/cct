@@ -47,6 +47,7 @@ test_install(){
   chk "installer rc=0" "0" "$rc"
   chk ".zshrc has source line" "1" "$(grep -c 'source ~/.claude/cct.sh' "$H/.zshrc" 2>/dev/null || echo 0)"
   chk ".bashrc not created" "no" "$([ -e "$H/.bashrc" ] && echo yes || echo no)"
+  chk "local .claude/.gitignore has tokens.env" "1" "$(grep -c '^tokens.env$' "$H/.claude/.gitignore" 2>/dev/null || echo 0)"
 
   echo "-- (b) preexisting core.excludesfile preserved + appended, no set-eu abort"
   H="$(mktemp -d)"; G="$H/.gitconfig"; MINE="$H/.mine_ignore"
@@ -56,6 +57,7 @@ test_install(){
   chk "installer rc=0" "0" "$rc"
   chk "config unchanged" "$MINE" "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
   chk "existing file got tokens.env" "1" "$(grep -c '^tokens.env$' "$MINE" 2>/dev/null || echo 0)"
+  chk "existing file got .claude/tokens.env" "1" "$(grep -c '^\.claude/tokens\.env$' "$MINE" 2>/dev/null || echo 0)"
   chk "existing build/ rule preserved" "1" "$(grep -c '^build/$' "$MINE" 2>/dev/null || echo 0)"
   chk "no ~/.gitignore_global created" "no" "$([ -e "$H/.gitignore_global" ] && echo yes || echo no)"
 
@@ -65,14 +67,19 @@ test_install(){
   chk "installer rc=0" "0" "$rc"
   chk "config -> .gitignore_global" "$H/.gitignore_global" "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
   chk ".gitignore_global has tokens.env" "1" "$(grep -c '^tokens.env$' "$H/.gitignore_global" 2>/dev/null || echo 0)"
+  chk ".gitignore_global has .claude/tokens.env" "1" "$(grep -c '^\.claude/tokens\.env$' "$H/.gitignore_global" 2>/dev/null || echo 0)"
 
   echo "-- (d) idempotent re-run (no duplicate lines)"
   H="$(mktemp -d)"; G="$H/.gitconfig"; MINE="$H/.mine_ignore"
-  HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"; printf 'build/\n' > "$MINE"
+  HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"; printf 'build/\n.claude/tokens.env\n' > "$MINE"
+  mkdir -p "$H/.claude"; printf 'keep-me\n' > "$H/.claude/.gitignore"
   ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1
   ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1; rc=$?
   chk "2nd run rc=0" "0" "$rc"
   chk "tokens.env appended once" "1" "$(grep -c '^tokens.env$' "$MINE")"
+  chk ".claude/tokens.env preserved once" "1" "$(grep -c '^\.claude/tokens\.env$' "$MINE")"
+  chk "local .gitignore preserves user rule" "1" "$(grep -c '^keep-me$' "$H/.claude/.gitignore")"
+  chk "local .gitignore tokens.env once" "1" "$(grep -c '^tokens.env$' "$H/.claude/.gitignore")"
   chk ".zshrc source line once" "1" "$(grep -c 'source ~/.claude/cct.sh' "$H/.zshrc")"
 }
 
@@ -98,25 +105,27 @@ test_cct(){
   cct check nosuchlabel >/dev/null 2>&1; chk "missing token -> 2" "2" "$?"
   cct check >/dev/null 2>&1; chk "aggregate mixed -> 1" "1" "$?"
 
-  echo "-- C#1/M4: charset validation"
+  echo "-- C#1/M4: strict lowercase label validation"
   cct add 'a@b' >/dev/null 2>&1; chk "a@b rejected -> 2" "2" "$?"
   cct add '가나' >/dev/null 2>&1; chk "Hangul rejected -> 2" "2" "$?"
   cct add '' >/dev/null 2>&1; chk "empty label -> 2" "2" "$?"
   cct add '---' >/dev/null 2>&1; chk "all-dash (empty key) rejected -> 2" "2" "$?"
+  cct add 'a-b' >/dev/null 2>&1; chk "dash label rejected -> 2" "2" "$?"
+  cct add '-foo' >/dev/null 2>&1; chk "leading-dash label rejected -> 2" "2" "$?"
+  cct add 'Work' >/dev/null 2>&1; chk "uppercase label rejected -> 2" "2" "$?"
+  cct add 'Help' >/dev/null 2>&1; chk "case-variant reserved label rejected -> 2" "2" "$?"
 
-  echo "-- C#1/M4: case-fold collision warns + confirm (decline keeps original)"
-  add_tok Work "sk-work1" >/dev/null 2>&1
-  add_tok work "sk-work2" "n" >/dev/null 2>&1; chk "decline -> rc 1" "1" "$?"
-  chk "declined: token still sk-work1" "sk-work1" "$(_cct_envtok CCT_TOKEN_WORK)"
-  add_tok work "sk-work2" "y" >/dev/null 2>&1; chk "confirm -> rc 0" "0" "$?"
-  chk "confirmed: token now sk-work2" "sk-work2" "$(_cct_envtok CCT_TOKEN_WORK)"
+  echo "-- C#1/M4: same-label refresh"
+  add_tok work "sk-work1" >/dev/null 2>&1; chk "work accepted -> 0" "0" "$?"
   add_tok work "sk-work3" >/dev/null 2>&1; chk "same-label refresh silent -> rc 0" "0" "$?"
   chk "refreshed: token now sk-work3" "sk-work3" "$(_cct_envtok CCT_TOKEN_WORK)"
 
-  echo "-- C#1/M4: normalization collision a-b vs ab"
-  add_tok 'a-b' "sk-ab1" >/dev/null 2>&1; chk "a-b accepted -> 0" "0" "$?"
-  add_tok 'ab' "sk-ab2" "n" >/dev/null 2>&1; chk "ab collision decline -> 1" "1" "$?"
-  chk "a-b token preserved" "sk-ab1" "$(_cct_envtok CCT_TOKEN_AB)"
+  echo "-- C#1/M4: invalid run/check labels are rejected instead of aliasing existing keys"
+  printf 'CCT_TOKEN_AB=sk-ab1\n' >> "$CCT_ENV_FILE"
+  cap="$(cct 'a@b' 2>&1 >/dev/null)"; rc=$?
+  chk "invalid run label -> 2" "2" "$rc"
+  case "$cap" in *"tok=[sk-ab1]"*) chk "invalid run did not inject normalized token" "y" "n" ;; *) chk "invalid run did not inject normalized token" "y" "y" ;; esac
+  cct check 'a@b' >/dev/null 2>&1; chk "invalid check label -> 2" "2" "$?"
 
   echo "-- C#1 (d): cct ls shows no phantom label from annotation"
   cap="$(cct ls 2>&1)"
@@ -126,6 +135,7 @@ test_cct(){
   echo "-- M3: reserved-subcommand labels rejected; 'use' allowed"
   cct add check >/dev/null 2>&1; chk "add check -> 2" "2" "$?"
   cct add who >/dev/null 2>&1; chk "add who -> 2" "2" "$?"
+  cct add help >/dev/null 2>&1; chk "add help -> 2" "2" "$?"
   add_tok use "sk-use" >/dev/null 2>&1; chk "add use -> 0" "0" "$?"
   cap="$(cct use 2>&1 >/dev/null)"; chk_has "cct use injects sk-use" "tok=[sk-use]" "$cap"
 
@@ -194,6 +204,15 @@ test_extra(){
   chk "installer rc=0" "0" "$rc"
   chk "tilde path expanded to HOME/sub/ig" "yes" "$([ -f "$H/sub/ig" ] && echo yes || echo no)"
   chk "no literal ~ dir leaked into repo" "no" "$([ -e "$REPO/~" ] && echo yes || echo no)"
+
+  echo "-- bash set -u smoke: bare cct and cct check do not read unbound positional args"
+  sbz="$(mktemp -d)"; mk_shim "$sbz/bin"
+  out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/u.env" bash -uc ". '$REPO/cct.sh'; cct" 2>&1)"; rc=$?
+  chk "bash set -u: bare cct -> 0" "0" "$rc"
+  chk_has "bash set -u: bare cct reaches claude" "tok=[<unset>]" "$out"
+  out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/u.env" bash -uc ". '$REPO/cct.sh'; cct check" 2>&1)"; rc=$?
+  chk "bash set -u: cct check -> 0" "0" "$rc"
+  chk_has "bash set -u: cct check reports empty" "등록된 계정 없음" "$out"
 
   if command -v zsh >/dev/null 2>&1; then
     echo "-- zsh smoke: cct.sh sources and runs under zsh (exercises zsh-only branches)"

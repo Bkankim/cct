@@ -17,13 +17,12 @@
 # 호환성 메모(BREAKING) — 자세한 내용은 CHANGELOG.md:
 #   - cct check 가 실패 시 비제로 종료코드를 반환(이전엔 항상 0).
 #   - 라벨 없는 cct 는 환경의 stale CLAUDE_CODE_OAUTH_TOKEN 을 제거하고 실행.
-#   - cct add 는 라벨 문자셋([A-Za-z0-9_-])·예약어를 검사하고, 정규화 충돌 시 덮어쓰기 전에 확인을 요구.
+#   - cct add 는 라벨 문자셋([a-z0-9_][a-z0-9_]*)·예약어를 검사한다.
 
 CCT_ENV_FILE="${CCT_ENV_FILE:-$HOME/.claude/tokens.env}"
 CCT_PROBE_MODEL="${CCT_PROBE_MODEL:-claude-haiku-4-5-20251001}"
 
-# 라벨 → 키 (대문자 + 영숫자/언더스코어만)
-_cct_key() { printf 'CCT_TOKEN_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9_')"; }
+_cct_key() { printf 'CCT_TOKEN_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"; }
 
 # tokens.env 에서 KEY 값만 안전 추출 (source 안 함, CRLF·따옴표 제거)
 _cct_envtok() {
@@ -45,20 +44,20 @@ _cct_label_for() {  # $1 = CCT_TOKEN_XXX
   else printf '%s' "$1" | sed 's/^CCT_TOKEN_//' | tr '[:upper:]' '[:lower:]'; fi
 }
 
-# 라벨 문자셋 검증: 비어있지 않고 [A-Za-z0-9_-] 만, 정규화 후 키가 비면 거부.  rc 0 통과 / 2 거부.
+# 라벨 문자셋 검증: 소문자 영숫자/언더스코어만 허용.  rc 0 통과 / 2 거부.
 _cct_validate_label() {  # $1 = label
-  case "$1" in
+  case "${1-}" in
     "") echo "❌ 라벨이 비어 있음" >&2; return 2 ;;
-    *[!A-Za-z0-9_-]*) echo "❌ 라벨은 영문/숫자/_/- 만 허용 (받은 값: '$1')" >&2; return 2 ;;
+    *[!a-z0-9_]*|[!a-z0-9_]*)
+      echo "❌ 라벨은 소문자 영문/숫자/_ 만 허용 (받은 값: '$1')" >&2; return 2 ;;
   esac
-  [ "$(_cct_key "$1")" != "CCT_TOKEN_" ] || { echo "❌ 라벨에 영숫자가 없어 키를 만들 수 없음: '$1'" >&2; return 2; }
   return 0
 }
 
 # 예약어(서브커맨드)와 충돌하는 라벨 거부.  rc 0 = 예약됨.
 # ↓↓↓ 아래 cct() 의 case 문과 항상 동기화할 것 (use 는 case 에 없으므로 라벨로 허용) ↓↓↓
 _cct_reserved_label() {  # $1 = label
-  case "$1" in help|ls|list|add|check|fp|who) return 0 ;; *) return 1 ;; esac
+  case "${1-}" in help|ls|list|add|check|fp|who) return 0 ;; *) return 1 ;; esac
 }
 
 _cct_list() {
@@ -84,6 +83,7 @@ _cct_run_limited() {
 # 토큰 점검.  rc 0 유효 / 1 무효 또는 점검불가 / 2 토큰없음.
 _cct_check_one() {  # $1 = 라벨
   local tok cb
+  _cct_validate_label "${1-}" || return 2
   tok="$(_cct_envtok "$(_cct_key "$1")")"
   if [ -z "$tok" ]; then echo "  $1 : ❓ 토큰 없음"; return 2; fi
   # N6: claude 실제 바이너리를 절대경로로 해석(사용자 claude 함수/alias 우회). timeout/gtimeout 는 이미 함수를
@@ -100,7 +100,7 @@ _cct_check_one() {  # $1 = 라벨
 
 # 전체/단일 점검.  단일은 _cct_check_one 의 rc 그대로, 전체는 하나라도 비제로면 1.
 _cct_check() {
-  if [ -n "$1" ]; then _cct_check_one "$1"; return; fi
+  if [ -n "${1-}" ]; then _cct_check_one "$1"; return; fi
   local labels lc rc=0
   labels="$(_cct_labels)"
   [ -n "$labels" ] || { echo "  (등록된 계정 없음)"; return 0; }
@@ -117,7 +117,7 @@ EOF
 
 _cct_add() {
   local label key tok dupkey existing_label ans
-  [ -n "$1" ] || { echo "사용법: cct add <라벨>    예: cct add pro1"; return 2; }
+  [ -n "${1-}" ] || { echo "사용법: cct add <라벨>    예: cct add pro1"; return 2; }
   label="$1"
   # 입력 검증을 토큰 붙여넣기 전에 먼저 (실패 시 헛수고 방지)
   _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음. 다른 이름을 쓰세요." >&2; return 2; }
@@ -176,6 +176,7 @@ _cct_add() {
 # 계정 지문: org-id + rate-limit 윈도. 7d_reset 가 동일하면 같은 계정(중복)
 _cct_fp_one() {
   local tok H org r5 r7 u5
+  _cct_validate_label "${1-}" || return
   tok="$(_cct_envtok "$(_cct_key "$1")")"
   [ -n "$tok" ] || { printf '  %-8s 토큰없음\n' "$1"; return; }
   H="$(curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
@@ -192,7 +193,7 @@ _cct_fp_one() {
 
 _cct_fp() {
   echo "계정 지문 (실호출) — 7d_reset 가 같으면 = 같은 계정(중복)!"
-  if [ -n "$1" ]; then _cct_fp_one "$1"; return; fi
+  if [ -n "${1-}" ]; then _cct_fp_one "$1"; return; fi
   local labels lc
   labels="$(_cct_labels)"
   [ -n "$labels" ] || { echo "  (등록된 계정 없음)"; return; }
@@ -206,7 +207,7 @@ _cct_help() {
     "  cct <라벨>         해당 계정 토큰으로 실행          예: cct gv / cct pro1" \
     "  cct ls             등록된 계정 목록" \
     "  cct add <라벨>     토큰 등록/갱신 (화면 미표시 입력)  예: cct add pro1" \
-    "                     라벨은 [A-Za-z0-9_-] 만, 예약어(아래 서브커맨드) 불가, 정규화 충돌 시 확인 요구" \
+    "                     라벨은 [a-z0-9_][a-z0-9_]* 만, 예약어(아래 서브커맨드) 불가" \
     "  cct check [라벨]   토큰 유효성 점검 (실제 호출). 라벨 없으면 전체" \
     "                     종료코드: 0 유효 / 1 무효·점검불가 / 2 토큰없음 (전체는 하나라도 문제면 1)" \
     "  cct fp [라벨]      계정 지문 — 중복 탐지(7d_reset 같으면 같은 계정)" \
@@ -233,7 +234,7 @@ cct() {
       local _extra; read -ra _extra <<< "$CCT_CLAUDE_FLAGS"; flags+=("${_extra[@]}")
     fi
   fi
-  case "$1" in
+  case "${1-}" in
     help)     _cct_help; return ;;
     ls|list)  _cct_list; return ;;
     add)      shift; _cct_add "$@"; return ;;
@@ -244,6 +245,8 @@ cct() {
               ( unset CLAUDE_CODE_OAUTH_TOKEN; command claude "${flags[@]}" "$@" ); return ;;
   esac
   label="$1"; shift
+  _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음." >&2; return 2; }
+  _cct_validate_label "$label" || return 2
   key="$(_cct_key "$label")"; tok="$(_cct_envtok "$key")"
   if [ -z "$tok" ]; then
     { echo "❌ '$label' 토큰 없음 (키 $key). 등록된 계정:"; _cct_list; echo "→ 등록: cct add $label"; } >&2

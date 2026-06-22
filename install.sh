@@ -8,6 +8,11 @@ REPO_RAW="https://raw.githubusercontent.com/Bkankim/cct/main"
 DEST="${HOME}/.claude"
 mkdir -p "$DEST"
 
+append_missing() {
+  local file="$1" line="$2"
+  grep -qxF "$line" "$file" 2>/dev/null || printf '%s\n' "$line" >> "$file"
+}
+
 # 런처 확보: 스크립트 파일로 실행됐고($0가 실제 파일) 옆에 cct.sh 있으면 복사(clone 모드).
 # curl|bash 처럼 파이프로 실행되면 $0가 파일이 아니므로 → 원격 다운로드 (cwd의 엉뚱한 cct.sh 회피)
 SRC_DIR=""
@@ -31,7 +36,11 @@ fi
 chmod 600 "$DEST/tokens.env"
 
 # 로컬 .gitignore
-printf 'tokens.env\n.credentials.json\n*.key\n*.pem\n' > "$DEST/.gitignore"
+touch "$DEST/.gitignore"
+append_missing "$DEST/.gitignore" "tokens.env"
+append_missing "$DEST/.gitignore" ".credentials.json"
+append_missing "$DEST/.gitignore" "*.key"
+append_missing "$DEST/.gitignore" "*.pem"
 
 # 전역 gitignore 안전망 (git 있을 때)
 if command -v git >/dev/null 2>&1; then
@@ -45,7 +54,8 @@ if command -v git >/dev/null 2>&1; then
     GIG="${HOME}/.gitignore_global"
   fi
   if touch "$GIG" 2>/dev/null; then
-    grep -qx 'tokens.env' "$GIG" 2>/dev/null || printf 'tokens.env\n.claude/tokens.env\n' >> "$GIG"
+    append_missing "$GIG" "tokens.env"
+    append_missing "$GIG" ".claude/tokens.env"
     [ -n "$CUR" ] || git config --global core.excludesfile "$GIG" || true
     echo "✓ 전역 gitignore: $GIG"
   else

@@ -35,6 +35,8 @@ cd cct && bash install.sh
 
 `cct <라벨>`은 Claude Code 2.1.185+에서 `claude setup-token` 장기 토큰이 inference-only로 제한되는 문제를 피하려고 Advisor/비필수 웹 호출을 기본 차단한다. 필요하면 `CCT_DISABLE_WEB_FEATURES=0 cct <라벨>`로 끌 수 있다.
 
+라벨은 소문자 영문/숫자/언더스코어만 허용한다(`[a-z0-9_][a-z0-9_]*`). 예: `gv`, `pro1`, `work_main`.
+
 ## 토큰은 따로 (저장소에 없음)
 토큰은 `~/.claude/tokens.env`(평문, 600, 키 `CCT_TOKEN_<라벨>`)에만 있고 **저장소에는 포함되지 않는다**(`.gitignore`로 차단). 새 PC에서는:
 - **방법 A** — 계정마다 직접 등록:
