@@ -48,7 +48,8 @@ if command -v git >/dev/null 2>&1; then
   CUR="$(git config --global --get core.excludesfile 2>/dev/null || true)"
   if [ -n "$CUR" ]; then
     # 이미 설정됨 → 덮어쓰지 말고 그 파일에 패턴만 추가. 변수에 담긴 ~ 는 셸이 확장하지 않으므로 직접 확장.
-    case "$CUR" in "~") CUR="$HOME" ;; "~/"*) CUR="$HOME/${CUR#\~/}" ;; esac
+    TILDE="~"
+    case "$CUR" in "$TILDE") CUR="$HOME" ;; "$TILDE"/*) CUR="$HOME/${CUR#"$TILDE"/}" ;; esac
     GIG="$CUR"
   else
     GIG="${HOME}/.gitignore_global"

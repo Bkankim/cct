@@ -199,7 +199,9 @@ test_extra(){
   local H G rc out sbz
   echo "-- install.sh H1: stored ~-path core.excludesfile is tilde-expanded (not literal)"
   H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/sub"
-  HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile '~/sub/ig'
+  local tilde_path
+  tilde_path="$(printf '\176/%s' 'sub/ig')"
+  HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$tilde_path"
   ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh ) >/dev/null 2>&1; rc=$?
   chk "installer rc=0" "0" "$rc"
   chk "tilde path expanded to HOME/sub/ig" "yes" "$([ -f "$H/sub/ig" ] && echo yes || echo no)"
