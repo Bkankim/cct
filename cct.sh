@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Claude Code 계정 스위칭 런처 (cct) — .env 방식 · bash/zsh · macOS/WSL2 공용
 #   cct                → 현재 인증된 프로필로 실행 (claude, 기본 --dangerously-skip-permissions)
 #   cct <라벨>         → CCT_TOKEN_<라벨> 토큰 주입해 실행        (예: cct gv / cct pro1)
@@ -247,12 +248,14 @@ cct() {
   local flags=()
   [ "${CCT_SKIP_PERMS:-1}" = "0" ] || flags+=(--dangerously-skip-permissions)
   if [ -n "${CCT_CLAUDE_FLAGS:-}" ]; then
-    # 글로빙 방지: bash 는 read -ra(워드분할만), zsh 는 ${(@s: :)} 로 공백 분할
+    # 글로빙 방지: read 내장으로 공백 분할만 수행
+    local _extra
     if [ -n "${ZSH_VERSION:-}" ]; then
-      flags+=("${(@s: :)CCT_CLAUDE_FLAGS}")
+      read -rA _extra <<< "$CCT_CLAUDE_FLAGS"
     else
-      local _extra; read -ra _extra <<< "$CCT_CLAUDE_FLAGS"; flags+=("${_extra[@]}")
+      read -ra _extra <<< "$CCT_CLAUDE_FLAGS"
     fi
+    flags+=("${_extra[@]}")
   fi
   case "${1-}" in
     help)     _cct_help; return ;;
