@@ -10,6 +10,7 @@
 # 환경변수 노브:
 #   CCT_SKIP_PERMS=0     → --dangerously-skip-permissions 끄기 (기본 1=켜짐)
 #   CCT_CLAUDE_FLAGS     → claude 에 추가로 넘길 플래그(공백 구분)
+#   CCT_DISABLE_WEB_FEATURES=0 → 라벨 실행에서도 Advisor/비필수 웹 호출 허용
 #
 # 종료코드 (cct check):  0 유효 / 1 무효(또는 점검불가) / 2 토큰없음.  전체 점검은 하나라도 문제면 1.
 #
@@ -249,5 +250,15 @@ cct() {
     return 1
   fi
   echo "▶ $label 로 실행"
-  CLAUDE_CODE_OAUTH_TOKEN="$tok" command claude "${flags[@]}" "$@"
+  if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
+    CLAUDE_CODE_OAUTH_TOKEN="$tok" command claude "${flags[@]}" "$@"
+  else
+    # setup-token/CLAUDE_CODE_OAUTH_TOKEN 장기 토큰은 Claude Code 2.1.185+에서 inference-only 로 취급된다.
+    # Advisor/플러그인 갱신 같은 비필수 claude.ai 웹 호출은 추가 스코프를 요구해 401을 낼 수 있으므로 기본 차단한다.
+    CLAUDE_CODE_OAUTH_TOKEN="$tok" \
+      CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1 \
+      command claude "${flags[@]}" "$@"
+  fi
 }
