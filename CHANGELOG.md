@@ -53,4 +53,8 @@ follow-up and is not part of this change.)
 
 - **Environment knobs** — `CCT_SKIP_PERMS=0` disables `--dangerously-skip-permissions`;
   `CCT_CLAUDE_FLAGS` passes extra flags to `claude`.
+- **Claude Code 2.1.185+ token-mode guard** — labeled `cct <label>` launches now
+  suppress Advisor/background plugin refresh/nonessential web calls by default because
+  `claude setup-token` long-lived OAuth tokens are inference-only in current Claude Code.
+  Set `CCT_DISABLE_WEB_FEATURES=0` to opt back in.
 - **Test suite** — `tests/cct_test.sh` (behavioral, no network, fake `claude` shim).

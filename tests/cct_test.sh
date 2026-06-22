@@ -23,6 +23,7 @@ mk_shim(){ # $1 = bin dir
   cat > "$1/claude" <<'SHIM'
 #!/usr/bin/env bash
 echo "CLAUDE args=[$*] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
+echo "CLAUDE web=[${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}]" >&2
 case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in *BAD*) exit 1 ;; esac
 exit 0
 SHIM
@@ -147,6 +148,12 @@ test_cct(){
   cap="$(CCT_CLAUDE_FLAGS='--foo --bar' cct 2>&1 >/dev/null)"
   chk_has "CCT_CLAUDE_FLAGS adds --foo" "--foo" "$cap"
   chk_has "CCT_CLAUDE_FLAGS adds --bar" "--bar" "$cap"
+
+  echo "-- C#5: labeled setup-token sessions suppress web-only feature calls by default"
+  cap="$(cct use 2>&1 >/dev/null)"
+  chk_has "labeled run disables web-only feature calls" "web=[1,1,1]" "$cap"
+  cap="$(CCT_DISABLE_WEB_FEATURES=0 cct use 2>&1 >/dev/null)"
+  chk_has "CCT_DISABLE_WEB_FEATURES=0 opt-out" "web=[<unset>,<unset>,<unset>]" "$cap"
 
   echo "-- N6: check probes the real binary, not a shell claude function/alias"
   claude(){ echo "SHADOW-FN" >&2; return 9; }   # shadowing function must be bypassed

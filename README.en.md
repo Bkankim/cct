@@ -33,6 +33,8 @@ Then `exec $SHELL` (or a new terminal / `source ~/.claude/cct.sh`).
 | `cct fp [label]` | Account fingerprint — duplicate detection (same `7d_reset` = same account) |
 | `cct help` | Help |
 
+`cct <label>` disables Advisor/nonessential web calls by default to avoid Claude Code 2.1.185+ failures where long-lived `claude setup-token` OAuth tokens are inference-only. Opt back in with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`.
+
 ## Tokens are separate (not in the repo)
 Tokens live only in `~/.claude/tokens.env` (plaintext, `600`, keys `CCT_TOKEN_<label>`) and are **never part of the repo** (blocked by `.gitignore`). On a new PC:
 - **Option A** — register each account directly:
