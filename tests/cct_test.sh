@@ -214,6 +214,19 @@ test_extra(){
   chk "bash set -u: cct check -> 0" "0" "$rc"
   chk_has "bash set -u: cct check reports empty" "등록된 계정 없음" "$out"
 
+  echo "-- bash set -e + pipefail smoke: expected misses still print diagnostics"
+  sbz="$(mktemp -d)"; mk_shim "$sbz/bin"
+  out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/e.env" bash -e -o pipefail -c ". '$REPO/cct.sh'; cct nosuch" 2>&1)"; rc=$?
+  chk "bash set -e pipefail: missing run -> 1" "1" "$rc"
+  chk_has "bash set -e pipefail: missing run prints token error" "토큰 없음" "$out"
+  printf 'CCT_TOKEN_GOOD=sk-good\n' > "$sbz/e.env"
+  out="$(PATH="/usr/bin:/bin" CCT_ENV_FILE="$sbz/e.env" bash -e -o pipefail -c ". '$REPO/cct.sh'; cct check good" 2>&1)"; rc=$?
+  chk "bash set -e pipefail: missing claude probe -> 1" "1" "$rc"
+  chk_has "bash set -e pipefail: missing claude probe prints diagnostic" "점검 불가" "$out"
+  out="$(printf 'sk-first\n' | PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/new.env" bash -e -o pipefail -c ". '$REPO/cct.sh'; cct add first >/dev/null; cct first" 2>&1)"; rc=$?
+  chk "bash set -e pipefail: first add and run -> 0" "0" "$rc"
+  chk_has "bash set -e pipefail: first add injects token" "tok=[sk-first]" "$out"
+
   if command -v zsh >/dev/null 2>&1; then
     echo "-- zsh smoke: cct.sh sources and runs under zsh (exercises zsh-only branches)"
     sbz="$(mktemp -d)"; mk_shim "$sbz/bin"

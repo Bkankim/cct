@@ -26,20 +26,40 @@ _cct_key() { printf 'CCT_TOKEN_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper
 
 # tokens.env 에서 KEY 값만 안전 추출 (source 안 함, CRLF·따옴표 제거)
 _cct_envtok() {
-  [ -f "$CCT_ENV_FILE" ] || return 1
-  grep -E "^$1=" "$CCT_ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'\r"
+  [ -f "$CCT_ENV_FILE" ] || return 0
+  awk -v k="$1" '
+    BEGIN { p = k "=" }
+    index($0, p) == 1 {
+      v = substr($0, length(p) + 1)
+      gsub(/\r/, "", v); gsub(/"/, "", v); gsub(/\047/, "", v)
+      print v
+      exit
+    }
+  ' "$CCT_ENV_FILE" 2>/dev/null
 }
 
 # 등록된 라벨(소문자) 한 줄씩.  #cctlabel: 주석은 ^CCT_TOKEN_ 앵커에 안 걸리므로 자동 제외.
 _cct_labels() {
   [ -f "$CCT_ENV_FILE" ] || return 0
-  grep -oE '^CCT_TOKEN_[A-Za-z0-9_]+=' "$CCT_ENV_FILE" 2>/dev/null | sed 's/^CCT_TOKEN_//;s/=$//' | tr '[:upper:]' '[:lower:]'
+  awk -F= '/^CCT_TOKEN_[A-Za-z0-9_]+=/ {
+    label = $1
+    sub(/^CCT_TOKEN_/, "", label)
+    print tolower(label)
+  }' "$CCT_ENV_FILE" 2>/dev/null
 }
 
 # 키의 원본 라벨 조회: #cctlabel: 주석이 있으면 그 값을, 없으면(레거시) 소문자 키 꼬리를 반환.
 _cct_label_for() {  # $1 = CCT_TOKEN_XXX
   local v
-  v="$(grep -E "^#cctlabel:$1=" "$CCT_ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')"
+  v="$(awk -v k="#cctlabel:$1" '
+    BEGIN { p = k "=" }
+    index($0, p) == 1 {
+      v = substr($0, length(p) + 1)
+      gsub(/\r/, "", v)
+      print v
+      exit
+    }
+  ' "$CCT_ENV_FILE" 2>/dev/null)"
   if [ -n "$v" ]; then printf '%s' "$v"
   else printf '%s' "$1" | sed 's/^CCT_TOKEN_//' | tr '[:upper:]' '[:lower:]'; fi
 }
@@ -88,7 +108,7 @@ _cct_check_one() {  # $1 = 라벨
   if [ -z "$tok" ]; then echo "  $1 : ❓ 토큰 없음"; return 2; fi
   # N6: claude 실제 바이너리를 절대경로로 해석(사용자 claude 함수/alias 우회). timeout/gtimeout 는 이미 함수를
   #     우회하지만 perl·무제한 fallback 은 아니므로 절대경로를 모든 분기에 동일하게 넘긴다.
-  if [ -n "${ZSH_VERSION:-}" ]; then cb="$(whence -p claude 2>/dev/null)"; else cb="$(type -P claude 2>/dev/null)"; fi
+  if [ -n "${ZSH_VERSION:-}" ]; then cb="$(whence -p claude 2>/dev/null || true)"; else cb="$(type -P claude 2>/dev/null || true)"; fi
   if [ -z "$cb" ]; then echo "  $1 : ⚠️ 점검 불가 (claude 가 PATH 에 없음)"; return 1; fi
   # </dev/null 필수: 전체 점검 루프에서 claude 가 while 루프의 stdin(다음 라벨)을 삼키는 것 방지
   if CLAUDE_CODE_OAUTH_TOKEN="$tok" _cct_run_limited 30 "$cb" -p "ok" --model "$CCT_PROBE_MODEL" </dev/null >/dev/null 2>&1; then
@@ -126,7 +146,7 @@ _cct_add() {
   echo "[$label] 등록 — ⚠️ 'claude auth login' 때 브라우저가 '$label' 계정이었는지 먼저 확인하세요."
   echo "  (auth status 는 어느 계정인지 안 알려줌 → 중복 발급은 여기서만 막을 수 있음)"
   echo "  'claude setup-token' 토큰을 붙여넣고 엔터 (화면 미표시):"
-  read -rs tok; echo
+  if ! read -rs tok; then echo; tok=""; else echo; fi
   tok="$(printf '%s' "$tok" | tr -d '\r')"   # N3: CRLF 제거 → 중복감지/저장 일관성
   [ -n "$tok" ] || { echo "❌ 입력 없음, 취소"; return 1; }
   # N5: 디렉터리 보장 + 토큰 파일 생성/권한을 모두 검증(실패 시 즉시 중단)
@@ -139,7 +159,7 @@ _cct_add() {
     if [ "$existing_label" != "$label" ]; then
       echo "⚠️  라벨 '$label' 는 기존 라벨 '$existing_label' 와 같은 키($key)로 정규화됩니다(대소문자/기호 차이)." >&2
       printf '   기존 토큰을 덮어쓸까요? [y/N] ' >&2
-      read -r ans
+      read -r ans || ans=
       case "$ans" in y|Y|yes|YES) ;; *) echo "취소함 (기존 '$existing_label' 유지)." >&2; return 1 ;; esac
     fi
   fi
@@ -147,7 +167,7 @@ _cct_add() {
   dupkey="$(grep -oE '^CCT_TOKEN_[A-Za-z0-9_]+' "$CCT_ENV_FILE" 2>/dev/null | while IFS= read -r ek; do
     [ "$ek" = "$key" ] && continue
     [ "$(_cct_envtok "$ek")" = "$tok" ] && { printf '%s' "$ek"; break; }
-  done)"
+  done || true)"
   [ -n "$dupkey" ] && echo "⚠️  이 토큰은 기존 '$dupkey' 와 동일 — 같은 계정 재사용 의심(다시 로그인했는지 확인). 저장은 진행."
   if grep -qE "^$key=" "$CCT_ENV_FILE" 2>/dev/null; then
     # 갱신: H2 = tmp 를 mv 전에 600 으로 (644 노출창 제거).  N5 = awk+mv 성공 확인 후에만 성공 출력.
@@ -182,11 +202,11 @@ _cct_fp_one() {
   H="$(curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
     -H "Authorization: Bearer $tok" -H "anthropic-version: 2023-06-01" \
     -H "anthropic-beta: oauth-2025-04-20" -H "content-type: application/json" \
-    -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" </dev/null 2>/dev/null)"
-  org="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | tr -d '\r' | cut -c1-8)"
-  r5="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-reset"{print $2}' | tr -d '\r')"
-  r7="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-reset"{print $2}' | tr -d '\r')"
-  u5="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | tr -d '\r')"
+    -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" </dev/null 2>/dev/null || true)"
+  org="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | tr -d '\r' | cut -c1-8 || true)"
+  r5="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-reset"{print $2}' | tr -d '\r' || true)"
+  r7="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-reset"{print $2}' | tr -d '\r' || true)"
+  u5="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | tr -d '\r' || true)"
   [ -n "$org" ] || { printf '  %-8s 응답실패\n' "$1"; return; }
   printf '  %-8s org:%s  7d_reset:%-11s  5h_reset:%-11s  util5h:%s\n' "$1" "$org" "$r7" "$r5" "$u5"
 }

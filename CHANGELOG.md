@@ -50,6 +50,9 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   if `claude` is not on `PATH`.
 - **cct.sh / set -u** — `cct` and `cct check` can be called without positional arguments
   in `set -u` shells.
+- **cct.sh / errexit + pipefail** — expected empty/missing states such as no token,
+  no matching label, no duplicate token, or no `claude` binary now print their diagnostics
+  instead of aborting early in shells that enable `set -e` or `pipefail`.
 
 ### Added
 
