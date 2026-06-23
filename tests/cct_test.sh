@@ -143,13 +143,16 @@ test_cct(){
   cap="$(printf '%s\r\n' "sk-good" | cct add dupacct 2>&1)"
   chk_has "CRLF dup warning fires" "동일" "$cap"
 
-  echo "-- C#3: bare cct clears ambient CLAUDE_CODE_OAUTH_TOKEN"
+  echo "-- C#3: bare cct injects the default-label setup-token; never the ambient token or keychain"
+  export CCT_DEFAULT_LABEL=use
   export CLAUDE_CODE_OAUTH_TOKEN="SENTINEL-AMBIENT"
   cap="$(cct 2>&1 >/dev/null)"
   case "$cap" in *SENTINEL-AMBIENT*) chk "ambient token did NOT reach claude" "y" "n" ;; *) chk "ambient token did NOT reach claude" "y" "y" ;; esac
-  chk_has "bare cct ran with token unset" "tok=[<unset>]" "$cap"
+  chk_has "bare cct injected default-label token" "tok=[sk-use]" "$cap"
   chk "parent shell still has sentinel" "SENTINEL-AMBIENT" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
   unset CLAUDE_CODE_OAUTH_TOKEN
+  cap="$(CCT_DEFAULT_LABEL=nosuchdefault cct 2>&1 >/dev/null)"; rc=$?
+  chk "missing default-label token -> rc 1 (no keychain fallback)" "1" "$rc"
 
   echo "-- C#4: --dangerously-skip-permissions opt-out + extra flags"
   cap="$(cct 2>&1 >/dev/null)"; chk_has "default has skip-permissions" "--dangerously-skip-permissions" "$cap"
@@ -158,6 +161,7 @@ test_cct(){
   cap="$(CCT_CLAUDE_FLAGS='--foo --bar' cct 2>&1 >/dev/null)"
   chk_has "CCT_CLAUDE_FLAGS adds --foo" "--foo" "$cap"
   chk_has "CCT_CLAUDE_FLAGS adds --bar" "--bar" "$cap"
+  unset CCT_DEFAULT_LABEL
 
   echo "-- C#5: labeled setup-token sessions suppress web-only feature calls by default"
   cap="$(cct use 2>&1 >/dev/null)"
@@ -209,10 +213,11 @@ test_extra(){
 
   echo "-- bash set -u smoke: bare cct and cct check do not read unbound positional args"
   sbz="$(mktemp -d)"; mk_shim "$sbz/bin"
+  printf 'CCT_TOKEN_GV=sk-uenv\n' > "$sbz/u.env"
   out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/u.env" bash -uc ". '$REPO/cct.sh'; cct" 2>&1)"; rc=$?
   chk "bash set -u: bare cct -> 0" "0" "$rc"
-  chk_has "bash set -u: bare cct reaches claude" "tok=[<unset>]" "$out"
-  out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/u.env" bash -uc ". '$REPO/cct.sh'; cct check" 2>&1)"; rc=$?
+  chk_has "bash set -u: bare cct injects default-label token" "tok=[sk-uenv]" "$out"
+  out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/empty.env" bash -uc ". '$REPO/cct.sh'; cct check" 2>&1)"; rc=$?
   chk "bash set -u: cct check -> 0" "0" "$rc"
   chk_has "bash set -u: cct check reports empty" "등록된 계정 없음" "$out"
 
@@ -232,6 +237,7 @@ test_extra(){
   if command -v zsh >/dev/null 2>&1; then
     echo "-- zsh smoke: cct.sh sources and runs under zsh (exercises zsh-only branches)"
     sbz="$(mktemp -d)"; mk_shim "$sbz/bin"
+    printf 'CCT_TOKEN_GV=sk-z0\n' > "$sbz/t.env"
     chk "zsh -n parses cct.sh" "0" "$(zsh -n "$REPO/cct.sh" >/dev/null 2>&1; echo $?)"
     out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/t.env" CCT_CLAUDE_FLAGS='--za --zb' zsh -c "set +u; . '$REPO/cct.sh'; cct" 2>&1)"
     chk_has "zsh: skip-perms flag present" "--dangerously-skip-permissions" "$out"

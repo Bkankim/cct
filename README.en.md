@@ -25,7 +25,7 @@ Then `exec $SHELL` (or a new terminal / `source ~/.claude/cct.sh`).
 ## Commands
 | Command | What it does |
 |---|---|
-| `cct` | Run with the currently authenticated profile (`--dangerously-skip-permissions`) |
+| `cct` | Run with the default-label setup-token (`CCT_DEFAULT_LABEL`, default `gv`; no keychain fallback) (`--dangerously-skip-permissions`) |
 | `cct <label>` | Run as that account's token (e.g. `cct gv`, `cct pro1`) |
 | `cct ls` | List registered accounts |
 | `cct add <label>` | Register/update a token (hidden input) |

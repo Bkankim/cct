@@ -25,7 +25,7 @@ cd cct && bash install.sh
 ## 명령
 | 명령 | 동작 |
 |---|---|
-| `cct` | 현재 인증된 프로필로 실행 (`--dangerously-skip-permissions`) |
+| `cct` | 기본 라벨(`CCT_DEFAULT_LABEL`, 기본 `gv`)의 setup-token으로 실행 (키체인 폴백 없음, `--dangerously-skip-permissions`) |
 | `cct <라벨>` | 해당 계정 토큰으로 실행 (예: `cct gv`, `cct pro1`) |
 | `cct ls` | 등록된 계정 목록 |
 | `cct add <라벨>` | 토큰 등록/갱신 (화면 미표시 입력) |

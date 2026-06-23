@@ -10,9 +10,12 @@ Verified-bug remediation across `cct.sh` and `install.sh`.
   (previously always `0`). Per label: `0` valid, `1` invalid/unreachable, `2` no token.
   A full `cct check` (no label) returns `1` if **any** account has a problem, else `0`.
   Wrappers that relied on `cct check` always succeeding will change behavior.
-- **Bare `cct` clears the ambient token** — running `cct` with no label now removes any
-  inherited `CLAUDE_CODE_OAUTH_TOKEN` before launching `claude`, so it truly uses the
-  "currently authenticated profile" as documented (instead of a stale exported token).
+- **Bare `cct` uses a setup-token (no keychain fallback)** — running `cct` with no label now
+  injects the default label's setup-token (`CCT_DEFAULT_LABEL`, default `gv`) instead of
+  clearing the ambient token and falling back to the `claude` keychain / `/login` profile.
+  Every `cct` entrypoint now stays on a long-lived `setup-token`, so a stale/expired keychain
+  login can no longer surface as a 401. A stale exported `CLAUDE_CODE_OAUTH_TOKEN` is always
+  overridden; if the default label has no token, `cct` errors out instead of using the keychain.
 - **Strict label rules** — labels must match `[a-z0-9_][a-z0-9_]*`. Dashes, uppercase
   letters, spaces, `@`, and non-ASCII labels are rejected. Labels that collide with a
   subcommand (`help ls list add check fp who`) are rejected (`use` is still allowed).
@@ -57,7 +60,8 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
 ### Added
 
 - **Environment knobs** — `CCT_SKIP_PERMS=0` disables `--dangerously-skip-permissions`;
-  `CCT_CLAUDE_FLAGS` passes extra flags to `claude`.
+  `CCT_CLAUDE_FLAGS` passes extra flags to `claude`; `CCT_DEFAULT_LABEL` (default `gv`) sets
+  the setup-token label used by a bare `cct`.
 - **Claude Code 2.1.185+ token-mode guard** — labeled `cct <label>` launches now
   suppress Advisor/background plugin refresh/nonessential web calls by default because
   `claude setup-token` long-lived OAuth tokens are inference-only in current Claude Code.

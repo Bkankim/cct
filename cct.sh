@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Claude Code 계정 스위칭 런처 (cct) — .env 방식 · bash/zsh · macOS/WSL2 공용
-#   cct                → 현재 인증된 프로필로 실행 (claude, 기본 --dangerously-skip-permissions)
+#   cct                → 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv)의 setup-token 주입해 실행 (claude, 기본 --dangerously-skip-permissions)
 #   cct <라벨>         → CCT_TOKEN_<라벨> 토큰 주입해 실행        (예: cct gv / cct pro1)
 #   cct ls             → 등록된 계정 목록 (값 미표시)
 #   cct add <라벨>     → 토큰 등록/갱신 (화면 미표시 입력)
@@ -12,12 +12,13 @@
 #   CCT_SKIP_PERMS=0     → --dangerously-skip-permissions 끄기 (기본 1=켜짐)
 #   CCT_CLAUDE_FLAGS     → claude 에 추가로 넘길 플래그(공백 구분)
 #   CCT_DISABLE_WEB_FEATURES=0 → 라벨 실행에서도 Advisor/비필수 웹 호출 허용
+#   CCT_DEFAULT_LABEL=gv → 라벨 없는 'cct' 가 쓸 기본 setup-token 라벨 (기본 gv)
 #
 # 종료코드 (cct check):  0 유효 / 1 무효(또는 점검불가) / 2 토큰없음.  전체 점검은 하나라도 문제면 1.
 #
 # 호환성 메모(BREAKING) — 자세한 내용은 CHANGELOG.md:
 #   - cct check 가 실패 시 비제로 종료코드를 반환(이전엔 항상 0).
-#   - 라벨 없는 cct 는 환경의 stale CLAUDE_CODE_OAUTH_TOKEN 을 제거하고 실행.
+#   - 라벨 없는 cct 는 키체인 폴백 없이 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv)의 setup-token 으로 실행.
 #   - cct add 는 라벨 문자셋([a-z0-9_][a-z0-9_]*)·예약어를 검사한다.
 
 CCT_ENV_FILE="${CCT_ENV_FILE:-$HOME/.claude/tokens.env}"
@@ -224,7 +225,7 @@ _cct_fp() {
 _cct_help() {
   printf '%s\n' \
     "cct — Claude Code 계정 스위처  (cc/ㅊㅊ 는 그냥 claude)" \
-    "  cct                현재 인증된 프로필로 실행 (기본 --dangerously-skip-permissions; stale 토큰 제거)" \
+    "  cct                기본 라벨(CCT_DEFAULT_LABEL=gv) setup-token 으로 실행 (키체인 폴백 없음)" \
     "  cct <라벨>         해당 계정 토큰으로 실행          예: cct gv / cct pro1" \
     "  cct ls             등록된 계정 목록" \
     "  cct add <라벨>     토큰 등록/갱신 (화면 미표시 입력)  예: cct add pro1" \
@@ -234,7 +235,7 @@ _cct_help() {
     "  cct fp [라벨]      계정 지문 — 중복 탐지(7d_reset 같으면 같은 계정)" \
     "  cct help           이 도움말" \
     "" \
-    "환경변수:  CCT_SKIP_PERMS=0 (위험 플래그 끄기)   CCT_CLAUDE_FLAGS='...' (claude 에 추가 플래그)" \
+    "환경변수:  CCT_SKIP_PERMS=0 (위험 플래그 끄기)   CCT_CLAUDE_FLAGS='...' (추가 플래그)   CCT_DEFAULT_LABEL=gv (라벨없는 cct 기본 토큰)" \
     "호환성/BREAKING 변경은 CHANGELOG.md 참고."
 }
 
@@ -263,13 +264,14 @@ cct() {
     add)      shift; _cct_add "$@"; return ;;
     check)    shift; _cct_check "$@"; return ;;
     fp|who)   shift; _cct_fp "$@"; return ;;
-    ""|-*)    # C#3: 기본 실행은 환경의 stale 한 CLAUDE_CODE_OAUTH_TOKEN 을 제거해 '현재 인증 프로필'로 실행.
-              # 서브셸로 격리 → 호출자 셸의 환경은 손대지 않음.
-              ( unset CLAUDE_CODE_OAUTH_TOKEN; command claude "${flags[@]}" "$@" ); return ;;
+    ""|-*)    # 라벨 없는 실행도 setup-token 강제: 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv) 토큰 주입.
+              # 키체인(claude /login) 폴백 금지. 남은 인자($@)는 그대로 claude 플래그로 전달(shift 안 함).
+              label="${CCT_DEFAULT_LABEL:-gv}"
+              _cct_validate_label "$label" || { echo "❌ CCT_DEFAULT_LABEL='$label' 가 유효한 라벨이 아님 (소문자 영숫자/_)." >&2; return 2; } ;;
+    *)        label="$1"; shift
+              _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음." >&2; return 2; }
+              _cct_validate_label "$label" || return 2 ;;
   esac
-  label="$1"; shift
-  _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음." >&2; return 2; }
-  _cct_validate_label "$label" || return 2
   key="$(_cct_key "$label")"; tok="$(_cct_envtok "$key")"
   if [ -z "$tok" ]; then
     { echo "❌ '$label' 토큰 없음 (키 $key). 등록된 계정:"; _cct_list; echo "→ 등록: cct add $label"; } >&2
