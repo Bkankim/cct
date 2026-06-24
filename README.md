@@ -25,15 +25,19 @@ cd cct && bash install.sh
 ## 명령
 | 명령 | 동작 |
 |---|---|
-| `cct` | 기본 라벨(`CCT_DEFAULT_LABEL`, 기본 `gv`)의 setup-token으로 실행 (키체인 폴백 없음, `--dangerously-skip-permissions`) |
+| `cct` | 활성(sticky) 프로필 토큰으로 실행 — 없으면 기본 라벨(`CCT_DEFAULT_LABEL`, 기본 `gv`). `--dangerously-skip-permissions` |
 | `cct <라벨>` | 해당 계정 토큰으로 실행 (예: `cct gv`, `cct pro1`) |
 | `cct ls` | 등록된 계정 목록 |
 | `cct add <라벨>` | 토큰 등록/갱신 (화면 미표시 입력) |
 | `cct check [라벨]` | 토큰 유효성 점검 (실제 호출) |
 | `cct fp [라벨]` | 계정 지문 — 중복 탐지(7d_reset 같으면 같은 계정) |
+| `cct active` | 현재 활성(sticky) 프로필 표시 |
+| `cct off` | 활성 프로필 해제 |
 | `cct help` | 도움말 |
 
 `cct <라벨>`은 Claude Code 2.1.185+에서 `claude setup-token` 장기 토큰이 inference-only로 제한되는 문제를 피하려고 Advisor/비필수 웹 호출을 기본 차단한다. 필요하면 `CCT_DISABLE_WEB_FEATURES=0 cct <라벨>`로 끌 수 있다.
+
+**Sticky 활성 프로필(기본 켜짐):** `cct <라벨>`을 한 번 실행하면 그 계정이 "활성 프로필"로 기억된다 — 현재 셸에 토큰을 `export`하고 `~/.claude/cct-active`에 라벨을 저장하며 새 터미널도 시작 시 자동 로드한다. 그래서 그냥 `claude`/`cc`/새 터미널도 마지막에 고른 계정을 유지하고, `cct <다른라벨>` 또는 `cct off` 전까지 바뀌지 않는다. 끄려면 `CCT_STICKY=0`.
 
 라벨은 소문자 영문/숫자/언더스코어만 허용한다(`[a-z0-9_][a-z0-9_]*`). 예: `gv`, `pro1`, `work_main`.
 

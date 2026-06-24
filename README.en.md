@@ -25,15 +25,19 @@ Then `exec $SHELL` (or a new terminal / `source ~/.claude/cct.sh`).
 ## Commands
 | Command | What it does |
 |---|---|
-| `cct` | Run with the default-label setup-token (`CCT_DEFAULT_LABEL`, default `gv`; no keychain fallback) (`--dangerously-skip-permissions`) |
+| `cct` | Run with the sticky active profile — falls back to `CCT_DEFAULT_LABEL` (default `gv`). `--dangerously-skip-permissions` |
 | `cct <label>` | Run as that account's token (e.g. `cct gv`, `cct pro1`) |
 | `cct ls` | List registered accounts |
 | `cct add <label>` | Register/update a token (hidden input) |
 | `cct check [label]` | Validate token(s) via a real call |
 | `cct fp [label]` | Account fingerprint — duplicate detection (same `7d_reset` = same account) |
+| `cct active` | Show the current sticky active profile |
+| `cct off` | Clear the active profile |
 | `cct help` | Help |
 
 `cct <label>` disables Advisor/nonessential web calls by default to avoid Claude Code 2.1.185+ failures where long-lived `claude setup-token` OAuth tokens are inference-only. Opt back in with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`.
+
+**Sticky active profile (on by default):** running `cct <label>` once remembers that account as the active profile — it `export`s the token into the current shell, writes the label to `~/.claude/cct-active`, and new terminals auto-load it on startup. So a plain `claude` / `cc` / new terminal keeps using the last selected account until you run `cct <other>` or `cct off`. Disable with `CCT_STICKY=0`.
 
 Labels must use lowercase letters, digits, and underscores only (`[a-z0-9_][a-z0-9_]*`). Examples: `gv`, `pro1`, `work_main`.
 

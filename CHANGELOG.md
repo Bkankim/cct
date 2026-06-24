@@ -16,6 +16,12 @@ Verified-bug remediation across `cct.sh` and `install.sh`.
   Every `cct` entrypoint now stays on a long-lived `setup-token`, so a stale/expired keychain
   login can no longer surface as a 401. A stale exported `CLAUDE_CODE_OAUTH_TOKEN` is always
   overridden; if the default label has no token, `cct` errors out instead of using the keychain.
+- **Sticky active profile (default on)** — `cct <label>` now remembers the chosen label as the
+  active profile: it `export`s the token into the current shell, writes the label to a state
+  file (`cct-active`, next to `tokens.env`; override with `CCT_ACTIVE_FILE`), and every new shell
+  auto-loads it on source. A plain `claude` / `cc` / new terminal keeps using the last selected
+  account until you run `cct <other>` or `cct off`. Bare `cct` follows the active profile (falling
+  back to `CCT_DEFAULT_LABEL`). Set `CCT_STICKY=0` for the old per-process inline behavior.
 - **Strict label rules** — labels must match `[a-z0-9_][a-z0-9_]*`. Dashes, uppercase
   letters, spaces, `@`, and non-ASCII labels are rejected. Labels that collide with a
   subcommand (`help ls list add check fp who`) are rejected (`use` is still allowed).
@@ -60,8 +66,10 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
 ### Added
 
 - **Environment knobs** — `CCT_SKIP_PERMS=0` disables `--dangerously-skip-permissions`;
-  `CCT_CLAUDE_FLAGS` passes extra flags to `claude`; `CCT_DEFAULT_LABEL` (default `gv`) sets
-  the setup-token label used by a bare `cct`.
+  `CCT_CLAUDE_FLAGS` passes extra flags to `claude`; `CCT_DEFAULT_LABEL` (default `gv`) is the
+  fallback label for a bare `cct`; `CCT_STICKY=0` disables the sticky active profile;
+  `CCT_ACTIVE_FILE` overrides the active-profile state path.
+- **`cct active` / `cct off`** — show or clear the sticky active profile.
 - **Claude Code 2.1.185+ token-mode guard** — labeled `cct <label>` launches now
   suppress Advisor/background plugin refresh/nonessential web calls by default because
   `claude setup-token` long-lived OAuth tokens are inference-only in current Claude Code.
