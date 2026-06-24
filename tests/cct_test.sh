@@ -93,6 +93,7 @@ test_cct(){
   sb="$(mktemp -d)"; mk_shim "$sb/bin"
   export PATH="$sb/bin:$PATH"
   export CCT_ENV_FILE="$sb/tokens.env"
+  export CCT_STICKY=0   # 이 섹션은 비고정(inline) 동작 검증
   # shellcheck disable=SC1090
   . "$REPO/cct.sh"
 
@@ -201,6 +202,7 @@ test_cct(){
 test_extra(){
   echo "== edge + cross-shell =="
   local H G rc out sbz
+  export CCT_STICKY=0   # 크로스셸 스모크도 비고정(inline) 기준
   echo "-- install.sh H1: stored ~-path core.excludesfile is tilde-expanded (not literal)"
   H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/sub"
   local tilde_path
@@ -250,12 +252,56 @@ test_extra(){
   fi
 }
 
+# -------------------------------------------------------------------------
+# sticky 활성 프로필 (cct <라벨> 기억 → 그냥 claude/새 셸도 같은 계정).
+test_sticky(){
+  echo "== sticky 활성 프로필 =="
+  set +u
+  local sb cap
+  sb="$(mktemp -d)"; mk_shim "$sb/bin"
+  export PATH="$sb/bin:$PATH"
+  export CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active"
+  unset CCT_STICKY CLAUDE_CODE_OAUTH_TOKEN   # 기본 sticky ON
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+  add_tok good "sk-good" >/dev/null 2>&1
+  add_tok other "sk-other" >/dev/null 2>&1
+
+  echo "-- cct <라벨> 가 활성 프로필을 저장하고 현재 셸에 export 한다"
+  cct good >/dev/null 2>&1
+  chk "active file == good" "good" "$(cat "$sb/active" 2>/dev/null)"
+  chk "현재 셸에 토큰 export" "sk-good" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk_has "cct active 표시" "활성 프로필: good" "$(cct active 2>&1)"
+  chk_has "이후 그냥 claude 가 활성 토큰 사용" "tok=[sk-good]" "$(claude 2>&1)"
+
+  echo "-- 새 셸(source)도 활성 프로필 자동 로드"
+  cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" bash -c ". '$REPO/cct.sh'; claude" 2>&1)"
+  chk_has "새 셸: 자동 로드된 토큰으로 claude" "tok=[sk-good]" "$cap"
+
+  echo "-- cct <다른라벨> 로 전환 + 라벨없는 cct 는 활성을 따른다"
+  cct other >/dev/null 2>&1
+  chk "active file == other" "other" "$(cat "$sb/active" 2>/dev/null)"
+  chk_has "전환 후 claude 가 새 토큰" "tok=[sk-other]" "$(claude 2>&1)"
+  chk_has "bare cct 가 활성(other) 사용" "tok=[sk-other]" "$(cct 2>&1)"
+
+  echo "-- cct off 로 해제 (파일 삭제 + 현재 셸 env 해제)"
+  cct off >/dev/null 2>&1
+  chk "active 파일 제거" "no" "$([ -e "$sb/active" ] && echo yes || echo no)"
+  chk "현재 셸 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+
+  echo "-- CCT_STICKY=0 이면 inline 만 (셸/디스크 미변경)"
+  cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" CCT_STICKY=0 bash -c ". '$REPO/cct.sh'; cct good >/dev/null 2>&1; echo tok=[\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]; [ -e '$sb/active' ] && echo FILE-YES || echo FILE-NO" 2>&1)"
+  chk_has "CCT_STICKY=0: 셸에 토큰 안 남음" "tok=[<unset>]" "$cap"
+  chk_has "CCT_STICKY=0: active 파일 안 생김" "FILE-NO" "$cap"
+}
+
 case "${1:-all}" in
   install) test_install ;;
   cct)     test_cct ;;
   extra)   test_extra ;;
-  all)     test_install; test_cct; test_extra ;;
-  *) echo "usage: $0 [install|cct|extra|all]"; exit 2 ;;
+  sticky)  test_sticky ;;
+  all)     test_install; test_cct; test_extra; test_sticky ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|all]"; exit 2 ;;
 esac
 
 echo
