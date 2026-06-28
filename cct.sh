@@ -4,6 +4,9 @@
 #   cct <라벨>         → CCT_TOKEN_<라벨> 토큰 주입해 실행        (예: cct gv / cct pro1)
 #   cct ls             → 등록된 계정 목록 (값 미표시)
 #   cct add <라벨>     → 토큰 등록/갱신 (화면 미표시 입력)
+#   cct run <라벨>     → 예약어 라벨을 포함해 해당 계정으로 실행
+#   cct rm <라벨>      → 계정 삭제
+#   cct rename <기존> <새> → 계정 라벨 변경
 #   cct check [라벨]   → 토큰 유효성 점검 (실제 호출). 라벨 없으면 전체
 #   cct active         → 현재 활성(sticky) 프로필 표시
 #   cct off            → 활성 프로필 해제 (이후 cct <라벨> 로 다시 선택)
@@ -83,9 +86,8 @@ _cct_validate_label() {  # $1 = label
 }
 
 # 예약어(서브커맨드)와 충돌하는 라벨 거부.  rc 0 = 예약됨.
-# ↓↓↓ 아래 cct() 의 case 문과 항상 동기화할 것 (use 는 case 에 없으므로 라벨로 허용) ↓↓↓
 _cct_reserved_label() {  # $1 = label
-  case "${1-}" in help|ls|list|add|check|fp|who|off|active) return 0 ;; *) return 1 ;; esac
+  case "${1-}" in help|ls|list|add|run|rm|rename|check|fp|who|off|active) return 0 ;; *) return 1 ;; esac
 }
 
 _cct_list() {
@@ -222,15 +224,22 @@ _cct_wallet_acquire_lock() {
     { _cct_wallet_busy; return 1; }
 }
 
-_cct_wallet_store_account() (
-  key="$1"
-  label="$2"
+_cct_wallet_mutate() (
+  operation="$1"
+  old_key="$2"
+  old_label="$3"
+  new_key="$4"
+  new_label="$5"
+  active_action="$6"
+  active_label="$7"
   tok="${_cct_wallet_token-}"
   lock="${CCT_ENV_FILE}.lock"
   backup="${CCT_ENV_FILE}.bak"
   tmp=""
   backup_tmp=""
+  rollback_tmp=""
   locked=0
+  transaction_pending=0
   rc=0
 
   umask 077
@@ -238,6 +247,7 @@ _cct_wallet_store_account() (
     local original_status=$? cleanup_status=0
     [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null
     [ -z "$backup_tmp" ] || rm -f "$backup_tmp" 2>/dev/null
+    [ -z "$rollback_tmp" ] || rm -f "$rollback_tmp" 2>/dev/null
     if [ "$locked" -eq 1 ]; then
       rm -f "$lock/owner" 2>/dev/null || cleanup_status=1
       rmdir "$lock" 2>/dev/null || cleanup_status=1
@@ -247,8 +257,36 @@ _cct_wallet_store_account() (
     fi
     return "$original_status"
   }
+  _cct_wallet_restore_locked() {
+    rollback_tmp=""
+    [ -f "$backup" ] && [ ! -L "$backup" ] &&
+      [ "$(_cct_wallet_mode "$backup")" = "600" ] || return 1
+    rollback_tmp="$(mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
+      rollback_tmp=""
+      return 1
+    }
+    chmod 600 "$rollback_tmp" 2>/dev/null &&
+      cp "$backup" "$rollback_tmp" 2>/dev/null &&
+      chmod 600 "$rollback_tmp" 2>/dev/null &&
+      [ "$(_cct_wallet_mode "$rollback_tmp")" = "600" ] &&
+      mv "$rollback_tmp" "$CCT_ENV_FILE" 2>/dev/null || return 1
+    rollback_tmp=""
+  }
+  # shellcheck disable=SC2329
+  _cct_wallet_on_signal() {
+    trap '' HUP INT TERM
+    if [ "$transaction_pending" -eq 1 ]; then
+      if _cct_wallet_restore_locked; then
+        transaction_pending=0
+        echo "❌ signal 수신 — wallet 롤백 완료" >&2
+      else
+        echo "❌ signal 수신 — wallet 롤백 실패" >&2
+      fi
+    fi
+    exit 1
+  }
   trap '_cct_wallet_cleanup' EXIT
-  trap 'exit 1' HUP INT TERM
+  trap '_cct_wallet_on_signal' HUP INT TERM
 
   _cct_wallet_acquire_lock "$lock" || exit 1
   locked=1
@@ -262,35 +300,83 @@ _cct_wallet_store_account() (
     exit 1
   }
 
-  # The token is passed through the child environment, never argv or output.
-  if [ -f "$CCT_ENV_FILE" ]; then
-    tok="$tok" lbl="$label" awk -v k="$key" '
-      BEGIN { t = ENVIRON["tok"]; l = ENVIRON["lbl"]; key_seen = 0; label_seen = 0 }
-      $0 ~ ("^" k "=") {
-        print k "=" t
-        key_seen = 1
-        next
+  case "$operation" in
+    store)
+      if [ -f "$CCT_ENV_FILE" ]; then
+        tok="$tok" lbl="$old_label" awk -v k="$old_key" '
+          BEGIN { t = ENVIRON["tok"]; l = ENVIRON["lbl"]; key_seen = 0; label_seen = 0 }
+          $0 ~ ("^" k "=") {
+            print k "=" t
+            key_seen = 1
+            next
+          }
+          $0 ~ ("^#cctlabel:" k "=") {
+            print "#cctlabel:" k "=" l
+            label_seen = 1
+            next
+          }
+          { print }
+          END {
+            if (!key_seen) print k "=" t
+            if (!label_seen) print "#cctlabel:" k "=" l
+          }
+        ' "$CCT_ENV_FILE" > "$tmp" || {
+          echo "❌ wallet 내용 생성 실패: $CCT_ENV_FILE" >&2
+          exit 1
+        }
+      else
+        printf '%s=%s\n#cctlabel:%s=%s\n' "$old_key" "$tok" "$old_key" "$old_label" > "$tmp" || {
+          echo "❌ wallet 내용 생성 실패: $CCT_ENV_FILE" >&2
+          exit 1
+        }
+      fi
+      ;;
+    remove)
+      awk -v k="$old_key" '
+        BEGIN { key_seen = 0 }
+        index($0, k "=") == 1 { key_seen = 1; next }
+        index($0, "#cctlabel:" k "=") == 1 { next }
+        { print }
+        END { if (!key_seen) exit 42 }
+      ' "$CCT_ENV_FILE" > "$tmp" || {
+        echo "❌ wallet 계정 삭제 내용 생성 실패: $CCT_ENV_FILE" >&2
+        exit 1
       }
-      $0 ~ ("^#cctlabel:" k "=") {
-        print "#cctlabel:" k "=" l
-        label_seen = 1
-        next
+      ;;
+    rename)
+      awk -v oldk="$old_key" -v newk="$new_key" -v newlabel="$new_label" '
+        BEGIN { key_seen = 0; label_seen = 0; target_seen = 0 }
+        index($0, oldk "=") == 1 {
+          print newk substr($0, length(oldk) + 1)
+          key_seen = 1
+          next
+        }
+        index($0, newk "=") == 1 {
+          target_seen = 1
+          print
+          next
+        }
+        index($0, "#cctlabel:" oldk "=") == 1 {
+          print "#cctlabel:" newk "=" newlabel
+          label_seen = 1
+          next
+        }
+        { print }
+        END {
+          if (!key_seen) exit 42
+          if (target_seen) exit 43
+          if (!label_seen) print "#cctlabel:" newk "=" newlabel
+        }
+      ' "$CCT_ENV_FILE" > "$tmp" || {
+        echo "❌ wallet 계정 이름 변경 내용 생성 실패: $CCT_ENV_FILE" >&2
+        exit 1
       }
-      { print }
-      END {
-        if (!key_seen) print k "=" t
-        if (!label_seen) print "#cctlabel:" k "=" l
-      }
-    ' "$CCT_ENV_FILE" > "$tmp" || {
-      echo "❌ wallet 내용 생성 실패: $CCT_ENV_FILE" >&2
+      ;;
+    *)
+      echo "❌ wallet mutation 종류가 유효하지 않음" >&2
       exit 1
-    }
-  else
-    printf '%s=%s\n#cctlabel:%s=%s\n' "$key" "$tok" "$key" "$label" > "$tmp" || {
-      echo "❌ wallet 내용 생성 실패: $CCT_ENV_FILE" >&2
-      exit 1
-    }
-  fi
+      ;;
+  esac
 
   chmod 600 "$tmp" 2>/dev/null || {
     echo "❌ wallet temp 권한 설정 실패: $CCT_ENV_FILE" >&2
@@ -333,17 +419,52 @@ _cct_wallet_store_account() (
     backup_tmp=""
   fi
 
+  [ -z "$active_action" ] || transaction_pending=1
   mv "$tmp" "$CCT_ENV_FILE" 2>/dev/null || {
     echo "❌ wallet atomic replace 실패: $CCT_ENV_FILE" >&2
     exit 1
   }
   tmp=""
+  [ "$transaction_pending" -eq 0 ] || trap '' HUP INT TERM
+  active_failed=0
+  case "$active_action" in
+    "") ;;
+    delete) _cct_active_delete_checked || active_failed=1 ;;
+    write) _cct_active_write_atomic "$active_label" || active_failed=1 ;;
+    *) active_failed=1 ;;
+  esac
+  if [ "$active_failed" -ne 0 ]; then
+    if _cct_wallet_restore_locked; then
+      transaction_pending=0
+      echo "❌ 활성 프로필 변경 실패 — wallet 롤백 완료" >&2
+    else
+      echo "❌ 활성 프로필 변경 실패 — wallet 롤백도 실패" >&2
+    fi
+    trap '_cct_wallet_on_signal' HUP INT TERM
+    exit 1
+  fi
+  if [ "$transaction_pending" -eq 1 ]; then
+    transaction_pending=0
+    trap '_cct_wallet_on_signal' HUP INT TERM
+  fi
   trap - EXIT
   _cct_wallet_cleanup
   rc=$?
   trap - HUP INT TERM
   exit "$rc"
 )
+
+_cct_wallet_store_account() {
+  _cct_wallet_mutate store "$1" "$2" "" "" "" ""
+}
+
+_cct_wallet_remove_account() {
+  _cct_wallet_mutate remove "$1" "$2" "" "" "${3-}" ""
+}
+
+_cct_wallet_rename_account() {
+  _cct_wallet_mutate rename "$1" "$2" "$3" "$4" "${5-}" "$4"
+}
 
 _cct_add() {
   local label key tok dupkey existing_label ans action _cct_wallet_token
@@ -422,9 +543,12 @@ _cct_help() {
     "cct — Claude Code 계정 스위처  (cc/ㅊㅊ 는 그냥 claude)" \
     "  cct                활성(sticky) 프로필로 실행 — 없으면 기본 라벨(CCT_DEFAULT_LABEL=gv)" \
     "  cct <라벨>         해당 계정 토큰으로 실행          예: cct gv / cct pro1" \
+    "  cct run <라벨>     예약어 라벨도 명시적으로 실행      예: cct run rm --version" \
     "  cct ls             등록된 계정 목록" \
     "  cct add <라벨>     토큰 등록/갱신 (화면 미표시 입력)  예: cct add pro1" \
     "                     라벨은 [a-z0-9_][a-z0-9_]* 만, 예약어(아래 서브커맨드) 불가" \
+    "  cct rm <라벨> [--force]   계정 삭제 (기본 확인 [y/N], 실패 1, 사용법 오류 2)" \
+    "  cct rename <기존> <새>    계정 라벨 변경 (실패 1, 사용법 오류 2)" \
     "  cct check [라벨]   토큰 유효성 점검 (실제 호출). 라벨 없으면 전체" \
     "                     종료코드: 0 유효 / 1 무효·점검불가 / 2 토큰없음 (전체는 하나라도 문제면 1)" \
     "  cct fp [라벨]      계정 지문 — 중복 탐지(7d_reset 같으면 같은 계정)" \
@@ -461,14 +585,34 @@ _cct_apply_env() {  # $1=token — 현재 셸에 토큰(+웹기능 차단 플래
   fi
 }
 
-_cct_persist() {  # $1=label — 활성 라벨을 디스크에 저장
-  local f; f="$(_cct_active_file)"
-  mkdir -p "${f%/*}" 2>/dev/null || true
-  printf '%s\n' "$1" > "$f" 2>/dev/null || true
+_cct_active_write_atomic() (
+  label="$1"
+  f="$(_cct_active_file)"
+  tmp=""
+  umask 077
+  trap '[ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null' EXIT
+  trap 'exit 1' HUP INT TERM
+  mkdir -p "${f%/*}" 2>/dev/null || exit 1
+  tmp="$(mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || exit 1
+  chmod 600 "$tmp" 2>/dev/null || exit 1
+  printf '%s\n' "$label" > "$tmp" 2>/dev/null || exit 1
+  chmod 600 "$tmp" 2>/dev/null || exit 1
+  mv "$tmp" "$f" 2>/dev/null || exit 1
+  tmp=""
+)
+
+_cct_active_delete_checked() {
+  local f
+  f="$(_cct_active_file)"
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  rm -f "$f" 2>/dev/null
 }
 
 _cct_off() {  # sticky 해제: 저장 파일 삭제 + 현재 셸 env 해제
-  rm -f "$(_cct_active_file)" 2>/dev/null || true
+  _cct_active_delete_checked || {
+    echo "❌ 활성 프로필 해제 실패: $(_cct_active_file)" >&2
+    return 1
+  }
   unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
   echo "✓ 활성 프로필 해제 — 이후 cct <라벨> 로 다시 선택"
 }
@@ -479,14 +623,85 @@ _cct_active_show() {  # 현재 활성 프로필 표시
   else echo "활성 프로필 없음 — cct <라벨> 로 선택 (기본 ${CCT_DEFAULT_LABEL:-gv})"; fi
 }
 
-cct() {
-  local label key tok
-  # C#4: claude 플래그를 배열로 조립(워드스플릿 안전). 기본 --dangerously-skip-permissions,
-  #      CCT_SKIP_PERMS=0 으로 끄고, CCT_CLAUDE_FLAGS 로 추가 플래그(공백 구분)를 덧붙인다.
+_cct_account_exists() {
+  grep -q "^$1=" "$CCT_ENV_FILE" 2>/dev/null
+}
+
+_cct_rm() {
+  local label key force=0 ans active active_action=
+  [ "$#" -ge 1 ] || { echo "사용법: cct rm <라벨> [--force]" >&2; return 2; }
+  [ "$#" -le 2 ] || { echo "사용법: cct rm <라벨> [--force]" >&2; return 2; }
+  label="$1"
+  _cct_validate_label "$label" || return 2
+  if [ "$#" -eq 2 ]; then
+    [ "$2" = "--force" ] || {
+      echo "❌ 알 수 없는 옵션: $2" >&2
+      return 2
+    }
+    force=1
+  fi
+  key="$(_cct_key "$label")"
+  _cct_account_exists "$key" || {
+    echo "❌ '$label' 계정 없음" >&2
+    return 1
+  }
+  if [ "$force" -eq 0 ]; then
+    printf "'%s' 계정을 삭제할까요? [y/N] " "$label" >&2
+    read -r ans || ans=
+    case "$ans" in y|Y|yes|YES) ;; *) echo "취소함." >&2; return 1 ;; esac
+  fi
+  active="$(_cct_active_label)"
+  [ "$active" != "$label" ] || active_action="delete"
+  _cct_wallet_remove_account "$key" "$label" "$active_action" || {
+    echo "❌ [$label] 삭제 트랜잭션 실패" >&2
+    return 1
+  }
+  if [ "$active" = "$label" ]; then
+    unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+  fi
+  echo "✓ [$label] 계정 삭제 완료"
+}
+
+_cct_rename() {
+  local old_label new_label old_key new_key active active_action=
+  [ "$#" -eq 2 ] || {
+    echo "사용법: cct rename <기존> <새>" >&2
+    return 2
+  }
+  old_label="$1"
+  new_label="$2"
+  _cct_validate_label "$old_label" || return 2
+  _cct_validate_label "$new_label" || return 2
+  _cct_reserved_label "$new_label" && {
+    echo "❌ '$new_label' 는 예약어(서브커맨드)라 새 라벨로 쓸 수 없음." >&2
+    return 2
+  }
+  old_key="$(_cct_key "$old_label")"
+  new_key="$(_cct_key "$new_label")"
+  _cct_account_exists "$old_key" || {
+    echo "❌ '$old_label' 계정 없음" >&2
+    return 1
+  }
+  _cct_account_exists "$new_key" && {
+    echo "❌ '$new_label' 계정이 이미 존재함" >&2
+    return 1
+  }
+  active="$(_cct_active_label)"
+  [ "$active" != "$old_label" ] || active_action="write"
+  _cct_wallet_rename_account "$old_key" "$old_label" "$new_key" "$new_label" "$active_action" || {
+    echo "❌ [$old_label] 이름 변경 트랜잭션 실패" >&2
+    return 1
+  }
+  echo "✓ [$old_label] → [$new_label] 이름 변경 완료"
+}
+
+_cct_launch_label() {
+  local label="$1" key tok
+  shift
   local flags=()
   [ "${CCT_SKIP_PERMS:-1}" = "0" ] || flags+=(--dangerously-skip-permissions)
   if [ -n "${CCT_CLAUDE_FLAGS:-}" ]; then
-    # 글로빙 방지: read 내장으로 공백 분할만 수행
     local _extra
     if [ -n "${ZSH_VERSION:-}" ]; then
       read -rA _extra <<< "$CCT_CLAUDE_FLAGS"
@@ -495,23 +710,6 @@ cct() {
     fi
     flags+=("${_extra[@]}")
   fi
-  case "${1-}" in
-    help)     _cct_help; return ;;
-    ls|list)  _cct_list; return ;;
-    add)      shift; _cct_add "$@"; return ;;
-    check)    shift; _cct_check "$@"; return ;;
-    fp|who)   shift; _cct_fp "$@"; return ;;
-    off)      _cct_off; return ;;
-    active)   _cct_active_show; return ;;
-    ""|-*)    # 라벨 없는 실행: sticky 활성 프로필 → 없으면 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv).
-              # 키체인 폴백 금지. 남은 인자($@)는 그대로 claude 플래그로 전달(shift 안 함).
-              [ "${CCT_STICKY:-1}" = "0" ] || label="$(_cct_active_label)"
-              [ -n "$label" ] || label="${CCT_DEFAULT_LABEL:-gv}"
-              _cct_validate_label "$label" || { echo "❌ 라벨 '$label' 가 유효하지 않음 (CCT_DEFAULT_LABEL/활성 프로필 확인)." >&2; return 2; } ;;
-    *)        label="$1"; shift
-              _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음." >&2; return 2; }
-              _cct_validate_label "$label" || return 2 ;;
-  esac
   key="$(_cct_key "$label")"; tok="$(_cct_envtok "$key")"
   if [ -z "$tok" ]; then
     { echo "❌ '$label' 토큰 없음 (키 $key). 등록된 계정:"; _cct_list; echo "→ 등록: cct add $label"; } >&2
@@ -519,7 +717,6 @@ cct() {
   fi
   echo "▶ $label 로 실행"
   if [ "${CCT_STICKY:-1}" = "0" ]; then
-    # 비고정(CCT_STICKY=0): 그 claude 프로세스에만 inline 주입 (셸/디스크 미변경)
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
       (
         unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
@@ -533,12 +730,42 @@ cct() {
         command claude "${flags[@]}" "$@"
     fi
   else
-    # 고정(기본): 선택 라벨을 활성 프로필로 저장 + 현재 셸 env 에 적용.
-    # → 이후 그냥 `claude`/`cc`/새 터미널도 같은 계정 유지 (cct <다른라벨>/cct off 전까지).
+    _cct_active_write_atomic "$label" || {
+      echo "❌ 활성 프로필 저장 실패: $(_cct_active_file)" >&2
+      return 1
+    }
     _cct_apply_env "$tok"
-    _cct_persist "$label"
     command claude "${flags[@]}" "$@"
   fi
+}
+
+cct() {
+  local label
+  case "${1-}" in
+    help)     _cct_help; return ;;
+    ls|list)  _cct_list; return ;;
+    add)      shift; _cct_add "$@"; return ;;
+    run)      shift
+              [ -n "${1-}" ] || { echo "사용법: cct run <라벨> [claude 인자...]" >&2; return 2; }
+              label="$1"; shift
+              _cct_validate_label "$label" || return 2
+              _cct_launch_label "$label" "$@"; return ;;
+    rm)       shift; _cct_rm "$@"; return ;;
+    rename)   shift; _cct_rename "$@"; return ;;
+    check)    shift; _cct_check "$@"; return ;;
+    fp|who)   shift; _cct_fp "$@"; return ;;
+    off)      _cct_off; return ;;
+    active)   _cct_active_show; return ;;
+    ""|-*)    # 라벨 없는 실행: sticky 활성 프로필 → 없으면 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv).
+              # 키체인 폴백 금지. 남은 인자($@)는 그대로 claude 플래그로 전달(shift 안 함).
+              [ "${CCT_STICKY:-1}" = "0" ] || label="$(_cct_active_label)"
+              [ -n "$label" ] || label="${CCT_DEFAULT_LABEL:-gv}"
+              _cct_validate_label "$label" || { echo "❌ 라벨 '$label' 가 유효하지 않음 (CCT_DEFAULT_LABEL/활성 프로필 확인)." >&2; return 2; } ;;
+    *)        label="$1"; shift
+              _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음." >&2; return 2; }
+              _cct_validate_label "$label" || return 2 ;;
+  esac
+  _cct_launch_label "$label" "$@"
 }
 
 # ── 새 셸 시작 시 활성 프로필 자동 로드 (sticky) ──────────────────────

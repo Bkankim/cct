@@ -49,6 +49,13 @@ wallet_inode(){
   stat -f '%i' "$1" 2>/dev/null || stat -c '%i' "$1"
 }
 
+write_account_fixture(){
+  local file="$1"
+  shift
+  printf '%s\n' "$@" > "$file"
+  chmod 600 "$file"
+}
+
 # -------------------------------------------------------------------------
 test_install(){
   echo "== install.sh (H1 core.excludesfile preservation, N1 SHELL rc) =="
@@ -513,14 +520,353 @@ test_wallet(){
   rm -rf "$sb"
 }
 
+test_accounts(){
+  echo "== account lifecycle =="
+  set +u
+  local sb cap direct explicit rc before after active_before env_before fixture_target fixture_home
+  sb="$(mktemp -d)"
+  mk_shim "$sb/bin"
+  export PATH="$sb/bin:$PATH"
+  export CCT_ENV_FILE="$sb/tokens.env"
+  export CCT_ACTIVE_FILE="$sb/cct-active"
+  export CCT_STICKY=0
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  write_account_fixture "$CCT_ENV_FILE" \
+    '# account fixture' \
+    'OTHER=keep' \
+    'CCT_TOKEN_ALPHA=fixture-alpha' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'CCT_TOKEN_BETA=fixture-beta' \
+    '#cctlabel:CCT_TOKEN_BETA=beta' \
+    'CCT_TOKEN_USE=fixture-use' \
+    '#cctlabel:CCT_TOKEN_USE=use' \
+    'CCT_TOKEN_RUN=fixture-legacy-run' \
+    '#cctlabel:CCT_TOKEN_RUN=run' \
+    'CCT_TOKEN_RM=fixture-legacy-rm' \
+    '#cctlabel:CCT_TOKEN_RM=rm' \
+    'CCT_TOKEN_RENAME=fixture-legacy-rename' \
+    '#cctlabel:CCT_TOKEN_RENAME=rename'
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+
+  echo "-- characterization: normal labels and sticky selection"
+  cap="$(cct alpha --version 2>&1 >/dev/null)"; rc=$?
+  chk "characterization direct label launch rc=0" "0" "$rc"
+  chk_has "characterization direct label forwards args" "args=[--dangerously-skip-permissions --version]" "$cap"
+  chk_has "characterization direct label injects token" "tok=[fixture-alpha]" "$cap"
+  export CCT_STICKY=1
+  cct alpha --version >/dev/null 2>&1; rc=$?
+  chk "characterization sticky direct launch rc=0" "0" "$rc"
+  chk "characterization sticky direct writes active" "alpha" "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  chk "characterization sticky direct exports token" "fixture-alpha" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  export CCT_STICKY=0
+  rm -f "$CCT_ACTIVE_FILE"
+  unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+
+  if [ "${CCT_TEST_CASE:-}" = "lifecycle-signals" ]; then
+    echo "-- TERM after wallet commit restores rename and active rm transactions"
+    printf '%s\n' alpha > "$CCT_ACTIVE_FILE"
+    chmod 600 "$CCT_ACTIVE_FILE"
+    export CLAUDE_CODE_OAUTH_TOKEN=parent-sentinel
+    export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=parent-advisor
+    export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=parent-traffic
+    export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=parent-refresh
+    env_before="${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
+    mkdir "$sb/signal-mv"
+    cat > "$sb/signal-mv/mv" <<'SHIM'
+#!/bin/sh
+last=""
+for arg do last="$arg"; done
+if [ "$last" = "$CCT_SIGNAL_WALLET" ] && [ ! -e "$CCT_SIGNAL_MARKER" ]; then
+  "$CCT_REAL_MV" "$@" || exit $?
+  : > "$CCT_SIGNAL_MARKER"
+  kill -TERM "$PPID"
+  exit 0
+fi
+exec "$CCT_REAL_MV" "$@"
+SHIM
+    chmod 700 "$sb/signal-mv/mv"
+
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+    CCT_SIGNAL_WALLET="$CCT_ENV_FILE" CCT_SIGNAL_MARKER="$sb/rename-term" \
+      CCT_REAL_MV="$(command -v mv)" PATH="$sb/signal-mv:$PATH" \
+      cct rename alpha fresh > "$sb/rename-term.out" 2>&1
+    rc=$?
+    chk "rename TERM after wallet commit -> 1" "1" "$rc"
+    chk "rename TERM was injected" "yes" "$([ -f "$sb/rename-term" ] && echo yes || echo no)"
+    chk "rename TERM restores wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk "rename TERM preserves active" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+    chk "rename TERM preserves parent env" "$env_before" \
+      "${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
+    chk "rename TERM releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+    chk "rename TERM removes wallet temp" "0" \
+      "$(find "$sb" -maxdepth 1 -name 'tokens.env.tmp.*' -print | wc -l | tr -d ' ')"
+    chk "rename TERM removes active temp" "0" \
+      "$(find "$sb" -maxdepth 1 -name 'cct-active.tmp.*' -print | wc -l | tr -d ' ')"
+
+    cp "$CCT_ENV_FILE.bak" "$CCT_ENV_FILE"
+    chmod 600 "$CCT_ENV_FILE"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+    CCT_SIGNAL_WALLET="$CCT_ENV_FILE" CCT_SIGNAL_MARKER="$sb/rm-term" \
+      CCT_REAL_MV="$(command -v mv)" PATH="$sb/signal-mv:$PATH" \
+      cct rm alpha --force > "$sb/rm-term.out" 2>&1
+    rc=$?
+    chk "active rm TERM after wallet commit -> 1" "1" "$rc"
+    chk "active rm TERM was injected" "yes" "$([ -f "$sb/rm-term" ] && echo yes || echo no)"
+    chk "active rm TERM restores wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk "active rm TERM preserves active" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+    chk "active rm TERM preserves parent env" "$env_before" \
+      "${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
+    chk "active rm TERM releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+    chk "active rm TERM removes wallet temp" "0" \
+      "$(find "$sb" -maxdepth 1 -name 'tokens.env.tmp.*' -print | wc -l | tr -d ' ')"
+    chk "active rm TERM removes active temp" "0" \
+      "$(find "$sb" -maxdepth 1 -name 'cct-active.tmp.*' -print | wc -l | tr -d ' ')"
+    rm -rf "$sb"
+    return
+  fi
+
+  if [ "${CCT_TEST_CASE:-}" = "lifecycle-refusals" ]; then
+    echo "-- lifecycle refusals preserve wallet and active state"
+    printf '%s\n' alpha > "$CCT_ACTIVE_FILE"
+    chmod 600 "$CCT_ACTIVE_FILE"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+
+    cct run >/dev/null 2>&1; chk "run missing label -> 2" "2" "$?"
+    cct run 'bad-label' >/dev/null 2>&1; chk "run invalid label -> 2" "2" "$?"
+    cct rm >/dev/null 2>&1; chk "rm missing label -> 2" "2" "$?"
+    cct rm alpha --bad >/dev/null 2>&1; chk "rm bad option -> 2" "2" "$?"
+    cct rm alpha --force extra >/dev/null 2>&1; chk "rm extra args -> 2" "2" "$?"
+    cct rm absent --force >/dev/null 2>&1; chk "rm absent account -> 1" "1" "$?"
+    printf 'n\n' | cct rm alpha >/dev/null 2>&1
+    chk "rm cancellation -> 1" "1" "$?"
+    cct rename >/dev/null 2>&1; chk "rename missing args -> 2" "2" "$?"
+    cct rename alpha >/dev/null 2>&1; chk "rename missing target -> 2" "2" "$?"
+    cct rename alpha fresh extra >/dev/null 2>&1; chk "rename extra args -> 2" "2" "$?"
+    cct rename alpha 'bad-label' >/dev/null 2>&1
+    chk "rename invalid target -> 2" "2" "$?"
+    cct rename alpha rm >/dev/null 2>&1
+    chk "rename reserved target -> 2" "2" "$?"
+    cct rename absent fresh >/dev/null 2>&1
+    chk "rename absent source -> 1" "1" "$?"
+    cct rename alpha beta >/dev/null 2>&1
+    chk "rename existing target -> 1" "1" "$?"
+    chk "refusals preserve wallet hash" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk "refusals preserve active hash" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    _cct_wallet_rename_account CCT_TOKEN_ALPHA alpha CCT_TOKEN_BETA beta >/dev/null 2>&1
+    chk "locked rename detects concurrent target -> 1" "1" "$?"
+    chk "locked rename target conflict preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+
+    echo "-- active remove rollback when active deletion fails"
+    mkdir "$sb/fail-active-rm"
+    cat > "$sb/fail-active-rm/rm" <<'SHIM'
+#!/bin/sh
+if [ "$#" -eq 2 ] && [ "$1" = "-f" ] && [ "$2" = "$CCT_FAIL_ACTIVE_PATH" ]; then
+  [ -f "$CCT_ENV_FILE.lock/owner" ] || exit 2
+  printf 'held\n' > "$CCT_LOCK_HELD_MARKER"
+  exit 1
+fi
+exec "$CCT_REAL_RM" "$@"
+SHIM
+    chmod 700 "$sb/fail-active-rm/rm"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+    export CLAUDE_CODE_OAUTH_TOKEN=parent-sentinel
+    export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=parent-advisor
+    export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=parent-traffic
+    export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=parent-refresh
+    env_before="${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
+    cap="$(CCT_FAIL_ACTIVE_PATH="$CCT_ACTIVE_FILE" CCT_LOCK_HELD_MARKER="$sb/rm-lock-held" \
+      CCT_REAL_RM="$(command -v rm)" \
+      PATH="$sb/fail-active-rm:$PATH" cct rm alpha --force 2>&1)"; rc=$?
+    chk "active rm failure -> 1" "1" "$rc"
+    chk "active rm rollback restores wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk "active rm failure preserves active" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+    chk "active rm failure preserves parent env" "$env_before" \
+      "${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
+    chk "active rm rollback stays under wallet lock" "held" "$(cat "$sb/rm-lock-held" 2>/dev/null)"
+    chk_has "active rm failure reports rollback" "롤백" "$cap"
+
+    echo "-- active rename rollback when active write fails"
+    mkdir "$sb/fail-active-mv"
+    cat > "$sb/fail-active-mv/mv" <<'SHIM'
+#!/bin/sh
+last=""
+for arg do last="$arg"; done
+if [ "$last" = "$CCT_FAIL_ACTIVE_PATH" ]; then
+  [ -f "$CCT_ENV_FILE.lock/owner" ] || exit 2
+  printf 'held\n' > "$CCT_LOCK_HELD_MARKER"
+  exit 1
+fi
+exec "$CCT_REAL_MV" "$@"
+SHIM
+    chmod 700 "$sb/fail-active-mv/mv"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+    env_before="${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
+    cap="$(CCT_FAIL_ACTIVE_PATH="$CCT_ACTIVE_FILE" CCT_LOCK_HELD_MARKER="$sb/mv-lock-held" \
+      CCT_REAL_MV="$(command -v mv)" \
+      PATH="$sb/fail-active-mv:$PATH" cct rename alpha fresh 2>&1)"; rc=$?
+    chk "active rename failure -> 1" "1" "$rc"
+    chk "active rename rollback restores wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk "active rename failure preserves active" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+    chk "active rename failure preserves parent env" "$env_before" \
+      "${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
+    chk "active rename rollback stays under wallet lock" "held" "$(cat "$sb/mv-lock-held" 2>/dev/null)"
+    chk_has "active rename failure reports rollback" "롤백" "$cap"
+
+    echo "-- held wallet lock refuses lifecycle mutation"
+    mkdir "$CCT_ENV_FILE.lock"
+    printf '%s %s\n' "$$" "$(date +%s)" > "$CCT_ENV_FILE.lock/owner"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    cct rm beta --force >/dev/null 2>&1; rc=$?
+    chk "rm held-lock failure -> 1" "1" "$rc"
+    chk "rm held-lock preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    rm -rf "$CCT_ENV_FILE.lock"
+    rm -rf "$sb"
+    return
+  fi
+
+  echo "-- explicit run shares the exact launch path"
+  direct="$(cct alpha --version 2>&1)"
+  explicit="$(cct run alpha --version 2>&1)"
+  chk "run normal rc=0" "0" "$?"
+  chk "run and direct output are identical" "$direct" "$explicit"
+  cap="$(cct run rm --version 2>&1)"
+  chk_has "run escapes reserved legacy label" "tok=[fixture-legacy-rm]" "$cap"
+  cap="$(cct use --version 2>&1)"
+  chk_has "use remains an allowed direct label" "tok=[fixture-use]" "$cap"
+  cct add run >/dev/null 2>&1; chk "add run is reserved -> 2" "2" "$?"
+  cct add rm >/dev/null 2>&1; chk "add rm is reserved -> 2" "2" "$?"
+  cct add rename >/dev/null 2>&1; chk "add rename is reserved -> 2" "2" "$?"
+
+  export CCT_STICKY=1
+  rm -f "$CCT_ACTIVE_FILE"
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  direct="$(cct beta --version 2>&1)"
+  active_before="$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  env_before="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  rm -f "$CCT_ACTIVE_FILE"
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  explicit="$(cct run beta --version 2>&1)"
+  chk "sticky run and direct output are identical" "$direct" "$explicit"
+  chk "sticky run and direct active state match" "$active_before" "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  chk "sticky run and direct env match" "$env_before" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "sticky active file mode 600" "600" "$(wallet_mode "$CCT_ACTIVE_FILE")"
+
+  echo "-- remove confirms, backs up, and clears active only after commit"
+  env_before="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  cct rm use --force >/dev/null 2>&1; rc=$?
+  chk "forced non-active rm rc=0" "0" "$rc"
+  chk "forced non-active rm preserves active" "beta" "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  chk "forced non-active rm preserves env" "$env_before" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "forced rm removes account" "0" "$(grep -c '^CCT_TOKEN_USE=' "$CCT_ENV_FILE" || true)"
+
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  printf 'y\n' | cct rm beta >/dev/null 2>&1; rc=$?
+  chk "confirmed active rm rc=0" "0" "$rc"
+  chk "confirmed rm removes exact key" "0" "$(grep -c '^CCT_TOKEN_BETA=' "$CCT_ENV_FILE" || true)"
+  chk "confirmed rm removes exact annotation" "0" "$(grep -c '^#cctlabel:CCT_TOKEN_BETA=' "$CCT_ENV_FILE" || true)"
+  chk_has "confirmed rm preserves unrelated account" "CCT_TOKEN_ALPHA=fixture-alpha" "$(cat "$CCT_ENV_FILE")"
+  chk "confirmed rm backup matches prior wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE.bak")"
+  chk "confirmed rm backup mode 600" "600" "$(wallet_mode "$CCT_ENV_FILE.bak")"
+  chk "confirmed active rm clears active file" "no" "$([ -e "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
+  chk "confirmed active rm clears token env" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+
+  echo "-- rename preserves bytes and moves active state"
+  printf '%s\n' \
+    "CCT_TOKEN_ODD=fixture=value with 'quoted' bytes" \
+    '#cctlabel:CCT_TOKEN_ODD=odd' >> "$CCT_ENV_FILE"
+  chmod 600 "$CCT_ENV_FILE"
+  cct rename odd exact >/dev/null 2>&1; rc=$?
+  chk "rename byte-preserving account rc=0" "0" "$rc"
+  chk_has "rename preserves exact token bytes" "CCT_TOKEN_EXACT=fixture=value with 'quoted' bytes" "$(cat "$CCT_ENV_FILE")"
+  chk "rename removes old key" "0" "$(grep -c '^CCT_TOKEN_ODD=' "$CCT_ENV_FILE" || true)"
+  chk_has "rename rewrites annotation" "#cctlabel:CCT_TOKEN_EXACT=exact" "$(cat "$CCT_ENV_FILE")"
+
+  cct alpha --version >/dev/null 2>&1
+  env_before="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cct rename alpha primary >/dev/null 2>&1; rc=$?
+  chk "active rename rc=0" "0" "$rc"
+  chk "active rename updates active file" "primary" "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  chk "active rename keeps exported token" "$env_before" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "active rename backup matches prior wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE.bak")"
+
+  echo "-- help and fixture contract"
+  cap="$(cct help)"
+  chk_has "help documents run" "cct run <라벨>" "$cap"
+  chk_has "help documents rm" "cct rm <라벨>" "$cap"
+  chk_has "help documents rename" "cct rename <기존> <새>" "$cap"
+  fixture_target="$sb/generated-fixture"
+  fixture_home="$sb/untouched-home"
+  mkdir "$fixture_home"
+  printf 'untouched\n' > "$fixture_home/marker"
+  before="$(wallet_sha "$fixture_home/marker")"
+  cap="$(HOME="$fixture_home" bash "$REPO/tests/cct_test.sh" fixture "$fixture_target" 2>&1)"; rc=$?
+  chk "fixture creates fresh isolated target" "0" "$rc"
+  case "$cap" in *fixture-token*) after=exposed ;; *) after=hidden ;; esac
+  chk "fixture output contains no token" "hidden" "$after"
+  chk "fixture wallet mode 600" "600" "$(wallet_mode "$fixture_target/home/.claude/tokens.env")"
+  chk "fixture contains only gv account" "gv" \
+    "$(awk -F= '/^CCT_TOKEN_/ {sub(/^CCT_TOKEN_/, "", $1); print tolower($1)}' "$fixture_target/home/.claude/tokens.env")"
+  chk "fixture fake Claude executable" "yes" "$([ -x "$fixture_target/bin/claude" ] && echo yes || echo no)"
+  chk "fixture creates only allowed files" $'bin/claude\nhome/.claude/tokens.env' \
+    "$(find "$fixture_target" -type f | sed "s|^$fixture_target/||" | sort)"
+  chk "fixture leaves supplied HOME byte-identical" "$before" "$(wallet_sha "$fixture_home/marker")"
+  chk "fixture creates nothing under supplied HOME" "no" "$([ -e "$fixture_home/.claude" ] && echo yes || echo no)"
+  bash "$REPO/tests/cct_test.sh" fixture "$fixture_target" >/dev/null 2>&1
+  chk "fixture refuses existing target -> 2" "2" "$?"
+  chk "fixture creates no active file" "no" "$([ -e "$fixture_target/home/.claude/cct-active" ] && echo yes || echo no)"
+  fixture_target="$sb/existing-empty"
+  mkdir "$fixture_target"
+  bash "$REPO/tests/cct_test.sh" fixture "$fixture_target" >/dev/null 2>&1
+  chk "fixture refuses existing empty target -> 2" "2" "$?"
+
+  rm -rf "$sb"
+}
+
+make_fixture(){
+  local target="${1-}"
+  [ -n "$target" ] || { echo "usage: $0 fixture <new-dir>" >&2; return 2; }
+  [ "$#" -eq 1 ] || { echo "usage: $0 fixture <new-dir>" >&2; return 2; }
+  [ ! -e "$target" ] && [ ! -L "$target" ] || {
+    echo "fixture target already exists: $target" >&2
+    return 2
+  }
+  ( umask 077
+    mkdir -p "$target/home/.claude" "$target/bin" || exit 1
+    printf '%s\n' \
+      'CCT_TOKEN_GV=fixture-token-gv' \
+      '#cctlabel:CCT_TOKEN_GV=gv' > "$target/home/.claude/tokens.env" || exit 1
+    chmod 600 "$target/home/.claude/tokens.env" || exit 1
+    cat > "$target/bin/claude" <<'SHIM'
+#!/usr/bin/env bash
+echo "CLAUDE args=[$*] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
+exit 0
+SHIM
+    chmod 700 "$target/bin/claude" || exit 1
+  ) || {
+    rm -rf "$target"
+    return 1
+  }
+}
+
 case "${1:-all}" in
   install) test_install ;;
   cct)     test_cct ;;
   extra)   test_extra ;;
   sticky)  test_sticky ;;
   wallet)  test_wallet ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_wallet ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|wallet|all]"; exit 2 ;;
+  accounts) test_accounts ;;
+  fixture) shift; make_fixture "$@"; exit $? ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|fixture|all]"; exit 2 ;;
 esac
 
 echo
