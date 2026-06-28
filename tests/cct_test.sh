@@ -165,10 +165,15 @@ test_cct(){
   unset CCT_DEFAULT_LABEL
 
   echo "-- C#5: labeled setup-token sessions suppress web-only feature calls by default"
+  export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+  export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
   cap="$(cct use 2>&1 >/dev/null)"
   chk_has "labeled run disables web-only feature calls" "web=[1,1,1]" "$cap"
   cap="$(CCT_DISABLE_WEB_FEATURES=0 cct use 2>&1 >/dev/null)"
   chk_has "CCT_DISABLE_WEB_FEATURES=0 opt-out" "web=[<unset>,<unset>,<unset>]" "$cap"
+  chk "opt-out preserves parent web disables" "1,1,1" \
+    "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}"
 
   echo "-- N6: check probes the real binary, not a shell claude function/alias"
   claude(){ echo "SHADOW-FN" >&2; return 9; }   # shadowing function must be bypassed
