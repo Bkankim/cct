@@ -148,8 +148,205 @@ EOF
   return "$rc"
 }
 
+_CCT_LOCK_STALE_SECS=60
+
+_cct_wallet_mode() {
+  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
+
+_cct_wallet_busy() {
+  echo "❌ wallet busy: 다른 cct 프로세스가 지갑을 변경 중이거나 잠금 상태를 확인할 수 없음" >&2
+  return 1
+}
+
+_cct_wallet_create_lock() {
+  local lock="$1" now="$2"
+  mkdir "$lock" 2>/dev/null || return 1
+  if (umask 077; printf '%s %s\n' "$$" "$now" > "$lock/owner"); then
+    return 0
+  fi
+  rm -f "$lock/owner" 2>/dev/null
+  rmdir "$lock" 2>/dev/null
+  return 1
+}
+
+_cct_wallet_acquire_lock() {
+  local lock="$1" now owner pid epoch age
+  now="$(date +%s)" || {
+    echo "❌ wallet lock: 현재 시간 확인 실패" >&2
+    return 1
+  }
+
+  if _cct_wallet_create_lock "$lock" "$now"; then
+    return 0
+  fi
+
+  # A symlink (including a dangling one), non-directory, or malformed owner is
+  # never reclaimed.  Only an unambiguous directory owned by a dead/aged PID is.
+  [ ! -L "$lock" ] || { _cct_wallet_busy; return 1; }
+  [ -d "$lock" ] || { _cct_wallet_busy; return 1; }
+  owner="$(awk '
+    NR == 1 && NF == 2 &&
+      $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ &&
+      length($1) <= 18 && length($2) <= 18 &&
+      ($1 + 0) > 0 && ($2 + 0) > 0 {
+        pid = $1
+        epoch = $2
+        next
+      }
+    { bad = 1 }
+    END {
+      if (NR == 1 && !bad) print pid " " epoch
+      else exit 1
+    }
+  ' "$lock/owner" 2>/dev/null)" || { _cct_wallet_busy; return 1; }
+  pid="${owner%% *}"
+  epoch="${owner#* }"
+  case "$pid:$epoch" in
+    *[!0-9:]*|:*|*:) _cct_wallet_busy; return 1 ;;
+  esac
+
+  age=$((now - epoch))
+  if kill -0 "$pid" 2>/dev/null && [ "$age" -le "$_CCT_LOCK_STALE_SECS" ]; then
+    _cct_wallet_busy
+    return 1
+  fi
+
+  # Exact-path cleanup only; never follow a lock symlink or recursively delete.
+  if ! rm -f "$lock/owner" 2>/dev/null ||
+    ! rmdir "$lock" 2>/dev/null; then
+    _cct_wallet_busy
+    return 1
+  fi
+  _cct_wallet_create_lock "$lock" "$now" ||
+    { _cct_wallet_busy; return 1; }
+}
+
+_cct_wallet_store_account() (
+  key="$1"
+  label="$2"
+  tok="${_cct_wallet_token-}"
+  lock="${CCT_ENV_FILE}.lock"
+  backup="${CCT_ENV_FILE}.bak"
+  tmp=""
+  backup_tmp=""
+  locked=0
+  rc=0
+
+  umask 077
+  _cct_wallet_cleanup() {
+    local original_status=$? cleanup_status=0
+    [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null
+    [ -z "$backup_tmp" ] || rm -f "$backup_tmp" 2>/dev/null
+    if [ "$locked" -eq 1 ]; then
+      rm -f "$lock/owner" 2>/dev/null || cleanup_status=1
+      rmdir "$lock" 2>/dev/null || cleanup_status=1
+    fi
+    if [ "$original_status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
+      return 1
+    fi
+    return "$original_status"
+  }
+  trap '_cct_wallet_cleanup' EXIT
+  trap 'exit 1' HUP INT TERM
+
+  _cct_wallet_acquire_lock "$lock" || exit 1
+  locked=1
+
+  tmp="$(mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
+    echo "❌ wallet temp 생성 실패: $CCT_ENV_FILE" >&2
+    exit 1
+  }
+  chmod 600 "$tmp" 2>/dev/null || {
+    echo "❌ wallet temp 권한 설정 실패: $CCT_ENV_FILE" >&2
+    exit 1
+  }
+
+  # The token is passed through the child environment, never argv or output.
+  if [ -f "$CCT_ENV_FILE" ]; then
+    tok="$tok" lbl="$label" awk -v k="$key" '
+      BEGIN { t = ENVIRON["tok"]; l = ENVIRON["lbl"]; key_seen = 0; label_seen = 0 }
+      $0 ~ ("^" k "=") {
+        print k "=" t
+        key_seen = 1
+        next
+      }
+      $0 ~ ("^#cctlabel:" k "=") {
+        print "#cctlabel:" k "=" l
+        label_seen = 1
+        next
+      }
+      { print }
+      END {
+        if (!key_seen) print k "=" t
+        if (!label_seen) print "#cctlabel:" k "=" l
+      }
+    ' "$CCT_ENV_FILE" > "$tmp" || {
+      echo "❌ wallet 내용 생성 실패: $CCT_ENV_FILE" >&2
+      exit 1
+    }
+  else
+    printf '%s=%s\n#cctlabel:%s=%s\n' "$key" "$tok" "$key" "$label" > "$tmp" || {
+      echo "❌ wallet 내용 생성 실패: $CCT_ENV_FILE" >&2
+      exit 1
+    }
+  fi
+
+  chmod 600 "$tmp" 2>/dev/null || {
+    echo "❌ wallet temp 권한 설정 실패: $CCT_ENV_FILE" >&2
+    exit 1
+  }
+
+  if [ -e "$CCT_ENV_FILE" ] || [ -L "$CCT_ENV_FILE" ]; then
+    [ ! -L "$backup" ] || {
+      echo "❌ wallet backup 경로가 심볼릭 링크임: $backup" >&2
+      exit 1
+    }
+    if [ -e "$backup" ] && [ ! -f "$backup" ]; then
+      echo "❌ wallet backup 경로가 일반 파일이 아님: $backup" >&2
+      exit 1
+    fi
+    backup_tmp="$(mktemp "${backup}.tmp.XXXXXX" 2>/dev/null)" || {
+      echo "❌ wallet backup temp 생성 실패: $backup" >&2
+      exit 1
+    }
+    chmod 600 "$backup_tmp" 2>/dev/null || {
+      echo "❌ wallet backup temp 권한 설정 실패: $backup" >&2
+      exit 1
+    }
+    cp "$CCT_ENV_FILE" "$backup_tmp" 2>/dev/null || {
+      echo "❌ wallet backup 생성 실패: $backup" >&2
+      exit 1
+    }
+    chmod 600 "$backup_tmp" 2>/dev/null || {
+      echo "❌ wallet backup 권한 설정 실패: $backup" >&2
+      exit 1
+    }
+    [ "$(_cct_wallet_mode "$backup_tmp")" = "600" ] || {
+      echo "❌ wallet backup 권한 확인 실패: $backup" >&2
+      exit 1
+    }
+    mv "$backup_tmp" "$backup" 2>/dev/null || {
+      echo "❌ wallet backup atomic replace 실패: $backup" >&2
+      exit 1
+    }
+    backup_tmp=""
+  fi
+
+  mv "$tmp" "$CCT_ENV_FILE" 2>/dev/null || {
+    echo "❌ wallet atomic replace 실패: $CCT_ENV_FILE" >&2
+    exit 1
+  }
+  tmp=""
+  trap - EXIT
+  _cct_wallet_cleanup
+  rc=$?
+  trap - HUP INT TERM
+  exit "$rc"
+)
+
 _cct_add() {
-  local label key tok dupkey existing_label ans
+  local label key tok dupkey existing_label ans action _cct_wallet_token
   [ -n "${1-}" ] || { echo "사용법: cct add <라벨>    예: cct add pro1"; return 2; }
   label="$1"
   # 입력 검증을 토큰 붙여넣기 전에 먼저 (실패 시 헛수고 방지)
@@ -162,12 +359,11 @@ _cct_add() {
   if ! read -rs tok; then echo; tok=""; else echo; fi
   tok="$(printf '%s' "$tok" | tr -d '\r')"   # N3: CRLF 제거 → 중복감지/저장 일관성
   [ -n "$tok" ] || { echo "❌ 입력 없음, 취소"; return 1; }
-  # N5: 디렉터리 보장 + 토큰 파일 생성/권한을 모두 검증(실패 시 즉시 중단)
+  # N5: 디렉터리만 먼저 보장. 지갑 파일 자체는 잠금 안에서 원자적으로 생성/교체한다.
   mkdir -p "$(dirname "$CCT_ENV_FILE")" 2>/dev/null || { echo "❌ 디렉터리 생성 실패: $(dirname "$CCT_ENV_FILE")" >&2; return 1; }
-  touch "$CCT_ENV_FILE" 2>/dev/null || { echo "❌ 토큰 파일 생성 실패: $CCT_ENV_FILE" >&2; return 1; }
-  chmod 600 "$CCT_ENV_FILE"
   # C#1: 키가 이미 있으면 원본 라벨 비교 — 같은 라벨이면 조용히 갱신, 다른 라벨이면 충돌 경고+확인(기본 거부)
   if grep -qE "^$key=" "$CCT_ENV_FILE" 2>/dev/null; then
+    action="갱신"
     existing_label="$(_cct_label_for "$key")"
     if [ "$existing_label" != "$label" ]; then
       echo "⚠️  라벨 '$label' 는 기존 라벨 '$existing_label' 와 같은 키($key)로 정규화됩니다(대소문자/기호 차이)." >&2
@@ -175,34 +371,22 @@ _cct_add() {
       read -r ans || ans=
       case "$ans" in y|Y|yes|YES) ;; *) echo "취소함 (기존 '$existing_label' 유지)." >&2; return 1 ;; esac
     fi
-  fi
+  else action="추가"; fi
   # 동일 토큰 중복 감지: 다른 라벨과 값이 같으면 같은 계정 재사용(브라우저 세션) 의심 — 경고만
   dupkey="$(grep -oE '^CCT_TOKEN_[A-Za-z0-9_]+' "$CCT_ENV_FILE" 2>/dev/null | while IFS= read -r ek; do
     [ "$ek" = "$key" ] && continue
     [ "$(_cct_envtok "$ek")" = "$tok" ] && { printf '%s' "$ek"; break; }
   done || true)"
   [ -n "$dupkey" ] && echo "⚠️  이 토큰은 기존 '$dupkey' 와 동일 — 같은 계정 재사용 의심(다시 로그인했는지 확인). 저장은 진행."
-  if grep -qE "^$key=" "$CCT_ENV_FILE" 2>/dev/null; then
-    # 갱신: H2 = tmp 를 mv 전에 600 으로 (644 노출창 제거).  N5 = awk+mv 성공 확인 후에만 성공 출력.
-    if tok="$tok" lbl="$label" awk -v k="$key" '
-        BEGIN{t=ENVIRON["tok"]; l=ENVIRON["lbl"]}
-        $0 ~ ("^" k "=")           {print k"="t; next}
-        $0 ~ ("^#cctlabel:" k "=") {print "#cctlabel:" k "=" l; next}
-        {print}
-      ' "$CCT_ENV_FILE" > "$CCT_ENV_FILE.tmp" && chmod 600 "$CCT_ENV_FILE.tmp" && mv "$CCT_ENV_FILE.tmp" "$CCT_ENV_FILE"; then
-      grep -qE "^#cctlabel:$key=" "$CCT_ENV_FILE" 2>/dev/null || printf '#cctlabel:%s=%s\n' "$key" "$label" >> "$CCT_ENV_FILE"
-      echo "✓ [$label] 갱신 완료"
-    else
-      rm -f "$CCT_ENV_FILE.tmp"; echo "❌ [$label] 저장 실패 (갱신) — 경로/권한 확인: $CCT_ENV_FILE" >&2; return 1
-    fi
-  else
-    if printf '%s=%s\n#cctlabel:%s=%s\n' "$key" "$tok" "$key" "$label" >> "$CCT_ENV_FILE"; then
-      echo "✓ [$label] 추가 완료"
-    else
-      echo "❌ [$label] 저장 실패 (추가) — 경로/권한 확인: $CCT_ENV_FILE" >&2; return 1
-    fi
-  fi
-  chmod 600 "$CCT_ENV_FILE"; unset tok
+  _cct_wallet_token="$tok"
+  unset tok
+  _cct_wallet_store_account "$key" "$label" || {
+    unset _cct_wallet_token
+    echo "❌ [$label] 저장 실패 ($action) — 경로/권한 확인: $CCT_ENV_FILE" >&2
+    return 1
+  }
+  unset _cct_wallet_token
+  echo "✓ [$label] $action 완료"
   echo "→ 'cct $label' 로 사용 / 'cct check $label' 로 점검"
 }
 

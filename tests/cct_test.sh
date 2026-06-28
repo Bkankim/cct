@@ -36,6 +36,19 @@ add_tok(){ # label token [confirm]
   else printf '%s\n' "$2" | cct add "$1"; fi
 }
 
+wallet_mode(){
+  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+}
+
+wallet_sha(){
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else sha256sum "$1" | awk '{print $1}'; fi
+}
+
+wallet_inode(){
+  stat -f '%i' "$1" 2>/dev/null || stat -c '%i' "$1"
+}
+
 # -------------------------------------------------------------------------
 test_install(){
   echo "== install.sh (H1 core.excludesfile preservation, N1 SHELL rc) =="
@@ -300,13 +313,214 @@ test_sticky(){
   chk_has "CCT_STICKY=0: active 파일 안 생김" "FILE-NO" "$cap"
 }
 
+# -------------------------------------------------------------------------
+test_wallet(){
+  echo "== wallet storage =="
+  local sb cap rc before after inode_before inode_after dead_pid now cmd
+  sb="$(mktemp -d)"
+  export CCT_ENV_FILE="$sb/tokens.env"
+  export CCT_STICKY=0
+  printf '# user comment\nOTHER=keep\nCCT_TOKEN_ALPHA=sk-alpha-old\n#cctlabel:CCT_TOKEN_ALPHA=alpha\n' > "$CCT_ENV_FILE"
+  chmod 640 "$CCT_ENV_FILE"
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+
+  echo "-- characterization: existing add/update behavior"
+  cap="$(add_tok beta "sk-beta" 2>&1)"; rc=$?
+  chk "characterization add rc=0" "0" "$rc"
+  chk_has "characterization add stores token" "CCT_TOKEN_BETA=sk-beta" "$(cat "$CCT_ENV_FILE")"
+  chk_has "characterization add stores annotation" "#cctlabel:CCT_TOKEN_BETA=beta" "$(cat "$CCT_ENV_FILE")"
+  cap="$(add_tok alpha "sk-alpha-new" 2>&1)"; rc=$?
+  chk "characterization rotate rc=0" "0" "$rc"
+  chk_has "characterization rotate replaces token" "CCT_TOKEN_ALPHA=sk-alpha-new" "$(cat "$CCT_ENV_FILE")"
+  chk_has "characterization preserves comments" "# user comment" "$(cat "$CCT_ENV_FILE")"
+  chk_has "characterization preserves unrelated lines" "OTHER=keep" "$(cat "$CCT_ENV_FILE")"
+  chk "characterization wallet mode 600" "600" "$(stat -f '%Lp' "$CCT_ENV_FILE" 2>/dev/null || stat -c '%a' "$CCT_ENV_FILE")"
+  case "$cap" in *sk-alpha-new*) chk "characterization output hides token" "hidden" "exposed" ;; *) chk "characterization output hides token" "hidden" "hidden" ;; esac
+
+  rm -rf "$sb"
+
+  if [ "${CCT_TEST_CASE:-}" = "live-lock" ]; then
+    sb="$(mktemp -d)"
+    export CCT_ENV_FILE="$sb/tokens.env"
+    printf '# locked wallet\nCCT_TOKEN_ALPHA=sk-alpha\n#cctlabel:CCT_TOKEN_ALPHA=alpha\n' > "$CCT_ENV_FILE"
+    chmod 600 "$CCT_ENV_FILE"
+    mkdir "$CCT_ENV_FILE.lock"
+    printf '%s %s\n' "$$" "$(date +%s)" > "$CCT_ENV_FILE.lock/owner"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    cap="$(add_tok beta "sk-beta" 2>&1)"; rc=$?
+    after="$(wallet_sha "$CCT_ENV_FILE")"
+    chk "live lock mutation returns nonzero" "1" "$rc"
+    chk "live lock preserves wallet SHA-256" "$before" "$after"
+    chk_has "live lock reports wallet busy" "wallet busy" "$cap"
+    chk "live lock owner remains intact" "yes" "$([ -f "$CCT_ENV_FILE.lock/owner" ] && echo yes || echo no)"
+    case "$cap" in *완료*) chk "live lock prints no success line" "no" "yes" ;; *) chk "live lock prints no success line" "no" "no" ;; esac
+    rm -rf "$sb"
+    return
+  fi
+
+  sb="$(mktemp -d)"
+  export CCT_ENV_FILE="$sb/tokens.env"
+  printf '# atomic wallet\nOTHER=keep\nCCT_TOKEN_ALPHA=sk-alpha-old\n#cctlabel:CCT_TOKEN_ALPHA=alpha\n' > "$CCT_ENV_FILE"
+  chmod 640 "$CCT_ENV_FILE"
+
+  echo "-- atomic add and rotate with rolling backup"
+  before="$(wallet_sha "$CCT_ENV_FILE")"; inode_before="$(wallet_inode "$CCT_ENV_FILE")"
+  cap="$(add_tok beta "sk-beta" 2>&1)"; rc=$?
+  after="$(wallet_sha "$CCT_ENV_FILE")"; inode_after="$(wallet_inode "$CCT_ENV_FILE")"
+  chk "atomic first add rc=0" "0" "$rc"
+  chk "atomic first add replaces wallet inode" "changed" "$([ "$inode_before" != "$inode_after" ] && echo changed || echo unchanged)"
+  chk "atomic first add changes wallet SHA-256" "changed" "$([ "$before" != "$after" ] && echo changed || echo unchanged)"
+  chk "atomic first add backup matches original" "$before" "$(wallet_sha "$CCT_ENV_FILE.bak" 2>/dev/null || echo missing)"
+  chk "atomic first add wallet mode 600" "600" "$(wallet_mode "$CCT_ENV_FILE")"
+  chk "atomic first add backup mode 600" "600" "$(wallet_mode "$CCT_ENV_FILE.bak" 2>/dev/null || echo missing)"
+  chk "atomic first add leaves no temp" "0" "$(find "$sb" -maxdepth 1 -name 'tokens.env.tmp.*' -print | wc -l | tr -d ' ')"
+  chk "atomic first add releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  before="$(wallet_sha "$CCT_ENV_FILE")"; inode_before="$(wallet_inode "$CCT_ENV_FILE")"
+  cap="$(add_tok alpha "sk-alpha-new" 2>&1)"; rc=$?
+  inode_after="$(wallet_inode "$CCT_ENV_FILE")"
+  chk "atomic rotate rc=0" "0" "$rc"
+  chk "atomic rotate replaces wallet inode" "changed" "$([ "$inode_before" != "$inode_after" ] && echo changed || echo unchanged)"
+  chk "atomic rotate backup matches pre-rotate wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE.bak" 2>/dev/null || echo missing)"
+  chk "atomic rotate backup mode 600" "600" "$(wallet_mode "$CCT_ENV_FILE.bak" 2>/dev/null || echo missing)"
+  chk "atomic rotate annotation remains singular" "1" "$(grep -c '^#cctlabel:CCT_TOKEN_ALPHA=alpha$' "$CCT_ENV_FILE")"
+  chk "atomic rotate removes old token" "0" "$(grep -c '^CCT_TOKEN_ALPHA=sk-alpha-old$' "$CCT_ENV_FILE" || true)"
+  chk_has "atomic rotate preserves unrelated line" "OTHER=keep" "$(cat "$CCT_ENV_FILE")"
+  cap="$(add_tok gamma "sk-beta" 2>&1)"
+  chk_has "duplicate-token warning preserved" "동일" "$cap"
+
+  echo "-- stale, malformed, and symlink lock handling"
+  dead_pid=999999
+  while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid+1)); done
+  now="$(date +%s)"
+  mkdir "$CCT_ENV_FILE.lock"
+  printf '%s %s\n' "$dead_pid" "$((now-120))" > "$CCT_ENV_FILE.lock/owner"
+  cap="$(add_tok stale "sk-stale" 2>&1)"; rc=$?
+  chk "dead stale lock is reclaimed" "0" "$rc"
+  chk_has "stale-lock mutation stored account" "CCT_TOKEN_STALE=sk-stale" "$(cat "$CCT_ENV_FILE")"
+  chk "stale-lock mutation releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  mkdir "$CCT_ENV_FILE.lock"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(add_tok malformed "sk-malformed" 2>&1)"; rc=$?
+  after="$(wallet_sha "$CCT_ENV_FILE")"
+  chk "missing lock owner is refused" "1" "$rc"
+  chk "missing lock owner preserves wallet" "$before" "$after"
+  chk_has "missing lock owner reports busy" "wallet busy" "$cap"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  mkdir "$sb/lock-target"
+  ln -s "$sb/lock-target" "$CCT_ENV_FILE.lock"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(add_tok symlinked "sk-symlinked" 2>&1)"; rc=$?
+  after="$(wallet_sha "$CCT_ENV_FILE")"
+  chk "symlink lock is refused" "1" "$rc"
+  chk "symlink lock preserves wallet" "$before" "$after"
+  chk "symlink lock target remains" "yes" "$([ -d "$sb/lock-target" ] && echo yes || echo no)"
+  rm "$CCT_ENV_FILE.lock"
+
+  echo "-- unsafe backup paths are refused without side effects"
+  rm -f "$CCT_ENV_FILE.bak"
+  mkdir "$CCT_ENV_FILE.bak"
+  chmod 755 "$CCT_ENV_FILE.bak"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(add_tok backupdir "sk-backupdir" 2>&1)"; rc=$?
+  after="$(wallet_sha "$CCT_ENV_FILE")"
+  chk "backup directory returns nonzero" "1" "$rc"
+  chk "backup directory preserves wallet" "$before" "$after"
+  chk "backup directory mode is unchanged" "755" "$(wallet_mode "$CCT_ENV_FILE.bak")"
+  case "$cap" in *완료*) chk "backup directory prints no success" "no" "yes" ;; *) chk "backup directory prints no success" "no" "no" ;; esac
+  chmod 755 "$CCT_ENV_FILE.bak"
+  rm -rf "$CCT_ENV_FILE.bak"
+
+  echo "-- injected mutation failures preserve original and clean up"
+  printf '# failure wallet\nCCT_TOKEN_ALPHA=sk-alpha\n#cctlabel:CCT_TOKEN_ALPHA=alpha\n' > "$CCT_ENV_FILE"
+  chmod 600 "$CCT_ENV_FILE"
+  for cmd in mktemp cp chmod mv; do
+    mkdir "$sb/fail-$cmd"
+    printf '#!/bin/sh\nexit 1\n' > "$sb/fail-$cmd/$cmd"
+    chmod 700 "$sb/fail-$cmd/$cmd"
+  done
+  mkdir "$sb/fail-backup-chmod"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    "case \"\$2\" in" \
+    "  \"\$CCT_FAIL_BACKUP_PATH\") exit 1 ;;" \
+    "  \"\$CCT_FAIL_BACKUP_PATH\".tmp.*)" \
+    "    count=\"\$(cat \"\$CCT_CHMOD_COUNT_FILE\" 2>/dev/null || printf 0)\"" \
+    "    count=\$((count + 1))" \
+    "    printf \"%s\\n\" \"\$count\" > \"\$CCT_CHMOD_COUNT_FILE\"" \
+    "    [ \"\$count\" -ne 2 ] || exit 1" \
+    '    ;;' \
+    'esac' \
+    "exec \"\$CCT_REAL_CHMOD\" \"\$@\"" > "$sb/fail-backup-chmod/chmod"
+  chmod 700 "$sb/fail-backup-chmod/chmod"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(PATH="$sb/fail-mktemp:$PATH" add_tok tempfail "sk-tempfail" 2>&1)"; rc=$?
+  chk "temp creation failure returns nonzero" "1" "$rc"
+  chk "temp creation failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  case "$cap" in *완료*) chk "temp creation failure prints no success" "no" "yes" ;; *) chk "temp creation failure prints no success" "no" "no" ;; esac
+  chk "temp creation failure releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(PATH="$sb/fail-cp:$PATH" add_tok backupfail "sk-backupfail" 2>&1)"; rc=$?
+  chk "backup failure returns nonzero" "1" "$rc"
+  chk "backup failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  case "$cap" in *완료*) chk "backup failure prints no success" "no" "yes" ;; *) chk "backup failure prints no success" "no" "no" ;; esac
+  chk "backup failure leaves no temp" "0" "$(find "$sb" -maxdepth 1 -name 'tokens.env.tmp.*' -print | wc -l | tr -d ' ')"
+  chk "backup failure releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  printf '# prior backup\nCCT_TOKEN_PRIOR=sk-prior\n' > "$CCT_ENV_FILE.bak"
+  chmod 644 "$CCT_ENV_FILE.bak"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  local backup_before real_chmod
+  backup_before="$(wallet_sha "$CCT_ENV_FILE.bak")"
+  real_chmod="$(command -v chmod)"
+  rm -f "$sb/backup-chmod-count"
+  cap="$(CCT_FAIL_BACKUP_PATH="$CCT_ENV_FILE.bak" \
+    CCT_CHMOD_COUNT_FILE="$sb/backup-chmod-count" \
+    CCT_REAL_CHMOD="$real_chmod" \
+    PATH="$sb/fail-backup-chmod:$PATH" \
+    add_tok backupchmodfail "sk-backupchmodfail" 2>&1)"; rc=$?
+  chk "backup chmod failure returns nonzero" "1" "$rc"
+  chk "backup chmod failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  chk "backup chmod failure preserves prior backup" "$backup_before" "$(wallet_sha "$CCT_ENV_FILE.bak")"
+  chk "backup chmod failure copies no current secret to wide backup" "0" \
+    "$(grep -c '^CCT_TOKEN_ALPHA=sk-alpha$' "$CCT_ENV_FILE.bak" || true)"
+  case "$cap" in *완료*) chk "backup chmod failure prints no success" "no" "yes" ;; *) chk "backup chmod failure prints no success" "no" "no" ;; esac
+  chk "backup chmod failure leaves no temp" "0" "$(find "$sb" -maxdepth 1 -name 'tokens.env*.tmp.*' -print | wc -l | tr -d ' ')"
+  chk "backup chmod failure releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+  rm -f "$CCT_ENV_FILE.bak"
+
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(PATH="$sb/fail-chmod:$PATH" add_tok chmodfail "sk-chmodfail" 2>&1)"; rc=$?
+  chk "chmod failure returns nonzero" "1" "$rc"
+  chk "chmod failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  case "$cap" in *완료*) chk "chmod failure prints no success" "no" "yes" ;; *) chk "chmod failure prints no success" "no" "no" ;; esac
+  chk "chmod failure leaves no temp" "0" "$(find "$sb" -maxdepth 1 -name 'tokens.env.tmp.*' -print | wc -l | tr -d ' ')"
+  chk "chmod failure releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(PATH="$sb/fail-mv:$PATH" add_tok mvfail "sk-mvfail" 2>&1)"; rc=$?
+  chk "mv failure returns nonzero" "1" "$rc"
+  chk "mv failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  case "$cap" in *완료*) chk "mv failure prints no success" "no" "yes" ;; *) chk "mv failure prints no success" "no" "no" ;; esac
+  chk "mv failure leaves no temp" "0" "$(find "$sb" -maxdepth 1 -name 'tokens.env.tmp.*' -print | wc -l | tr -d ' ')"
+  chk "mv failure releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  rm -rf "$sb"
+}
+
 case "${1:-all}" in
   install) test_install ;;
   cct)     test_cct ;;
   extra)   test_extra ;;
   sticky)  test_sticky ;;
-  all)     test_install; test_cct; test_extra; test_sticky ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|all]"; exit 2 ;;
+  wallet)  test_wallet ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_wallet ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|wallet|all]"; exit 2 ;;
 esac
 
 echo
