@@ -337,7 +337,10 @@ cct() {
   if [ "${CCT_STICKY:-1}" = "0" ]; then
     # 비고정(CCT_STICKY=0): 그 claude 프로세스에만 inline 주입 (셸/디스크 미변경)
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
-      CLAUDE_CODE_OAUTH_TOKEN="$tok" command claude "${flags[@]}" "$@"
+      (
+        unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+        CLAUDE_CODE_OAUTH_TOKEN="$tok" command claude "${flags[@]}" "$@"
+      )
     else
       CLAUDE_CODE_OAUTH_TOKEN="$tok" \
         CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 \
