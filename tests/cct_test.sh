@@ -60,6 +60,30 @@ wallet_sha(){
   else sha256sum "$1" | awk '{print $1}'; fi
 }
 
+count_exact(){
+  [ -f "$1" ] || {
+    printf '0\n'
+    return
+  }
+  awk -v pattern="$2" '$0 == pattern { count++ } END { print count + 0 }' "$1" 2>/dev/null
+}
+
+chk_ignore_patterns(){
+  local prefix="$1" file="$2" pattern
+  for pattern in \
+    "tokens.env" \
+    ".claude/tokens.env" \
+    "tokens.env.bak" \
+    ".claude/tokens.env.bak" \
+    "tokens.env.tmp.*" \
+    ".claude/tokens.env.tmp.*" \
+    "tokens.env.lock/" \
+    ".claude/tokens.env.lock/"
+  do
+    chk "$prefix: $pattern once" "1" "$(count_exact "$file" "$pattern")"
+  done
+}
+
 wallet_inode(){
   stat -f '%i' "$1" 2>/dev/null || stat -c '%i' "$1"
 }
@@ -73,49 +97,167 @@ write_account_fixture(){
 
 # -------------------------------------------------------------------------
 test_install(){
-  echo "== install.sh (H1 core.excludesfile preservation, N1 SHELL rc) =="
-  local H G rc MINE
+  echo "== install.sh (portable wallet preservation + ignore coverage) =="
+  local H G rc MINE cap wallet_before backup_before active_before temp_before owner_before
+  local wallet_mode_before backup_mode_before active_mode_before temp_mode_before owner_mode_before target
 
-  echo "-- (a) fresh HOME + SHELL=/bin/zsh -> .zshrc, not .bashrc"
-  H="$(mktemp -d)"; G="$H/.gitconfig"
+  if [ "${CCT_TEST_CASE:-}" = "install-failures" ]; then
+    echo "-- failure: an existing wallet symlink is preserved without following it"
+    H="$(mktemp -d)/home with spaces"; mkdir -p "$H/.claude"; G="$H/git config"
+    target="$H/wallet target"
+    printf '%s\n' 'CCT_TOKEN_KEEP=symlink-secret' > "$target"; chmod 640 "$target"
+    ln -s "$target" "$H/.claude/tokens.env"
+    wallet_before="$(wallet_sha "$target")"; wallet_mode_before="$(wallet_mode "$target")"
+    cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh 2>&1)"; rc=$?
+    chk "symlink wallet install rc=0" "0" "$rc"
+    chk "wallet remains a symlink" "yes" "$([ -L "$H/.claude/tokens.env" ] && echo yes || echo no)"
+    chk "symlink target bytes preserved" "$wallet_before" "$(wallet_sha "$target")"
+    chk "symlink target mode preserved" "$wallet_mode_before" "$(wallet_mode "$target")"
+    chk_not_has "installer does not claim wallet template creation" "tokens.env 템플릿 생성" "$cap"
+    rm -rf "${H%/home with spaces}"
+
+    echo "-- failure: launcher copy failure cannot mutate or claim wallet success"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude/cct.sh/cct.sh"
+    printf '%s\n' 'CCT_TOKEN_KEEP=copy-failure-secret' > "$H/.claude/tokens.env"; chmod 600 "$H/.claude/tokens.env"
+    wallet_before="$(wallet_sha "$H/.claude/tokens.env")"; wallet_mode_before="$(wallet_mode "$H/.claude/tokens.env")"
+    cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh 2>&1)"; rc=$?
+    chk "launcher copy failure rc=1" "1" "$rc"
+    chk "copy failure preserves wallet bytes" "$wallet_before" "$(wallet_sha "$H/.claude/tokens.env")"
+    chk "copy failure preserves wallet mode" "$wallet_mode_before" "$(wallet_mode "$H/.claude/tokens.env")"
+    chk_not_has "copy failure has no completion claim" "설치 완료" "$cap"
+    chk_not_has "copy failure has no wallet creation claim" "tokens.env 템플릿 생성" "$cap"
+    rm -rf "$H"
+
+    echo "-- failure: unusable global ignore path warns without replacing config"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; MINE="$H/ignore-directory"; mkdir "$MINE"
+    HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"
+    printf '%s\n' 'CCT_TOKEN_KEEP=global-ignore-secret' > "$H/wallet"; chmod 600 "$H/wallet"
+    wallet_before="$(wallet_sha "$H/wallet")"
+    cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh 2>&1)"; rc=$?
+    chk "global ignore warning remains nonfatal" "0" "$rc"
+    chk_has "global ignore warning is explicit" "전역 gitignore 경로 접근 불가" "$cap"
+    chk_not_has "global ignore does not claim success" "전역 gitignore: $MINE" "$cap"
+    chk "core.excludesfile remains unchanged" "$MINE" \
+      "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
+    chk "unrelated secret fixture preserved" "$wallet_before" "$(wallet_sha "$H/wallet")"
+    rm -rf "$H"
+
+    echo "-- failure: unusable local ignore path fails without touching seeded wallet state"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude/.gitignore"
+    printf '%s\n' 'CCT_TOKEN_KEEP=local-ignore-secret' > "$H/.claude/tokens.env"; chmod 640 "$H/.claude/tokens.env"
+    printf '%s\n' 'CCT_TOKEN_OLD=local-ignore-backup' > "$H/.claude/tokens.env.bak"; chmod 644 "$H/.claude/tokens.env.bak"
+    wallet_before="$(wallet_sha "$H/.claude/tokens.env")"; wallet_mode_before="$(wallet_mode "$H/.claude/tokens.env")"
+    backup_before="$(wallet_sha "$H/.claude/tokens.env.bak")"; backup_mode_before="$(wallet_mode "$H/.claude/tokens.env.bak")"
+    cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh 2>&1)"; rc=$?
+    chk "local ignore failure rc=1" "1" "$rc"
+    chk_has "local ignore failure is explicit" "로컬 gitignore 경로가 일반 파일이 아닙니다" "$cap"
+    chk_not_has "local ignore failure has no completion claim" "설치 완료" "$cap"
+    chk "local ignore failure preserves wallet bytes" "$wallet_before" "$(wallet_sha "$H/.claude/tokens.env")"
+    chk "local ignore failure preserves wallet mode" "$wallet_mode_before" "$(wallet_mode "$H/.claude/tokens.env")"
+    chk "local ignore failure preserves backup bytes" "$backup_before" "$(wallet_sha "$H/.claude/tokens.env.bak")"
+    chk "local ignore failure preserves backup mode" "$backup_mode_before" "$(wallet_mode "$H/.claude/tokens.env.bak")"
+    rm -rf "$H"
+
+    echo "-- failure: an interrupted launcher replace aborts and cleans its temporary file"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude" "$H/bin"
+    printf '%s\n' 'CCT_TOKEN_KEEP=signal-secret' > "$H/.claude/tokens.env"; chmod 600 "$H/.claude/tokens.env"
+    wallet_before="$(wallet_sha "$H/.claude/tokens.env")"; wallet_mode_before="$(wallet_mode "$H/.claude/tokens.env")"
+    cat > "$H/bin/mv" <<'SHIM'
+#!/bin/sh
+kill -TERM "$PPID"
+exit 0
+SHIM
+    chmod 700 "$H/bin/mv"
+    cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash PATH="$H/bin:$PATH" bash install.sh 2>&1)"; rc=$?
+    chk "interrupted launcher replace rc=1" "1" "$rc"
+    chk "interrupted replace preserves wallet bytes" "$wallet_before" "$(wallet_sha "$H/.claude/tokens.env")"
+    chk "interrupted replace preserves wallet mode" "$wallet_mode_before" "$(wallet_mode "$H/.claude/tokens.env")"
+    chk_not_has "interrupted replace has no launcher success" "런처(로컬 복사)" "$cap"
+    chk_not_has "interrupted replace has no completion claim" "설치 완료" "$cap"
+    chk "interrupted replace cleans launcher temp" "0" \
+      "$(find "$H/.claude" -maxdepth 1 -name '.cct.sh.install.*' -print | wc -l | tr -d ' ')"
+    rm -rf "$H"
+    return
+  fi
+
+  echo "-- happy: fresh HOME with spaces creates a private wallet and exact ignores"
+  H="$(mktemp -d)/home with spaces"; mkdir -p "$H"; G="$H/git config"
   ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1; rc=$?
-  chk "installer rc=0" "0" "$rc"
-  chk ".zshrc has source line" "1" "$(grep -c 'source ~/.claude/cct.sh' "$H/.zshrc" 2>/dev/null || echo 0)"
+  chk "fresh installer rc=0" "0" "$rc"
+  chk "fresh wallet exists" "yes" "$([ -f "$H/.claude/tokens.env" ] && echo yes || echo no)"
+  chk "fresh wallet mode 600" "600" "$(wallet_mode "$H/.claude/tokens.env")"
+  chk ".zshrc source line once" "1" "$(count_exact "$H/.zshrc" 'source ~/.claude/cct.sh')"
   chk ".bashrc not created" "no" "$([ -e "$H/.bashrc" ] && echo yes || echo no)"
-  chk "local .claude/.gitignore has tokens.env" "1" "$(grep -c '^tokens.env$' "$H/.claude/.gitignore" 2>/dev/null || echo 0)"
+  chk "default global ignore configured" "$H/.gitignore_global" \
+    "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
+  chk_ignore_patterns "tracked repository ignore" "$REPO/.gitignore"
+  chk_ignore_patterns "local wallet ignore" "$H/.claude/.gitignore"
+  chk_ignore_patterns "default global ignore" "$H/.gitignore_global"
+  rm -rf "${H%/home with spaces}"
 
-  echo "-- (b) preexisting core.excludesfile preserved + appended, no set-eu abort"
-  H="$(mktemp -d)"; G="$H/.gitconfig"; MINE="$H/.mine_ignore"
+  echo "-- happy: two reinstalls preserve every wallet/state artifact and user configuration"
+  H="$(mktemp -d)/home with spaces"; mkdir -p "$H/.claude"; G="$H/git config"; MINE="$H/custom ignore"
   HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"
-  printf 'build/\n' > "$MINE"
-  ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh ) >/dev/null 2>&1; rc=$?
-  chk "installer rc=0" "0" "$rc"
-  chk "config unchanged" "$MINE" "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
-  chk "existing file got tokens.env" "1" "$(grep -c '^tokens.env$' "$MINE" 2>/dev/null || echo 0)"
-  chk "existing file got .claude/tokens.env" "1" "$(grep -c '^\.claude/tokens\.env$' "$MINE" 2>/dev/null || echo 0)"
-  chk "existing build/ rule preserved" "1" "$(grep -c '^build/$' "$MINE" 2>/dev/null || echo 0)"
-  chk "no ~/.gitignore_global created" "no" "$([ -e "$H/.gitignore_global" ] && echo yes || echo no)"
-
-  echo "-- (c) no config -> sets ~/.gitignore_global, exits 0"
-  H="$(mktemp -d)"; G="$H/.gitconfig"
-  ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh ) >/dev/null 2>&1; rc=$?
-  chk "installer rc=0" "0" "$rc"
-  chk "config -> .gitignore_global" "$H/.gitignore_global" "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
-  chk ".gitignore_global has tokens.env" "1" "$(grep -c '^tokens.env$' "$H/.gitignore_global" 2>/dev/null || echo 0)"
-  chk ".gitignore_global has .claude/tokens.env" "1" "$(grep -c '^\.claude/tokens\.env$' "$H/.gitignore_global" 2>/dev/null || echo 0)"
-
-  echo "-- (d) idempotent re-run (no duplicate lines)"
-  H="$(mktemp -d)"; G="$H/.gitconfig"; MINE="$H/.mine_ignore"
-  HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"; printf 'build/\n.claude/tokens.env\n' > "$MINE"
-  mkdir -p "$H/.claude"; printf 'keep-me\n' > "$H/.claude/.gitignore"
+  printf '%s' 'build/' > "$MINE"
+  printf '%s' 'keep-local/' > "$H/.claude/.gitignore"
+  printf '%s\n' '# user zsh config' > "$H/.zshrc"
+  printf '%s\n' 'CCT_TOKEN_KEEP=wallet-secret' > "$H/.claude/tokens.env"; chmod 600 "$H/.claude/tokens.env"
+  printf '%s\n' 'CCT_TOKEN_OLD=backup-secret' > "$H/.claude/tokens.env.bak"; chmod 640 "$H/.claude/tokens.env.bak"
+  printf '%s\n' 'keep' > "$H/.claude/cct-active"; chmod 644 "$H/.claude/cct-active"
+  printf '%s\n' 'temporary-secret' > "$H/.claude/tokens.env.tmp.live"; chmod 640 "$H/.claude/tokens.env.tmp.live"
+  mkdir "$H/.claude/tokens.env.lock"
+  printf '%s\n' "$$ 1" > "$H/.claude/tokens.env.lock/owner"; chmod 644 "$H/.claude/tokens.env.lock/owner"
+  wallet_before="$(wallet_sha "$H/.claude/tokens.env")"; wallet_mode_before="$(wallet_mode "$H/.claude/tokens.env")"
+  backup_before="$(wallet_sha "$H/.claude/tokens.env.bak")"; backup_mode_before="$(wallet_mode "$H/.claude/tokens.env.bak")"
+  active_before="$(wallet_sha "$H/.claude/cct-active")"; active_mode_before="$(wallet_mode "$H/.claude/cct-active")"
+  temp_before="$(wallet_sha "$H/.claude/tokens.env.tmp.live")"; temp_mode_before="$(wallet_mode "$H/.claude/tokens.env.tmp.live")"
+  owner_before="$(wallet_sha "$H/.claude/tokens.env.lock/owner")"; owner_mode_before="$(wallet_mode "$H/.claude/tokens.env.lock/owner")"
   ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1
   ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1; rc=$?
-  chk "2nd run rc=0" "0" "$rc"
-  chk "tokens.env appended once" "1" "$(grep -c '^tokens.env$' "$MINE")"
-  chk ".claude/tokens.env preserved once" "1" "$(grep -c '^\.claude/tokens\.env$' "$MINE")"
-  chk "local .gitignore preserves user rule" "1" "$(grep -c '^keep-me$' "$H/.claude/.gitignore")"
-  chk "local .gitignore tokens.env once" "1" "$(grep -c '^tokens.env$' "$H/.claude/.gitignore")"
-  chk ".zshrc source line once" "1" "$(grep -c 'source ~/.claude/cct.sh' "$H/.zshrc")"
+  chk "second reinstall rc=0" "0" "$rc"
+  chk "wallet bytes preserved" "$wallet_before" "$(wallet_sha "$H/.claude/tokens.env")"
+  chk "wallet mode preserved" "$wallet_mode_before" "$(wallet_mode "$H/.claude/tokens.env")"
+  chk "backup bytes preserved" "$backup_before" "$(wallet_sha "$H/.claude/tokens.env.bak")"
+  chk "backup mode preserved" "$backup_mode_before" "$(wallet_mode "$H/.claude/tokens.env.bak")"
+  chk "active bytes preserved" "$active_before" "$(wallet_sha "$H/.claude/cct-active")"
+  chk "active mode preserved" "$active_mode_before" "$(wallet_mode "$H/.claude/cct-active")"
+  chk "live temp bytes preserved" "$temp_before" "$(wallet_sha "$H/.claude/tokens.env.tmp.live")"
+  chk "live temp mode preserved" "$temp_mode_before" "$(wallet_mode "$H/.claude/tokens.env.tmp.live")"
+  chk "live lock owner bytes preserved" "$owner_before" "$(wallet_sha "$H/.claude/tokens.env.lock/owner")"
+  chk "live lock owner mode preserved" "$owner_mode_before" "$(wallet_mode "$H/.claude/tokens.env.lock/owner")"
+  chk "core.excludesfile path with spaces unchanged" "$MINE" \
+    "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
+  chk "global custom rule preserved" "1" "$(count_exact "$MINE" "build/")"
+  chk "local custom rule preserved" "1" "$(count_exact "$H/.claude/.gitignore" "keep-local/")"
+  chk "existing shell rc preserved" "1" "$(count_exact "$H/.zshrc" "# user zsh config")"
+  chk ".zshrc source is idempotent" "1" "$(count_exact "$H/.zshrc" 'source ~/.claude/cct.sh')"
+  chk_ignore_patterns "custom global ignore" "$MINE"
+  chk_ignore_patterns "reinstalled local ignore" "$H/.claude/.gitignore"
+  rm -rf "${H%/home with spaces}"
+
+  echo "-- happy: literal tilde global ignore stays configured and Bash startup is selected"
+  H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/config with spaces"
+  MINE="$(printf '\176/%s' 'config with spaces/global ignore')"
+  HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"
+  ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh ) >/dev/null 2>&1; rc=$?
+  chk "tilde-path install rc=0" "0" "$rc"
+  chk "literal tilde config preserved" "$MINE" \
+    "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
+  chk_ignore_patterns "tilde-expanded global ignore" "$H/config with spaces/global ignore"
+  chk ".bashrc source line once" "1" "$(count_exact "$H/.bashrc" 'source ~/.claude/cct.sh')"
+  chk ".zshrc not created for Bash" "no" "$([ -e "$H/.zshrc" ] && echo yes || echo no)"
+  rm -rf "$H"
+
+  echo "-- happy: relative global ignore is resolved from the installer working directory"
+  H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/work"
+  MINE="relative ignore"
+  HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"
+  ( cd "$H/work" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash "$REPO/install.sh" ) >/dev/null 2>&1; rc=$?
+  chk "relative-path install rc=0" "0" "$rc"
+  chk "relative config value preserved" "$MINE" \
+    "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
+  chk_ignore_patterns "relative global ignore" "$H/work/relative ignore"
+  rm -rf "$H"
 }
 
 # -------------------------------------------------------------------------
