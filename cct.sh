@@ -1,16 +1,21 @@
 # shellcheck shell=bash
-# Claude Code 계정 스위칭 런처 (cct) — .env 방식 · bash/zsh · macOS/WSL2 공용
-#   cct                → 활성(sticky) 프로필 토큰으로 실행. 없으면 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv)
-#   cct <라벨>         → CCT_TOKEN_<라벨> 토큰 주입해 실행        (예: cct gv / cct pro1)
-#   cct ls             → 등록된 계정 목록 (값 미표시)
-#   cct add <라벨>     → 토큰 등록/갱신 (화면 미표시 입력)
-#   cct run <라벨>     → 예약어 라벨을 포함해 해당 계정으로 실행
-#   cct rm <라벨>      → 계정 삭제
-#   cct rename <기존> <새> → 계정 라벨 변경
-#   cct check [라벨]   → 토큰 유효성 점검 (실제 호출). 라벨 없으면 전체
-#   cct active         → 현재 활성(sticky) 프로필 표시
-#   cct off            → 활성 프로필 해제 (이후 cct <라벨> 로 다시 선택)
-#   cct help           → 도움말
+# cct — 휴대용 Claude 계정 지갑 / Portable Claude Account Wallet
+# 한 번 발급한 장기 setup-token들을 로컬 지갑에 두고 사용자가 계정을 명시 전환한다.
+# bash/zsh · macOS/Linux/WSL2 공용. 프록시·오케스트레이터·자동 라우터가 아니다.
+#   cct [claude 인자...]        → 활성(sticky) 또는 기본 라벨로 실행
+#   cct <라벨> [claude 인자...] → 해당 계정을 명시 선택해 실행
+#   cct run <라벨> [...]        → 예약어 라벨을 포함해 명시 실행
+#   cct ls|list                 → 등록 계정 목록 (값 미표시)
+#   cct add <라벨>              → setup-token 등록/교체 (화면 미표시 입력)
+#   cct rm <라벨> [--force]     → 계정 삭제 (기본 확인)
+#   cct rename <기존> <새>      → 토큰 값을 유지하고 라벨 변경
+#   cct status                  → 지갑/활성 계정/Claude 로컬 상태 (오프라인)
+#   cct doctor                  → 지갑 구조/권한/잠금 진단 (오프라인)
+#   cct check [라벨]            → 토큰 유효성 점검 (실제 호출)
+#   cct fp|who [라벨]           → 계정 지문 (실제 호출)
+#   cct active                  → 현재 활성(sticky) 라벨 표시
+#   cct off                     → 활성 라벨과 현재 셸 인증 환경 해제
+#   cct help                    → 도움말
 # (cc / ㅊㅊ 는 별도 alias = 그냥 claude. 단 sticky 활성 시 같은 활성 토큰을 물려받음.)
 #
 # 환경변수 노브:
@@ -540,26 +545,36 @@ _cct_fp() {
 
 _cct_help() {
   printf '%s\n' \
-    "cct — Claude Code 계정 스위처  (cc/ㅊㅊ 는 그냥 claude)" \
-    "  cct                활성(sticky) 프로필로 실행 — 없으면 기본 라벨(CCT_DEFAULT_LABEL=gv)" \
-    "  cct <라벨>         해당 계정 토큰으로 실행          예: cct gv / cct pro1" \
-    "  cct run <라벨>     예약어 라벨도 명시적으로 실행      예: cct run rm --version" \
-    "  cct ls             등록된 계정 목록" \
-    "  cct add <라벨>     토큰 등록/갱신 (화면 미표시 입력)  예: cct add pro1" \
-    "                     라벨은 [a-z0-9_][a-z0-9_]* 만, 예약어(아래 서브커맨드) 불가" \
-    "  cct rm <라벨> [--force]   계정 삭제 (기본 확인 [y/N], 실패 1, 사용법 오류 2)" \
-    "  cct rename <기존> <새>    계정 라벨 변경 (실패 1, 사용법 오류 2)" \
-    "  cct status         지갑·활성 계정·Claude 로컬 상태 표시 (네트워크 미사용)" \
-    "  cct doctor         지갑 구조·권한·잠금 로컬 진단 (정상/경고 0, 실패 1, 사용법 오류 2)" \
-    "  cct check [라벨]   토큰 유효성 점검 (실제 호출). 라벨 없으면 전체" \
-    "                     종료코드: 0 유효 / 1 무효·점검불가 / 2 토큰없음 (전체는 하나라도 문제면 1)" \
-    "  cct fp [라벨]      계정 지문 — 중복 탐지(7d_reset 같으면 같은 계정)" \
-    "  cct active         현재 활성(sticky) 프로필 표시" \
-    "  cct off            활성 프로필 해제" \
-    "  cct help           이 도움말" \
-    "  ↳ sticky: cct <라벨> 가 활성 프로필을 기억 → 그냥 claude/새 터미널도 같은 계정 (cct off 로 해제)" \
+    "cct — 휴대용 Claude 계정 지갑 / Portable Claude Account Wallet" \
+    "한 번 등록한 장기 setup-token으로 사용자가 계정을 명시 전환합니다." \
+    "프록시·오케스트레이터·자동 라우터가 아니며 macOS/Linux/WSL2에서 동작합니다." \
     "" \
-    "환경변수:  CCT_SKIP_PERMS=0   CCT_CLAUDE_FLAGS='...'   CCT_DEFAULT_LABEL=gv   CCT_STICKY=0(고정끄기)" \
+    "  cct [claude 인자...]        활성(sticky) 라벨로 실행 — 없으면 CCT_DEFAULT_LABEL(기본 gv)" \
+    "  cct <라벨> [claude 인자...] 해당 계정을 명시 선택하고 Claude 인자를 전달" \
+    "  cct run <라벨> [...]        예약어 라벨도 명시 실행       예: cct run rm --version" \
+    "  cct ls | cct list           등록 계정 목록 (토큰 값 미표시)" \
+    "  cct add <라벨>              setup-token 등록/교체 (숨김 입력)" \
+    "  cct rm <라벨> [--force]     계정 삭제 (기본 확인 [y/N])" \
+    "  cct rename <기존> <새>      토큰 값은 유지하고 라벨·활성 상태 변경" \
+    "  cct status                  지갑·활성 계정·Claude 상태 표시 (오프라인)" \
+    "  cct doctor                  지갑 구조·권한·백업·잠금 진단 (오프라인)" \
+    "  cct check [라벨]            토큰 유효성 점검 (실제 호출)" \
+    "  cct fp [라벨] | cct who [라벨]  계정 지문·중복 점검 (실제 호출)" \
+    "  cct active                  현재 sticky 활성 라벨 표시" \
+    "  cct off                     활성 라벨과 현재 셸 cct 인증 환경 해제" \
+    "  cct help                    이 도움말" \
+    "" \
+    "종료코드: 일반적으로 성공 0 / 실행·상태 실패 1 / 사용법·라벨 오류 2." \
+    "          check는 유효 0 / 무효·점검불가 1 / 토큰없음 2 (전체는 하나라도 문제면 1)." \
+    "          doctor는 FAIL 없음 0 / 상태 FAIL 1 / 사용법 오류 2." \
+    "라벨:     [a-z0-9_][a-z0-9_]* (예약어 라벨 실행은 cct run 사용)." \
+    "지갑:     \${CCT_ENV_FILE:-~/.claude/tokens.env}, backup은 .bak, 변경 중 lock은 .lock/." \
+    "보안:     setup-token은 비밀번호급. 지갑/backup은 mode 600, Git·평문 cloud sync 금지." \
+    "수명:     setup-token은 long-lived지만 고정 수명·영구성을 보장하지 않으며 정책에 따라 재발급 필요." \
+    "sticky:   cct <라벨> 선택을 현재 셸과 cct-active에 기억. cct off로 해제." \
+    "" \
+    "환경변수: CCT_SKIP_PERMS=0  CCT_CLAUDE_FLAGS='...'  CCT_DEFAULT_LABEL=gv  CCT_STICKY=0" \
+    "          CCT_DISABLE_WEB_FEATURES=0  CCT_ENV_FILE=...  CCT_ACTIVE_FILE=..." \
     "호환성/BREAKING 변경은 CHANGELOG.md 참고."
 }
 
