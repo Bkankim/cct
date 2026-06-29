@@ -1,6 +1,65 @@
 # Changelog
 
-## Unreleased — security & correctness remediation
+## Unreleased — portable Claude account wallet
+
+### Product contract
+
+cct is now documented as a **Portable Claude Account Wallet / 휴대용 Claude 계정
+지갑**. Authenticate each Claude account once with `claude setup-token`, keep the
+long-lived tokens in a local wallet outside Git, and explicitly switch with
+`cct <label>` on macOS, Linux, or WSL2. It is not a proxy, orchestrator,
+automatic router, or load balancer.
+
+Setup-token lifetime and provider policy may change; this release does not promise
+a fixed lifetime or permanent access. Expired, revoked, or exposed credentials must
+be reissued for that account and replaced with `cct add <label>`.
+
+| Command | Contract |
+|---|---|
+| `cct [claude args...]` | Launch the sticky active label, or the default label |
+| `cct <label> [claude args...]` | Explicitly select an account and forward Claude arguments |
+| `cct run <label> [claude args...]` | Explicitly launch a label even when it is a reserved command |
+| `cct ls` / `cct list` | List account labels without token values |
+| `cct add <label>` | Register or replace a setup-token through hidden input |
+| `cct rm <label> [--force]` | Confirm and remove an account |
+| `cct rename <old> <new>` | Rename an account without changing token bytes |
+| `cct status` | Show local wallet and Claude metadata without network access |
+| `cct doctor` | Report deterministic local `PASS/WARN/FAIL` health checks |
+| `cct check [label]` | Validate token(s) through a real Claude call |
+| `cct fp [label]` / `cct who [label]` | Compare account fingerprints through a real call |
+| `cct active` | Show the sticky active label |
+| `cct off` | Clear sticky state and current-shell cct auth variables |
+| `cct help` | Show the built-in command contract |
+
+General command errors use `1` for runtime/state failure and `2` for usage or label
+errors. `check` uses `0` for valid, `1` for invalid/unavailable, and `2` for a
+missing token. `doctor` uses `0` when there is no FAIL, `1` for health failures,
+and `2` for invocation misuse.
+
+### Wallet safety
+
+- All wallet mutations use a mode-`600` same-directory temporary file and atomic
+  replace, with a mode-`600` rolling backup at `tokens.env.bak`.
+- `tokens.env.lock/` serializes changes. A recent live owner is busy; a dead owner
+  or lock older than 60 seconds can be reclaimed by a later mutation after checks.
+  Diagnostics report lock state without recovering or modifying it.
+- `rm` and `rename` update wallet and active state as a recoverable transaction.
+  An active-state failure restores the verified wallet backup.
+- `status` and `doctor` are offline and redact credentials.
+- Reinstall preserves the wallet, rolling backup, active state, and in-progress
+  lock/temp files. Ignore coverage includes all of those credential-bearing paths.
+- The plaintext wallet and backup remain password-sensitive. Use mode `600`,
+  full-disk encryption, encrypted transfer such as a password manager, and never
+  plaintext cloud sync or Git. On WSL2, keep them out of `/mnt/c`.
+
+### Account lifecycle
+
+- Added `cct run <label> [claude args...]`, including a compatibility escape for
+  legacy accounts whose labels collide with commands.
+- Added confirmed/forced `cct rm` and atomic `cct rename`.
+- Added offline `cct status` and deterministic `cct doctor`.
+
+### Security & correctness remediation
 
 Verified-bug remediation across `cct.sh` and `install.sh`.
 
@@ -24,7 +83,8 @@ Verified-bug remediation across `cct.sh` and `install.sh`.
   back to `CCT_DEFAULT_LABEL`). Set `CCT_STICKY=0` for the old per-process inline behavior.
 - **Strict label rules** — labels must match `[a-z0-9_][a-z0-9_]*`. Dashes, uppercase
   letters, spaces, `@`, and non-ASCII labels are rejected. Labels that collide with a
-  subcommand (`help ls list add check fp who`) are rejected (`use` is still allowed).
+  subcommand (`help ls list add run rm rename status doctor check fp who off active`)
+  are rejected (`use` is still allowed).
   `cct`, `cct check`, and `cct fp` now apply the same validation, so invalid labels cannot
   alias an existing normalized token key.
 
