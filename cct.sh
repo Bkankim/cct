@@ -87,7 +87,7 @@ _cct_validate_label() {  # $1 = label
 
 # 예약어(서브커맨드)와 충돌하는 라벨 거부.  rc 0 = 예약됨.
 _cct_reserved_label() {  # $1 = label
-  case "${1-}" in help|ls|list|add|run|rm|rename|check|fp|who|off|active) return 0 ;; *) return 1 ;; esac
+  case "${1-}" in help|ls|list|add|run|rm|rename|status|doctor|check|fp|who|off|active) return 0 ;; *) return 1 ;; esac
 }
 
 _cct_list() {
@@ -549,6 +549,8 @@ _cct_help() {
     "                     라벨은 [a-z0-9_][a-z0-9_]* 만, 예약어(아래 서브커맨드) 불가" \
     "  cct rm <라벨> [--force]   계정 삭제 (기본 확인 [y/N], 실패 1, 사용법 오류 2)" \
     "  cct rename <기존> <새>    계정 라벨 변경 (실패 1, 사용법 오류 2)" \
+    "  cct status         지갑·활성 계정·Claude 로컬 상태 표시 (네트워크 미사용)" \
+    "  cct doctor         지갑 구조·권한·잠금 로컬 진단 (정상/경고 0, 실패 1, 사용법 오류 2)" \
     "  cct check [라벨]   토큰 유효성 점검 (실제 호출). 라벨 없으면 전체" \
     "                     종료코드: 0 유효 / 1 무효·점검불가 / 2 토큰없음 (전체는 하나라도 문제면 1)" \
     "  cct fp [라벨]      계정 지문 — 중복 탐지(7d_reset 같으면 같은 계정)" \
@@ -625,6 +627,322 @@ _cct_active_show() {  # 현재 활성 프로필 표시
 
 _cct_account_exists() {
   grep -q "^$1=" "$CCT_ENV_FILE" 2>/dev/null
+}
+
+_cct_label_is_valid() {
+  case "${1-}" in
+    ""|*[!a-z0-9_]*|[!a-z0-9_]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+_cct_claude_binary() {
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    whence -p claude 2>/dev/null || true
+  else
+    type -P claude 2>/dev/null || true
+  fi
+}
+
+_cct_account_count() {
+  [ -f "$CCT_ENV_FILE" ] && [ ! -L "$CCT_ENV_FILE" ] || {
+    printf '0'
+    return
+  }
+  awk -F= '
+    /^CCT_TOKEN_[A-Z0-9_]+=/ {
+      if (!seen[$1]++) count++
+    }
+    END { print count + 0 }
+  ' "$CCT_ENV_FILE" 2>/dev/null
+}
+
+_cct_status() {
+  [ "$#" -eq 0 ] || {
+    echo "사용법: cct status" >&2
+    return 2
+  }
+  local mode accounts active default_label sticky cb version
+
+  if [ -L "$CCT_ENV_FILE" ]; then
+    mode="symbolic-link"
+    accounts="unavailable"
+  elif [ -f "$CCT_ENV_FILE" ]; then
+    mode="$(_cct_wallet_mode "$CCT_ENV_FILE")"
+    [ -n "$mode" ] || mode="unknown"
+    accounts="$(_cct_account_count)"
+  else
+    mode="missing"
+    accounts="0"
+  fi
+
+  active="$(_cct_active_label)"
+  if [ -z "$active" ]; then
+    active="none"
+  elif ! _cct_label_is_valid "$active"; then
+    active="invalid"
+  fi
+  default_label="${CCT_DEFAULT_LABEL:-gv}"
+  _cct_label_is_valid "$default_label" || default_label="invalid"
+  if [ "${CCT_STICKY:-1}" = "0" ]; then sticky="disabled"; else sticky="enabled"; fi
+  cb="$(_cct_claude_binary)"
+
+  printf 'wallet: %s\n' "$CCT_ENV_FILE"
+  printf 'mode: %s\n' "$mode"
+  printf 'accounts: %s\n' "$accounts"
+  printf 'active: %s\n' "$active"
+  printf 'default: %s\n' "$default_label"
+  printf 'sticky: %s\n' "$sticky"
+  if [ -z "$cb" ]; then
+    printf 'claude: missing\n'
+    printf 'claude-version: unavailable\n'
+  else
+    printf 'claude: %s\n' "$cb"
+    version="$(
+      (
+        unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+        _cct_run_limited 5 "$cb" --version </dev/null 2>/dev/null
+      ) | awk '
+        NR == 1 {
+          gsub(/\r/, "")
+          numeric = "[0-9]+\\.[0-9]+(\\.[0-9]+)?(\\.[0-9]+)?"
+          if ($0 ~ ("^" numeric "$") ||
+              $0 ~ ("^" numeric " \\(Claude Code\\)$") ||
+              $0 ~ ("^Claude Code (fixture )?" numeric "$"))
+            print substr($0, 1, 200)
+          else
+            print "unavailable"
+          exit
+        }
+      '
+    )"
+    [ -n "$version" ] || version="unavailable"
+    printf 'claude-version: %s\n' "$version"
+  fi
+}
+
+_cct_doctor_structure() {
+  awk '
+    function fail(message) {
+      printf "FAIL structure: line %d: %s\n", NR, message
+      failed = 1
+    }
+    function valid_label(label) {
+      return label ~ /^[a-z0-9_]+$/
+    }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line ~ /^[[:space:]]*$/) next
+      if (line ~ /^#cctlabel:/) {
+        if (line !~ /^#cctlabel:CCT_TOKEN_[A-Z0-9_]+=/) {
+          fail("malformed annotation")
+          next
+        }
+        split_at = index(line, "=")
+        key = substr(line, 11, split_at - 11)
+        label = substr(line, split_at + 1)
+        annotation_total++
+        annotation_key[annotation_total] = key
+        annotation_line[annotation_total] = NR
+        annotation_count[key]++
+        if (annotation_count[key] > 1)
+          fail("duplicate annotation " key)
+        if (!valid_label(label) || key != "CCT_TOKEN_" toupper(label))
+          fail("invalid annotation ownership " key)
+        next
+      }
+      if (line ~ /^[[:space:]]*#/) next
+      if (line ~ /^CCT_TOKEN_/) {
+        split_at = index(line, "=")
+        if (!split_at) {
+          fail("malformed key")
+          next
+        }
+        key = substr(line, 1, split_at - 1)
+        if (key !~ /^CCT_TOKEN_[A-Z0-9_]+$/) {
+          fail("malformed key")
+          next
+        }
+        value = substr(line, split_at + 1)
+        if (length(value) == 0)
+          fail("empty value for " key)
+        key_count[key]++
+        if (key_count[key] == 1) account_count++
+        else fail("duplicate key " key)
+        next
+      }
+      fail("malformed entry")
+    }
+    END {
+      for (i = 1; i <= annotation_total; i++) {
+        key = annotation_key[i]
+        if (!(key in key_count)) {
+          printf "FAIL structure: line %d: orphan annotation %s\n",
+            annotation_line[i], key
+          failed = 1
+        }
+      }
+      if (!failed)
+        printf "PASS structure: %d account(s), annotations valid\n", account_count
+      exit failed ? 1 : 0
+    }
+  ' "$CCT_ENV_FILE"
+}
+
+_cct_doctor() {
+  [ "$#" -eq 0 ] || {
+    echo "사용법: cct doctor" >&2
+    return 2
+  }
+  local failed=0 mode active_file active default_label backup lock owner
+  local pid epoch now age cb
+
+  if [ -L "$CCT_ENV_FILE" ]; then
+    echo "FAIL wallet: symbolic link"
+    failed=1
+  elif [ ! -e "$CCT_ENV_FILE" ]; then
+    echo "FAIL wallet: missing"
+    failed=1
+  elif [ ! -f "$CCT_ENV_FILE" ]; then
+    echo "FAIL wallet: not a regular file"
+    failed=1
+  elif [ ! -r "$CCT_ENV_FILE" ]; then
+    echo "FAIL wallet: unreadable"
+    failed=1
+  else
+    mode="$(_cct_wallet_mode "$CCT_ENV_FILE")"
+    if [ "$mode" = "600" ]; then
+      echo "PASS wallet: readable regular file, mode 600"
+    else
+      printf 'FAIL wallet: mode %s (expected 600)\n' "${mode:-unknown}"
+      failed=1
+    fi
+    _cct_doctor_structure || failed=1
+  fi
+
+  active_file="$(_cct_active_file)"
+  if [ -L "$active_file" ]; then
+    echo "FAIL active: symbolic link"
+    failed=1
+  elif [ ! -e "$active_file" ]; then
+    echo "PASS active: none"
+  elif [ ! -f "$active_file" ] || [ ! -r "$active_file" ]; then
+    echo "FAIL active: unreadable or not a regular file"
+    failed=1
+  else
+    active="$(awk 'NR == 1 { sub(/\r$/, ""); print; exit }' "$active_file" 2>/dev/null)"
+    if ! _cct_label_is_valid "$active"; then
+      echo "FAIL active: malformed label"
+      failed=1
+    elif _cct_account_exists "$(_cct_key "$active")"; then
+      echo "PASS active: label resolves"
+    else
+      echo "FAIL active: unresolved label"
+      failed=1
+    fi
+  fi
+
+  default_label="${CCT_DEFAULT_LABEL:-gv}"
+  if ! _cct_label_is_valid "$default_label"; then
+    echo "FAIL default: malformed label"
+    failed=1
+  elif _cct_account_exists "$(_cct_key "$default_label")"; then
+    echo "PASS default: label resolves"
+  else
+    echo "FAIL default: unresolved label"
+    failed=1
+  fi
+
+  backup="${CCT_ENV_FILE}.bak"
+  if [ -L "$backup" ]; then
+    echo "FAIL backup: symbolic link"
+    failed=1
+  elif [ ! -e "$backup" ]; then
+    echo "PASS backup: absent"
+  elif [ ! -f "$backup" ] || [ ! -r "$backup" ]; then
+    echo "FAIL backup: unreadable or not a regular file"
+    failed=1
+  else
+    mode="$(_cct_wallet_mode "$backup")"
+    if [ "$mode" = "600" ]; then
+      echo "PASS backup: mode 600"
+    else
+      printf 'FAIL backup: mode %s (expected 600)\n' "${mode:-unknown}"
+      failed=1
+    fi
+  fi
+
+  lock="${CCT_ENV_FILE}.lock"
+  if [ -L "$lock" ]; then
+    echo "FAIL lock: symbolic link"
+    failed=1
+  elif [ ! -e "$lock" ]; then
+    echo "PASS lock: absent"
+  elif [ ! -d "$lock" ]; then
+    echo "FAIL lock: not a directory"
+    failed=1
+  elif [ -L "$lock/owner" ] || [ ! -f "$lock/owner" ] || [ ! -r "$lock/owner" ]; then
+    echo "FAIL lock: malformed owner metadata"
+    failed=1
+  else
+    owner="$(awk '
+      NR == 1 && NF == 2 &&
+        $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ &&
+        length($1) <= 18 && length($2) <= 18 &&
+        ($1 + 0) > 0 && ($2 + 0) > 0 {
+          pid = $1
+          epoch = $2
+          next
+        }
+      { bad = 1 }
+      END {
+        if (NR == 1 && !bad) print pid " " epoch
+        else exit 1
+      }
+    ' "$lock/owner" 2>/dev/null)" || owner=""
+    if [ -z "$owner" ]; then
+      echo "FAIL lock: malformed owner metadata"
+      failed=1
+    else
+      pid="${owner%% *}"
+      epoch="${owner#* }"
+      now="$(date +%s 2>/dev/null)" || now=""
+      if [ -z "$now" ]; then
+        echo "FAIL lock: current time unavailable"
+        failed=1
+      else
+        age=$((now - epoch))
+        if [ "$age" -lt 0 ]; then
+          echo "FAIL lock: malformed owner timestamp"
+          failed=1
+        elif kill -0 "$pid" 2>/dev/null && [ "$age" -le "$_CCT_LOCK_STALE_SECS" ]; then
+          echo "WARN lock: live mutation in progress"
+        else
+          echo "FAIL lock: dead or stale owner"
+          failed=1
+        fi
+      fi
+    fi
+  fi
+
+  cb="$(_cct_claude_binary)"
+  if [ -n "$cb" ]; then
+    echo "PASS claude: executable found"
+  else
+    echo "FAIL claude: missing"
+    failed=1
+  fi
+
+  if [ -n "${BASH_VERSION:-}" ] || [ -n "${ZSH_VERSION:-}" ]; then
+    echo "PASS shell: Bash or Zsh sourced state detected"
+  else
+    echo "FAIL shell: Bash/Zsh sourced state missing"
+    failed=1
+  fi
+
+  [ "$failed" -eq 0 ]
 }
 
 _cct_rm() {
@@ -752,6 +1070,8 @@ cct() {
               _cct_launch_label "$label" "$@"; return ;;
     rm)       shift; _cct_rm "$@"; return ;;
     rename)   shift; _cct_rename "$@"; return ;;
+    status)   shift; _cct_status "$@"; return ;;
+    doctor)   shift; _cct_doctor "$@"; return ;;
     check)    shift; _cct_check "$@"; return ;;
     fp|who)   shift; _cct_fp "$@"; return ;;
     off)      _cct_off; return ;;

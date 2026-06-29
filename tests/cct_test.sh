@@ -15,6 +15,9 @@ chk(){ # name expected actual
 chk_has(){ # name needle haystack
   case "$3" in *"$2"*) printf '  PASS %s\n' "$1"; PASS=$((PASS+1));; *) printf '  FAIL %s : [%s] not in output\n' "$1" "$2"; FAIL=$((FAIL+1));; esac
 }
+chk_not_has(){
+  case "$3" in *"$2"*) printf '  FAIL %s : forbidden text was present\n' "$1"; FAIL=$((FAIL+1));; *) printf '  PASS %s\n' "$1"; PASS=$((PASS+1));; esac
+}
 
 # Fake claude shim: prints received args+token to stderr; exits 1 if the token
 # contains BAD (lets a single `cct check` run produce a mixed result), else 0.
@@ -22,6 +25,18 @@ mk_shim(){ # $1 = bin dir
   mkdir -p "$1"
   cat > "$1/claude" <<'SHIM'
 #!/usr/bin/env bash
+[ -z "${CCT_SHIM_LOG:-}" ] || printf '%s\n' "$*" >> "$CCT_SHIM_LOG"
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
+    [ -n "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}" ] ||
+    [ -n "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}" ] ||
+    [ -n "${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-}" ]; then
+    printf '%s\n' "VERSION_ENV_LEAK"
+  else
+    printf '%s\n' "Claude Code fixture 1.2.3"
+  fi
+  exit 0
+fi
 echo "CLAUDE args=[$*] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
 echo "CLAUDE web=[${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}]" >&2
 case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in *BAD*) exit 1 ;; esac
@@ -831,6 +846,283 @@ SHIM
   rm -rf "$sb"
 }
 
+test_diagnostics(){
+  echo "== offline diagnostics =="
+  set +u
+  local sb cap rc before after active_before dead_pid now target started elapsed hang_pid
+  sb="$(mktemp -d)"
+  mk_shim "$sb/bin"
+  export PATH="$sb/bin:$PATH"
+  export CCT_ENV_FILE="$sb/tokens.env"
+  export CCT_ACTIVE_FILE="$sb/cct-active"
+  export CCT_DEFAULT_LABEL=alpha
+  export CCT_STICKY=1
+  export CCT_SHIM_LOG="$sb/claude.log"
+  export CLAUDE_CODE_OAUTH_TOKEN="ambient-credential-must-not-print"
+  write_account_fixture "$CCT_ENV_FILE" \
+    '# healthy portable wallet' \
+    '  #comment with indentation is valid' \
+    '' \
+    'CCT_TOKEN_ALPHA=fixture-alpha-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'CCT_TOKEN_BETA=sk-ant-oat01-fixture-beta-secret' \
+    '#cctlabel:CCT_TOKEN_BETA=beta'
+  printf '%s\n' alpha > "$CCT_ACTIVE_FILE"
+  chmod 600 "$CCT_ACTIVE_FILE"
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+
+  if [ "${CCT_TEST_CASE:-}" != "diagnostic-failures" ]; then
+    echo "-- status reports bounded offline metadata without credential details"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+    cap="$(cct status 2>&1)"; rc=$?
+    chk "status healthy -> 0" "0" "$rc"
+    chk_has "status wallet path" "wallet: $CCT_ENV_FILE" "$cap"
+    chk_has "status wallet mode" "mode: 600" "$cap"
+    chk_has "status account count" "accounts: 2" "$cap"
+    chk_has "status active label" "active: alpha" "$cap"
+    chk_has "status default label" "default: alpha" "$cap"
+    chk_has "status sticky enabled" "sticky: enabled" "$cap"
+    chk_has "status real Claude path" "claude: $sb/bin/claude" "$cap"
+    chk_has "status bounded Claude version" "claude-version: Claude Code fixture 1.2.3" "$cap"
+    chk_not_has "status hides first fixture token" "fixture-alpha-secret" "$cap"
+    chk_not_has "status hides credential prefix" "sk-ant-oat01-" "$cap"
+    chk_not_has "status hides ambient credential" "ambient-credential-must-not-print" "$cap"
+    chk "status preserves wallet bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk "status preserves active bytes" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+
+    mkdir "$sb/noisy-bin"
+    cat > "$sb/noisy-bin/claude" <<'SHIM'
+#!/bin/sh
+printf '%s\n' 'sk-ant-oat01-noisy-version-secret user@example.com org_id=org-secret'
+SHIM
+    chmod 700 "$sb/noisy-bin/claude"
+    cap="$(PATH="$sb/noisy-bin:$PATH" cct status 2>&1)"; rc=$?
+    chk "status with credential-like version -> 0" "0" "$rc"
+    chk_has "status redacts credential-like version" "claude-version: unavailable" "$cap"
+    chk_not_has "status noisy version hides credential prefix" "sk-ant-oat01-" "$cap"
+    chk_not_has "status noisy version hides email" "user@example.com" "$cap"
+    chk_not_has "status noisy version hides org metadata" "org_id=" "$cap"
+
+    echo "-- doctor deterministically validates healthy local state"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+    cap="$(cct doctor 2>&1)"; rc=$?
+    chk "doctor healthy -> 0" "0" "$rc"
+    chk_has "doctor wallet PASS" "PASS wallet:" "$cap"
+    chk_has "doctor structure PASS" "PASS structure:" "$cap"
+    chk_has "doctor active PASS" "PASS active:" "$cap"
+    chk_has "doctor default PASS" "PASS default:" "$cap"
+    chk_has "doctor backup PASS" "PASS backup:" "$cap"
+    chk_has "doctor lock PASS" "PASS lock:" "$cap"
+    chk_has "doctor Claude PASS" "PASS claude:" "$cap"
+    chk_has "doctor shell PASS" "PASS shell:" "$cap"
+    chk_not_has "doctor hides first fixture token" "fixture-alpha-secret" "$cap"
+    chk_not_has "doctor hides credential prefix" "sk-ant-oat01-" "$cap"
+    chk_not_has "doctor hides ambient credential" "ambient-credential-must-not-print" "$cap"
+    chk "doctor preserves wallet bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk "doctor preserves active bytes" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+    chk "diagnostics invoke fake Claude only once" "1" "$(wc -l < "$CCT_SHIM_LOG" | tr -d ' ')"
+    chk "diagnostics invoke only --version" "--version" "$(cat "$CCT_SHIM_LOG")"
+
+    cct status extra >/dev/null 2>&1
+    chk "status unexpected arg -> 2" "2" "$?"
+    cct doctor extra >/dev/null 2>&1
+    chk "doctor unexpected arg -> 2" "2" "$?"
+    cct add status >/dev/null 2>&1
+    chk "status is a reserved label" "2" "$?"
+    cct add doctor >/dev/null 2>&1
+    chk "doctor is a reserved label" "2" "$?"
+    cap="$(cct help)"
+    chk_has "help documents status" "cct status" "$cap"
+    chk_has "help documents doctor" "cct doctor" "$cap"
+    rm -rf "$sb"
+    return
+  fi
+
+  echo "-- corrupt fixtures fail without mutation or secret disclosure"
+  rm -f "$CCT_ENV_FILE" "$CCT_ACTIVE_FILE" "$CCT_ENV_FILE.bak"
+  before="$([ -e "$CCT_ENV_FILE" ] && echo present || echo missing)"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "missing wallet -> 1" "1" "$rc"
+  chk_has "missing wallet classified" "FAIL wallet: missing" "$cap"
+  chk "missing wallet is not created" "$before" "$([ -e "$CCT_ENV_FILE" ] && echo present || echo missing)"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=mode-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  chmod 644 "$CCT_ENV_FILE"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "mode-644 wallet -> 1" "1" "$rc"
+  chk_has "mode-644 wallet classified" "FAIL wallet: mode 644" "$cap"
+  chk_not_has "mode failure hides token" "mode-secret" "$cap"
+  chk "mode failure preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  chk "mode failure preserves mode" "644" "$(wallet_mode "$CCT_ENV_FILE")"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=duplicate-secret-one' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'CCT_TOKEN_ALPHA=duplicate-secret-two'
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "duplicate key -> 1" "1" "$rc"
+  chk_has "duplicate reports key only" "duplicate key CCT_TOKEN_ALPHA" "$cap"
+  chk_not_has "duplicate hides first token" "duplicate-secret-one" "$cap"
+  chk_not_has "duplicate hides second token" "duplicate-secret-two" "$cap"
+  chk "duplicate preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'CCT_TOKEN_bad=invalid-key-secret'
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "empty token and malformed key -> 1" "1" "$rc"
+  chk_has "empty token reports key only" "empty value for CCT_TOKEN_ALPHA" "$cap"
+  chk_has "malformed key reports line only" "line 3: malformed key" "$cap"
+  chk_not_has "malformed key hides token" "invalid-key-secret" "$cap"
+  chk "empty/malformed fixture preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=orphan-base-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    '#cctlabel:CCT_TOKEN_GHOST=ghost'
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "orphan annotation -> 1" "1" "$rc"
+  chk_has "orphan reports line/key only" "line 3: orphan annotation CCT_TOKEN_GHOST" "$cap"
+  chk_not_has "orphan hides token" "orphan-base-secret" "$cap"
+  chk "orphan preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=stale-active-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  printf '%s\n' ghost > "$CCT_ACTIVE_FILE"
+  chmod 600 "$CCT_ACTIVE_FILE"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "stale active -> 1" "1" "$rc"
+  chk_has "stale active classified" "FAIL active: unresolved label" "$cap"
+  chk_not_has "stale active hides token" "stale-active-secret" "$cap"
+  chk "stale active preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  chk "stale active preserves active file" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+  rm -f "$CCT_ACTIVE_FILE"
+
+  cap="$(CCT_DEFAULT_LABEL=ghost cct doctor 2>&1)"; rc=$?
+  chk "stale default -> 1" "1" "$rc"
+  chk_has "stale default classified" "FAIL default: unresolved label" "$cap"
+  chk_not_has "stale default hides token" "stale-active-secret" "$cap"
+
+  cap="$(PATH="/usr/bin:/bin" cct doctor 2>&1)"; rc=$?
+  chk "missing Claude -> 1" "1" "$rc"
+  chk_has "missing Claude classified" "FAIL claude: missing" "$cap"
+
+  mkdir "$sb/hang-bin"
+  cat > "$sb/hang-bin/claude" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$$" > "$CCT_HANG_PID_FILE"
+while :; do :; done
+SHIM
+  chmod 700 "$sb/hang-bin/claude"
+  started="$(date +%s)"
+  cap="$(CCT_HANG_PID_FILE="$sb/hang.pid" PATH="$sb/hang-bin:/usr/bin:/bin" cct status 2>&1)"; rc=$?
+  elapsed=$(($(date +%s) - started))
+  hang_pid="$(cat "$sb/hang.pid" 2>/dev/null)"
+  chk "hung Claude version keeps status responsive -> 0" "0" "$rc"
+  chk "hung Claude version is bounded" "yes" "$([ "$elapsed" -le 8 ] && echo yes || echo no)"
+  chk_has "hung Claude version reports unavailable" "claude-version: unavailable" "$cap"
+  chk "hung Claude version process is gone" "gone" \
+    "$([ -n "$hang_pid" ] && kill -0 "$hang_pid" 2>/dev/null && echo live || echo gone)"
+
+  now="$(date +%s)"
+  mkdir "$CCT_ENV_FILE.lock"
+  printf '%s %s\n' "$$" "$now" > "$CCT_ENV_FILE.lock/owner"
+  before="$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "recent live lock is warning-only -> 0" "0" "$rc"
+  chk_has "recent live lock classified WARN" "WARN lock: live mutation in progress" "$cap"
+  chk "live lock owner preserved" "$before" "$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  dead_pid=999999
+  while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid+1)); done
+  mkdir "$CCT_ENV_FILE.lock"
+  printf '%s %s\n' "$dead_pid" "$((now-120))" > "$CCT_ENV_FILE.lock/owner"
+  before="$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "dead/stale lock -> 1" "1" "$rc"
+  chk_has "dead/stale lock classified FAIL" "FAIL lock: dead or stale owner" "$cap"
+  chk "dead/stale lock is not recovered" "$before" "$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  mkdir "$CCT_ENV_FILE.lock"
+  printf '%s\n' 'malformed-owner-secret' > "$CCT_ENV_FILE.lock/owner"
+  before="$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "malformed lock -> 1" "1" "$rc"
+  chk_has "malformed lock classified FAIL" "FAIL lock: malformed owner metadata" "$cap"
+  chk_not_has "malformed lock hides owner contents" "malformed-owner-secret" "$cap"
+  chk "malformed lock is not deleted" "$before" "$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  cp "$CCT_ENV_FILE" "$CCT_ENV_FILE.bak"
+  chmod 644 "$CCT_ENV_FILE.bak"
+  before="$(wallet_sha "$CCT_ENV_FILE.bak")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "mode-644 backup -> 1" "1" "$rc"
+  chk_has "mode-644 backup classified" "FAIL backup: mode 644" "$cap"
+  chk "backup mode failure preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE.bak")"
+  chk "backup mode failure preserves mode" "644" "$(wallet_mode "$CCT_ENV_FILE.bak")"
+  rm -f "$CCT_ENV_FILE.bak"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=redaction-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'BROKEN=sk-ant-oat01-never-print-this'
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "malformed wallet line -> 1" "1" "$rc"
+  chk_has "malformed wallet reports line number only" "line 3: malformed entry" "$cap"
+  chk_not_has "malformed wallet hides token" "redaction-secret" "$cap"
+  chk_not_has "malformed wallet hides raw line secret" "sk-ant-oat01-never-print-this" "$cap"
+  chk "malformed wallet preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=symlink-target-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  target="$sb/real-wallet"
+  mv "$CCT_ENV_FILE" "$target"
+  ln -s "$target" "$CCT_ENV_FILE"
+  before="$(wallet_sha "$target")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "symlink wallet -> 1" "1" "$rc"
+  chk_has "symlink wallet classified" "FAIL wallet: symbolic link" "$cap"
+  chk_not_has "symlink wallet hides token" "symlink-target-secret" "$cap"
+  chk "symlink target preserves bytes" "$before" "$(wallet_sha "$target")"
+
+  rm -f "$CCT_ENV_FILE"
+  cp "$target" "$CCT_ENV_FILE"
+  chmod 600 "$CCT_ENV_FILE"
+  ln -s "$target" "$CCT_ENV_FILE.bak"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "symlink backup -> 1" "1" "$rc"
+  chk_has "symlink backup classified" "FAIL backup: symbolic link" "$cap"
+  rm -f "$CCT_ENV_FILE.bak"
+
+  mkdir "$sb/lock-target"
+  ln -s "$sb/lock-target" "$CCT_ENV_FILE.lock"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "symlink lock -> 1" "1" "$rc"
+  chk_has "symlink lock classified" "FAIL lock: symbolic link" "$cap"
+  chk "symlink lock is not deleted" "yes" "$([ -L "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  rm -f "$CCT_ENV_FILE.lock"
+  rm -rf "$sb"
+}
+
 make_fixture(){
   local target="${1-}"
   [ -n "$target" ] || { echo "usage: $0 fixture <new-dir>" >&2; return 2; }
@@ -847,6 +1139,10 @@ make_fixture(){
     chmod 600 "$target/home/.claude/tokens.env" || exit 1
     cat > "$target/bin/claude" <<'SHIM'
 #!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  printf '%s\n' "Claude Code fixture 1.2.3"
+  exit 0
+fi
 echo "CLAUDE args=[$*] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
 exit 0
 SHIM
@@ -864,9 +1160,15 @@ case "${1:-all}" in
   sticky)  test_sticky ;;
   wallet)  test_wallet ;;
   accounts) test_accounts ;;
+  diagnostics)
+    case "${CCT_TEST_CASE:-}" in
+      ""|diagnostic-failures) test_diagnostics ;;
+      *) echo "unknown diagnostics case: ${CCT_TEST_CASE}" >&2; exit 2 ;;
+    esac
+    ;;
   fixture) shift; make_fixture "$@"; exit $? ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|fixture|all]"; exit 2 ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_diagnostics ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|diagnostics|fixture|all]"; exit 2 ;;
 esac
 
 echo
