@@ -1269,10 +1269,10 @@ make_fixture(){
   local target="${1-}"
   [ -n "$target" ] || { echo "usage: $0 fixture <new-dir>" >&2; return 2; }
   [ "$#" -eq 1 ] || { echo "usage: $0 fixture <new-dir>" >&2; return 2; }
-  [ ! -e "$target" ] && [ ! -L "$target" ] || {
+  if [ -e "$target" ] || [ -L "$target" ]; then
     echo "fixture target already exists: $target" >&2
     return 2
-  }
+  fi
   ( umask 077
     mkdir -p "$target/home/.claude" "$target/bin" || exit 1
     printf '%s\n' \
