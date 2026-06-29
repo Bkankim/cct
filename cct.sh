@@ -82,6 +82,7 @@ _cct_label_for() {  # $1 = CCT_TOKEN_XXX
 
 # 라벨 문자셋 검증: 소문자 영숫자/언더스코어만 허용.  rc 0 통과 / 2 거부.
 _cct_validate_label() {  # $1 = label
+  local LC_ALL=C
   case "${1-}" in
     "") echo "❌ 라벨이 비어 있음" >&2; return 2 ;;
     *[!a-z0-9_]*|[!a-z0-9_]*)
@@ -277,7 +278,7 @@ _cct_wallet_mutate() (
       mv "$rollback_tmp" "$CCT_ENV_FILE" 2>/dev/null || return 1
     rollback_tmp=""
   }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   _cct_wallet_on_signal() {
     trap '' HUP INT TERM
     if [ "$transaction_pending" -eq 1 ]; then
@@ -645,6 +646,7 @@ _cct_account_exists() {
 }
 
 _cct_label_is_valid() {
+  local LC_ALL=C
   case "${1-}" in
     ""|*[!a-z0-9_]*|[!a-z0-9_]*) return 1 ;;
     *) return 0 ;;
@@ -660,10 +662,10 @@ _cct_claude_binary() {
 }
 
 _cct_account_count() {
-  [ -f "$CCT_ENV_FILE" ] && [ ! -L "$CCT_ENV_FILE" ] || {
+  if [ ! -f "$CCT_ENV_FILE" ] || [ -L "$CCT_ENV_FILE" ]; then
     printf '0'
     return
-  }
+  fi
   awk -F= '
     /^CCT_TOKEN_[A-Z0-9_]+=/ {
       if (!seen[$1]++) count++
