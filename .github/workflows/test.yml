@@ -1,0 +1,83 @@
+name: Shell tests
+
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shell-tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+
+      - name: Install missing shell tools
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            case "$(uname -s)" in
+              Darwin)
+                brew install shellcheck
+                ;;
+              Linux)
+                sudo apt-get update
+                sudo apt-get install --yes shellcheck
+                ;;
+            esac
+          fi
+
+          if ! command -v zsh >/dev/null 2>&1; then
+            case "$(uname -s)" in
+              Darwin)
+                brew install zsh
+                ;;
+              Linux)
+                sudo apt-get update
+                sudo apt-get install --yes zsh
+                ;;
+            esac
+          fi
+
+      - name: Run static checks
+        run: |
+          shellcheck cct.sh install.sh tests/cct_test.sh
+          bash -n cct.sh install.sh tests/cct_test.sh
+          zsh -n cct.sh
+          git diff --check
+
+      - name: Run full suite with a clean disable environment
+        run: |
+          env \
+            -u CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+            -u CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC \
+            -u CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH \
+            bash tests/cct_test.sh all
+
+      - name: Run full suite with inherited disable variables
+        env:
+          CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1"
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH: "1"
+        run: bash tests/cct_test.sh all
