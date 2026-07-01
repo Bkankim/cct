@@ -1075,7 +1075,7 @@ _cct_launch_label() {
 }
 
 cct() {
-  local label
+  local label=""
   case "${1-}" in
     help)     _cct_help; return ;;
     ls|list)  _cct_list; return ;;
