@@ -52,7 +52,7 @@ add_tok(){ # label token [confirm]
 }
 
 wallet_mode(){
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
 wallet_sha(){
@@ -85,7 +85,7 @@ chk_ignore_patterns(){
 }
 
 wallet_inode(){
-  stat -f '%i' "$1" 2>/dev/null || stat -c '%i' "$1"
+  stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1"
 }
 
 write_account_fixture(){
@@ -361,7 +361,7 @@ test_cct(){
   chk_has "claude off PATH -> probe-unavailable msg" "점검 불가" "$cap"
 
   echo "-- H2: update path leaves tokens.env at mode 600"
-  chk "tokens.env mode 600" "600" "$(stat -f '%Lp' "$CCT_ENV_FILE" 2>/dev/null || stat -c '%a' "$CCT_ENV_FILE")"
+  chk "tokens.env mode 600" "600" "$(stat -c '%a' "$CCT_ENV_FILE" 2>/dev/null || stat -f '%Lp' "$CCT_ENV_FILE")"
 
   echo "-- N5: write failure -> rc 1 and NO success line"
   local bad="$sb/locked"; mkdir -p "$bad"; chmod 000 "$bad"
@@ -499,7 +499,7 @@ test_wallet(){
   chk_has "characterization rotate replaces token" "CCT_TOKEN_ALPHA=sk-alpha-new" "$(cat "$CCT_ENV_FILE")"
   chk_has "characterization preserves comments" "# user comment" "$(cat "$CCT_ENV_FILE")"
   chk_has "characterization preserves unrelated lines" "OTHER=keep" "$(cat "$CCT_ENV_FILE")"
-  chk "characterization wallet mode 600" "600" "$(stat -f '%Lp' "$CCT_ENV_FILE" 2>/dev/null || stat -c '%a' "$CCT_ENV_FILE")"
+  chk "characterization wallet mode 600" "600" "$(stat -c '%a' "$CCT_ENV_FILE" 2>/dev/null || stat -f '%Lp' "$CCT_ENV_FILE")"
   case "$cap" in *sk-alpha-new*) chk "characterization output hides token" "hidden" "exposed" ;; *) chk "characterization output hides token" "hidden" "hidden" ;; esac
 
   rm -rf "$sb"
