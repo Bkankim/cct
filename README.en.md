@@ -1,62 +1,112 @@
-# cct — Claude Code multi-account switcher
+# cct — Portable Claude Account Wallet
 
 [한국어](README.md) · **English**
 
-Switch between multiple Claude subscription accounts with a single `cct <label>`. Each account's long-lived OAuth token is kept locally and injected at launch. **Works on macOS / Linux / WSL2. Not a proxy (env-var injection).**
+Authenticate each Claude account once with `claude setup-token`, register the long-lived token in a local wallet, and explicitly select an account with `cct <label>` whenever you need it. Move the wallet securely to use Claude Code in a new environment without repeating browser OAuth login for every account.
 
-## Install (any PC)
+**Works on macOS, Linux, and WSL2.** It is not a proxy, orchestrator, automatic router, or load balancer. The user always chooses which account to use.
 
-**One-liner** (fastest):
+## Install
+
+Cloning and reviewing the script before installation is recommended.
+
+```sh
+git clone https://github.com/Bkankim/cct.git
+cd cct
+bash install.sh
+exec "$SHELL"
+```
+
+A one-line install is also available. Because `curl | bash` executes remote code immediately, review it first.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Bkankim/cct/main/install.sh | bash
 ```
-Or **clone then install** (recommended if you want to read the script first — `curl|bash` runs remote code directly):
+
+The installer places `cct.sh` at `~/.claude/cct.sh` and adds a `source` line to the Bash or Zsh startup file. It creates a mode-`600` wallet template only when one is missing. Reinstalling does not overwrite an existing `tokens.env`, backup, active label, or in-progress lock/temp file. Git ignore rules are appended without replacing the user's existing configuration.
+
+## Quick start
+
+Authenticate each account once in a trusted environment and register its setup-token.
+
 ```sh
-git clone https://github.com/Bkankim/cct.git
-cd cct && bash install.sh
+claude auth login --claudeai  # confirm the account shown in the browser
+claude setup-token            # copy the issued value
+cct add work                  # paste it into the hidden prompt
+
+cct work                      # explicitly select and launch the work account
+cct personal                  # switch to the personal account
 ```
-Then `exec $SHELL` (or a new terminal / `source ~/.claude/cct.sh`).
-`install.sh` is idempotent (safe to re-run) and:
-- installs `cct.sh` to `~/.claude/cct.sh` and adds a `source` line to your shell rc (`~/.zshrc`/`~/.bashrc`)
-- creates a `~/.claude/tokens.env` template (only if missing) with `chmod 600`
-- registers `tokens.env` in local + global gitignore (prevents accidental commits)
-- ⚠️ does NOT force `cc`/`ㅊㅊ` aliases (avoids clobbering `cc`=C compiler on build machines)
+
+A `setup-token` is the current mechanism for long-lived use, but its lifetime and permanence are not guaranteed. Observed lifetime and provider policy can change. If a token expires, is revoked, or policy changes, issue a new token for that account and replace it with `cct add <label>`.
 
 ## Commands
-| Command | What it does |
-|---|---|
-| `cct` | Run with the sticky active profile — falls back to `CCT_DEFAULT_LABEL` (default `gv`). `--dangerously-skip-permissions` |
-| `cct <label>` | Run as that account's token (e.g. `cct gv`, `cct pro1`) |
-| `cct ls` | List registered accounts |
-| `cct add <label>` | Register/update a token (hidden input) |
-| `cct check [label]` | Validate token(s) via a real call |
-| `cct fp [label]` | Account fingerprint — duplicate detection (same `7d_reset` = same account) |
-| `cct active` | Show the current sticky active profile |
-| `cct off` | Clear the active profile |
-| `cct help` | Help |
 
-`cct <label>` disables Advisor/nonessential web calls by default to avoid Claude Code 2.1.185+ failures where long-lived `claude setup-token` OAuth tokens are inference-only. Opt back in with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`.
+| Command | Behavior | Main exit codes |
+|---|---|---|
+| `cct [claude args...]` | Launch the sticky active label, or `CCT_DEFAULT_LABEL` (default `gv`) when none is active | Claude exit code; configuration error `1`; usage/label error `2` |
+| `cct <label> [claude args...]` | Select that account and forward all Claude arguments | Claude exit code; account missing `1`; label error `2` |
+| `cct run <label> [claude args...]` | Explicitly launch even a reserved label such as `rm` | Claude exit code; account missing `1`; usage/label error `2` |
+| `cct ls` / `cct list` | List registered accounts without token values | success `0` |
+| `cct add <label>` | Register a setup-token or replace an existing one through hidden input | success `0`; cancellation/storage failure `1`; usage error `2` |
+| `cct rm <label> [--force]` | Remove the account and annotation after a default `[y/N]` prompt | success `0`; cancellation/failure `1`; usage error `2` |
+| `cct rename <old> <new>` | Change the label and active state without changing token bytes | success `0`; collision/failure `1`; usage error `2` |
+| `cct status` | Show wallet path/mode/count, active/default label, sticky state, and local Claude version offline | success `0`; usage error `2` |
+| `cct doctor` | Diagnose wallet structure, permissions, backup, lock, Claude, and shell as `PASS/WARN/FAIL`, offline | no FAIL `0`; health failure `1`; usage error `2` |
+| `cct check [label]` | Validate token(s) with a real Claude call | valid `0`; invalid/unavailable `1`; no token `2`; all-label mode returns `1` if any fail |
+| `cct fp [label]` / `cct who [label]` | Compare account fingerprints returned by a real call | A validly formed label returns `0` even when the token is missing or the probe response fails (output-only); invalid label `2` |
+| `cct active` | Show the current sticky active label | success `0` |
+| `cct off` | Remove active state and cct auth variables from the current shell | success `0`; state deletion failure `1` |
+| `cct help` | Show built-in help | success `0` |
 
-**Sticky active profile (on by default):** running `cct <label>` once remembers that account as the active profile — it `export`s the token into the current shell, writes the label to `~/.claude/cct-active`, and new terminals auto-load it on startup. So a plain `claude` / `cc` / new terminal keeps using the last selected account until you run `cct <other>` or `cct off`. Disable with `CCT_STICKY=0`.
+Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z0-9_]*`. `cct <label>` disables Advisor and nonessential web calls by default. Opt in only when needed with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`.
 
-Labels must use lowercase letters, digits, and underscores only (`[a-z0-9_][a-z0-9_]*`). Examples: `gv`, `pro1`, `work_main`.
+Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active`, so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection.
 
-## Tokens are separate (not in the repo)
-Tokens live only in `~/.claude/tokens.env` (plaintext, `600`, keys `CCT_TOKEN_<label>`) and are **never part of the repo** (blocked by `.gitignore`). On a new PC:
-- **Option A** — register each account directly:
-  ```sh
-  claude auth login --claudeai   # confirm the account shown in the browser (the only source of truth)
-  claude setup-token             # copy the token
-  cct add pro1                   # paste it
-  ```
-- **Option B** — move your existing `tokens.env` securely to `~/.claude/tokens.env` (prefer a password manager; never plaintext cloud sync), then `chmod 600`.
+## Portability and the OSS boundary
 
-## Issuing tokens
-Use `claude setup-token` (Pro/Max subscription, ~1-year validity). Tokens are machine-independent — works after a PC wipe as long as you kept the value. `sk-ant-oat01-` = subscription OAuth (uses your subscription); `sk-ant-api03-` = API key (metered) — this tool uses the former.
+Real credentials live only outside the repository in `~/.claude/tokens.env` (or `CCT_ENV_FILE`). The public repository contains no real wallet, and cloning it grants access to no account. `.gitignore` and the installer's global ignore entries reduce accidents; they are not a security boundary, and users remain responsible for never adding credential files to Git.
 
-## Security
-- `tokens.env` is plaintext → `chmod 600`, **never commit** (auto-gitignored). A token is password-grade; if leaked, re-issue with `claude setup-token`.
-- **WSL2**: keep the token file in the Linux home (`~/.claude`). `/mnt/c` paths void `chmod`; use Windows BitLocker for at-rest protection.
+Move the wallet through an encrypted channel such as a password manager's secure file transfer.
+
+```sh
+mkdir -p ~/.claude
+# restore tokens.env from the password manager to ~/.claude/tokens.env
+chmod 600 ~/.claude/tokens.env
+cct doctor
+```
+
+Do not use plaintext cloud sync, chat, email, or a Git commit to move the wallet. Its line format is `CCT_TOKEN_<LABEL>=<SETUP_TOKEN>`; `<SETUP_TOKEN>` is an obvious placeholder, not a credential.
+
+## Storage, backup, and locking
+
+`add`, `rm`, and `rename` write a mode-`600` temporary file in the same directory and finish with an atomic `mv`. Before changing an existing wallet, cct creates a mode-`600` rolling backup at `tokens.env.bak`. Only one rolling backup is retained; keep any longer-term copy in separate encrypted storage.
+
+Concurrent mutations are serialized by a `tokens.env.lock/` directory. A recent live owner makes the operation fail as busy. A dead owner or lock older than 60 seconds can be reclaimed by the next mutation after safety checks. `cct doctor` only reports the condition; it never recovers or modifies files.
+
+If the wallet is damaged, first make sure no cct mutation is still running, then restore the backup.
+
+```sh
+cp ~/.claude/tokens.env.bak ~/.claude/tokens.env
+chmod 600 ~/.claude/tokens.env
+cct doctor
+```
+
+Removing or renaming the active account treats wallet and active-state changes as a recoverable transaction. If the active-state write fails, cct restores the verified wallet backup.
+
+## Threat model and operational security
+
+- Treat a setup-token with the same sensitivity as an account password. Revoke or reissue an exposed token for that account, then replace it with `cct add <label>`.
+- Portability uses a plaintext wallet. Mode `600` limits ordinary access by other local users, but it does not stop administrators, malware, a compromised user account, or disk theft. Pair it with at-rest encryption such as macOS FileVault, Linux full-disk encryption, or Windows BitLocker.
+- `tokens.env.bak` is as sensitive as the primary wallet. Protect it in backups, snapshots, and diagnostic bundles.
+- On WSL2, keep the wallet under the Linux home directory at `~/.claude`. Avoid `/mnt/c`, where Linux `chmod 600` semantics may be weakened.
+- Do not expose tokens on shared computers, public CI, shell traces (`set -x`), process arguments, or logs. `status` and `doctor` neither print tokens nor validate them over the network.
+- Expiry and server-side revocation are normal operational events. cct does not store OAuth refresh state or reauthenticate automatically, so issue a new setup-token for the affected account.
+
+## Intentional non-goals
+
+cct is not an OAuth refresh service, proxy, orchestrator, automatic or quota-based router, load balancer, GUI, or daemon. It does not inspect account state to choose the “best” account and never replaces the user's explicit choice. It also requires neither macOS Keychain nor a separate runtime.
 
 ## License
-MIT — see [LICENSE](LICENSE)
+
+MIT — [LICENSE](LICENSE)

@@ -10,54 +10,120 @@ mkdir -p "$DEST"
 
 append_missing() {
   local file="$1" line="$2"
-  grep -qxF "$line" "$file" 2>/dev/null || printf '%s\n' "$line" >> "$file"
+  if grep -qxF "$line" "$file" 2>/dev/null; then
+    return
+  fi
+  if [ -s "$file" ] && [ "$(tail -c 1 "$file" | wc -l | tr -d ' ')" -eq 0 ]; then
+    printf '\n' >> "$file" || return 1
+  fi
+  printf '%s\n' "$line" >> "$file"
+}
+
+append_wallet_ignores() {
+  local file="$1" pattern
+  for pattern in \
+    "tokens.env" \
+    ".claude/tokens.env" \
+    "tokens.env.bak" \
+    ".claude/tokens.env.bak" \
+    "tokens.env.tmp.*" \
+    ".claude/tokens.env.tmp.*" \
+    "tokens.env.lock/" \
+    ".claude/tokens.env.lock/"
+  do
+    append_missing "$file" "$pattern" || return 1
+  done
 }
 
 # 런처 확보: 스크립트 파일로 실행됐고($0가 실제 파일) 옆에 cct.sh 있으면 복사(clone 모드).
 # curl|bash 처럼 파이프로 실행되면 $0가 파일이 아니므로 → 원격 다운로드 (cwd의 엉뚱한 cct.sh 회피)
 SRC_DIR=""
 [ -f "$0" ] && SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "")"
+LAUNCHER="$DEST/cct.sh"
+LAUNCHER_TMP="$DEST/.cct.sh.install.$$"
+if [ -e "$LAUNCHER" ] || [ -L "$LAUNCHER" ]; then
+  if [ ! -f "$LAUNCHER" ] || [ -L "$LAUNCHER" ]; then
+    echo "❌ 런처 경로가 일반 파일이 아닙니다: $LAUNCHER" >&2
+    exit 1
+  fi
+fi
+cleanup_launcher_tmp() {
+  rm -f "$LAUNCHER_TMP"
+}
+abort_launcher_install() {
+  cleanup_launcher_tmp
+  trap - EXIT HUP INT TERM
+  exit 1
+}
+trap cleanup_launcher_tmp EXIT
+trap abort_launcher_install HUP INT TERM
 if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/cct.sh" ]; then
-  cp "$SRC_DIR/cct.sh" "$DEST/cct.sh"
-  echo "✓ 런처(로컬 복사): $DEST/cct.sh"
+  cp "$SRC_DIR/cct.sh" "$LAUNCHER_TMP"
+  launcher_message="✓ 런처(로컬 복사): $LAUNCHER"
 else
   command -v curl >/dev/null 2>&1 || { echo "❌ curl 이 필요합니다."; exit 1; }
-  curl -fsSL "$REPO_RAW/cct.sh" -o "$DEST/cct.sh"
-  echo "✓ 런처(원격 다운로드): $DEST/cct.sh"
+  curl -fsSL "$REPO_RAW/cct.sh" -o "$LAUNCHER_TMP"
+  launcher_message="✓ 런처(원격 다운로드): $LAUNCHER"
 fi
+mv "$LAUNCHER_TMP" "$LAUNCHER"
+trap - EXIT HUP INT TERM
+echo "$launcher_message"
 
 # tokens.env 템플릿 (없을 때만 — 기존 토큰 보존)
-if [ ! -f "$DEST/tokens.env" ]; then
-  printf '# Claude Code 계정 토큰  (평문! chmod 600 · git 금지)\n# 등록: cct add <라벨>   예: cct add gv / cct add pro1\n' > "$DEST/tokens.env"
+WALLET="$DEST/tokens.env"
+if [ ! -e "$WALLET" ] && [ ! -L "$WALLET" ]; then
+  (
+    umask 077
+    printf '# Claude Code 계정 토큰  (평문! chmod 600 · git 금지)\n# 등록: cct add <라벨>   예: cct add gv / cct add pro1\n' > "$WALLET"
+  )
+  chmod 600 "$WALLET"
   echo "✓ tokens.env 템플릿 생성"
 else
   echo "• tokens.env 이미 존재 — 보존"
 fi
-chmod 600 "$DEST/tokens.env"
 
 # 로컬 .gitignore
-touch "$DEST/.gitignore"
-append_missing "$DEST/.gitignore" "tokens.env"
-append_missing "$DEST/.gitignore" ".credentials.json"
-append_missing "$DEST/.gitignore" "*.key"
-append_missing "$DEST/.gitignore" "*.pem"
+LOCAL_IGNORE="$DEST/.gitignore"
+if { [ -e "$LOCAL_IGNORE" ] || [ -L "$LOCAL_IGNORE" ]; } && [ ! -f "$LOCAL_IGNORE" ]; then
+  echo "❌ 로컬 gitignore 경로가 일반 파일이 아닙니다: $LOCAL_IGNORE" >&2
+  exit 1
+fi
+touch "$LOCAL_IGNORE"
+append_wallet_ignores "$LOCAL_IGNORE"
+append_missing "$LOCAL_IGNORE" ".credentials.json"
+append_missing "$LOCAL_IGNORE" "*.key"
+append_missing "$LOCAL_IGNORE" "*.pem"
 
 # 전역 gitignore 안전망 (git 있을 때)
 if command -v git >/dev/null 2>&1; then
   # 기존 core.excludesfile 보존: set -eu 에서 미설정 키의 비제로 rc 로 중단되지 않게 || true 가드
   CUR="$(git config --global --get core.excludesfile 2>/dev/null || true)"
   if [ -n "$CUR" ]; then
-    # 이미 설정됨 → 덮어쓰지 말고 그 파일에 패턴만 추가. 변수에 담긴 ~ 는 셸이 확장하지 않으므로 직접 확장.
     TILDE="~"
-    case "$CUR" in "$TILDE") CUR="$HOME" ;; "$TILDE"/*) CUR="$HOME/${CUR#"$TILDE"/}" ;; esac
-    GIG="$CUR"
+    case "$CUR" in
+      "$TILDE") GIG="$HOME" ;;
+      "$TILDE"/*) GIG="$HOME/${CUR#"$TILDE"/}" ;;
+      /*) GIG="$CUR" ;;
+      *) GIG="$PWD/$CUR" ;;
+    esac
   else
     GIG="${HOME}/.gitignore_global"
   fi
-  if touch "$GIG" 2>/dev/null; then
-    append_missing "$GIG" "tokens.env"
-    append_missing "$GIG" ".claude/tokens.env"
-    [ -n "$CUR" ] || git config --global core.excludesfile "$GIG" || true
+
+  global_ignore_ok=1
+  if { [ -e "$GIG" ] || [ -L "$GIG" ]; } && [ ! -f "$GIG" ]; then
+    global_ignore_ok=0
+  elif ! touch "$GIG" 2>/dev/null || ! append_wallet_ignores "$GIG" 2>/dev/null; then
+    global_ignore_ok=0
+  fi
+
+  if [ "$global_ignore_ok" -eq 1 ] && [ -z "$CUR" ]; then
+    if ! git config --global core.excludesfile "$GIG"; then
+      global_ignore_ok=0
+    fi
+  fi
+
+  if [ "$global_ignore_ok" -eq 1 ]; then
     echo "✓ 전역 gitignore: $GIG"
   else
     echo "⚠ 전역 gitignore 경로 접근 불가(건너뜀): $GIG"
