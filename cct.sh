@@ -159,7 +159,7 @@ EOF
 _CCT_LOCK_STALE_SECS=60
 
 _cct_wallet_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 _cct_wallet_busy() {
