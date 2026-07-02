@@ -100,8 +100,71 @@ test_install(){
   echo "== install.sh (portable wallet preservation + ignore coverage) =="
   local H G rc MINE cap wallet_before backup_before active_before temp_before owner_before
   local wallet_mode_before backup_mode_before active_mode_before temp_mode_before owner_mode_before target
+  local attack_before launcher_before launcher_mode config_value other_repo
 
   if [ "${CCT_TEST_CASE:-}" = "install-failures" ]; then
+    echo "-- security: a predictable launcher temp symlink cannot redirect the copy"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude"
+    target="$H/preplanted-target"
+    printf '%s\n' 'do-not-overwrite-predictable-target' > "$target"
+    attack_before="$(wallet_sha "$target")"
+    cap="$(
+      cd "$REPO" &&
+        HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash REPO="$REPO" TARGET="$target" \
+          bash -c '
+            ln -s "$TARGET" "$HOME/.claude/.cct.sh.install.$$"
+            exec bash "$REPO/install.sh"
+          ' 2>&1
+    )"; rc=$?
+    chk "predictable temp attack install rc=0" "0" "$rc"
+    chk "predictable temp attack target preserved" "$attack_before" "$(wallet_sha "$target")"
+    chk "predictable temp attack installs regular launcher" "yes" \
+      "$([ -f "$H/.claude/cct.sh" ] && [ ! -L "$H/.claude/cct.sh" ] && echo yes || echo no)"
+    chk_not_has "predictable temp attack has no false failure" "런처 설치 실패" "$cap"
+    rm -rf "$H"
+
+    echo "-- security: a malicious mktemp symlink is rejected without following it"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude" "$H/bin"
+    target="$H/mktemp-target"
+    printf '%s\n' 'do-not-overwrite-mktemp-target' > "$target"
+    attack_before="$(wallet_sha "$target")"
+    printf '%s\n' 'old-launcher-must-survive' > "$H/.claude/cct.sh"
+    launcher_before="$(wallet_sha "$H/.claude/cct.sh")"
+    cat > "$H/bin/mktemp" <<'SHIM'
+#!/bin/sh
+path="${1%XXXXXX}ABC123"
+ln -s "$CCT_MKTEMP_TARGET" "$path"
+printf '%s\n' "$path"
+SHIM
+    chmod 700 "$H/bin/mktemp"
+    cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash \
+      CCT_MKTEMP_TARGET="$target" PATH="$H/bin:$PATH" bash install.sh 2>&1)"; rc=$?
+    chk "malicious mktemp symlink rc=1" "1" "$rc"
+    chk "malicious mktemp target preserved" "$attack_before" "$(wallet_sha "$target")"
+    chk "malicious mktemp preserves old launcher" "$launcher_before" "$(wallet_sha "$H/.claude/cct.sh")"
+    chk_not_has "malicious mktemp has no launcher success" "런처(로컬 복사)" "$cap"
+    chk_not_has "malicious mktemp has no completion claim" "설치 완료" "$cap"
+    rm -rf "$H"
+
+    echo "-- failure: copy failure cleans only its owned random launcher temp"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude" "$H/bin"
+    printf '%s\n' 'old-launcher-must-survive-copy-failure' > "$H/.claude/cct.sh"
+    launcher_before="$(wallet_sha "$H/.claude/cct.sh")"
+    cat > "$H/bin/cp" <<'SHIM'
+#!/bin/sh
+exit 19
+SHIM
+    chmod 700 "$H/bin/cp"
+    cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash \
+      PATH="$H/bin:$PATH" bash install.sh 2>&1)"; rc=$?
+    chk "injected launcher copy failure rc=1" "1" "$rc"
+    chk "copy failure preserves old launcher" "$launcher_before" "$(wallet_sha "$H/.claude/cct.sh")"
+    chk "copy failure cleans owned random temp" "0" \
+      "$(find "$H/.claude" -maxdepth 1 -name '.cct.sh.install.*' -print | wc -l | tr -d ' ')"
+    chk_not_has "copy failure has no launcher success" "런처(로컬 복사)" "$cap"
+    chk_not_has "copy failure has no completion claim" "설치 완료" "$cap"
+    rm -rf "$H"
+
     echo "-- failure: an existing wallet symlink is preserved without following it"
     H="$(mktemp -d)/home with spaces"; mkdir -p "$H/.claude"; G="$H/git config"
     target="$H/wallet target"
@@ -182,10 +245,13 @@ SHIM
 
   echo "-- happy: fresh HOME with spaces creates a private wallet and exact ignores"
   H="$(mktemp -d)/home with spaces"; mkdir -p "$H"; G="$H/git config"
-  ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1; rc=$?
+  cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh 2>&1)"; rc=$?
   chk "fresh installer rc=0" "0" "$rc"
+  chk_not_has "fresh installer does not report a missing startup file" "No such file" "$cap"
   chk "fresh wallet exists" "yes" "$([ -f "$H/.claude/tokens.env" ] && echo yes || echo no)"
   chk "fresh wallet mode 600" "600" "$(wallet_mode "$H/.claude/tokens.env")"
+  launcher_mode="$(wallet_mode "$H/.claude/cct.sh")"
+  chk "fresh launcher mode 600" "600" "$launcher_mode"
   chk ".zshrc source line once" "1" "$(count_exact "$H/.zshrc" 'source ~/.claude/cct.sh')"
   chk ".bashrc not created" "no" "$([ -e "$H/.bashrc" ] && echo yes || echo no)"
   chk "default global ignore configured" "$H/.gitignore_global" \
@@ -194,6 +260,27 @@ SHIM
   chk_ignore_patterns "local wallet ignore" "$H/.claude/.gitignore"
   chk_ignore_patterns "default global ignore" "$H/.gitignore_global"
   rm -rf "${H%/home with spaces}"
+
+  echo "-- happy: current shell startup file is mandatory when only the other shell rc exists"
+  H="$(mktemp -d)"; G="$H/.gitconfig"
+  printf '%s\n' '# preserve bash-only config' > "$H/.bashrc"
+  ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1; rc=$?
+  chk "zsh with only bashrc install rc=0" "0" "$rc"
+  chk "zsh startup is created" "1" "$(count_exact "$H/.zshrc" 'source ~/.claude/cct.sh')"
+  chk "foreign bash config is preserved" "1" "$(count_exact "$H/.bashrc" '# preserve bash-only config')"
+  chk "existing bashrc may also be configured once" "1" "$(count_exact "$H/.bashrc" 'source ~/.claude/cct.sh')"
+  ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh ) >/dev/null 2>&1
+  chk "zsh startup remains idempotent" "1" "$(count_exact "$H/.zshrc" 'source ~/.claude/cct.sh')"
+  chk "bash startup remains idempotent" "1" "$(count_exact "$H/.bashrc" 'source ~/.claude/cct.sh')"
+  rm -rf "$H"
+
+  H="$(mktemp -d)"; G="$H/.gitconfig"
+  printf '%s\n' '# preserve zsh-only config' > "$H/.zshrc"
+  ( cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash install.sh ) >/dev/null 2>&1; rc=$?
+  chk "bash with only zshrc install rc=0" "0" "$rc"
+  chk "bash startup is created" "1" "$(count_exact "$H/.bashrc" 'source ~/.claude/cct.sh')"
+  chk "foreign zsh config is preserved" "1" "$(count_exact "$H/.zshrc" '# preserve zsh-only config')"
+  rm -rf "$H"
 
   echo "-- happy: two reinstalls preserve every wallet/state artifact and user configuration"
   H="$(mktemp -d)/home with spaces"; mkdir -p "$H/.claude"; G="$H/git config"; MINE="$H/custom ignore"
@@ -254,9 +341,29 @@ SHIM
   HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global core.excludesfile "$MINE"
   ( cd "$H/work" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash "$REPO/install.sh" ) >/dev/null 2>&1; rc=$?
   chk "relative-path install rc=0" "0" "$rc"
-  chk "relative config value preserved" "$MINE" \
-    "$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
+  config_value="$(HOME="$H" GIT_CONFIG_GLOBAL="$G" git config --global --get core.excludesfile)"
+  chk "relative config normalized to the same absolute target" "$(cd "$H/work" && pwd -P)/$MINE" "$config_value"
   chk_ignore_patterns "relative global ignore" "$H/work/relative ignore"
+  other_repo="$H/other-repo"
+  mkdir -p "$other_repo/.claude"
+  ( cd "$other_repo" && git init -q )
+  : > "$other_repo/.claude/tokens.env"
+  ( cd "$other_repo" && HOME="$H" GIT_CONFIG_GLOBAL="$G" git check-ignore -q .claude/tokens.env ); rc=$?
+  chk "normalized relative global ignore works from another repository" "0" "$rc"
+  rm -rf "$H"
+
+  echo "-- happy: installer presents the portable wallet workflow"
+  H="$(mktemp -d)"; G="$H/.gitconfig"
+  cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/zsh bash install.sh 2>&1)"; rc=$?
+  chk "portable wallet onboarding install rc=0" "0" "$rc"
+  chk_has "installer names the portable wallet" "휴대용 Claude 계정 지갑" "$cap"
+  chk_has "installer onboarding includes status" "cct status" "$cap"
+  chk_has "installer onboarding includes doctor" "cct doctor" "$cap"
+  chk_has "installer explains manual account selection" "cct <계정명>" "$cap"
+  chk_has "installer explains no repeated OAuth login" "OAuth 재로그인 없이" "$cap"
+  chk_not_has "installer output drops old switcher branding" "계정 스위처" "$cap"
+  chk_not_has "shell rc comment drops old switcher branding" "계정 스위처" "$(cat "$H/.zshrc")"
+  chk_has "shell rc comment names the portable wallet" "휴대용 Claude 계정 지갑(cct)" "$(cat "$H/.zshrc")"
   rm -rf "$H"
 }
 
