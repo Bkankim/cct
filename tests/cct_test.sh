@@ -383,7 +383,7 @@ test_cct(){
 # Edge cases + cross-shell smoke (install tilde expansion, zsh sourcing).
 test_extra(){
   echo "== edge + cross-shell =="
-  local H G rc out sbz
+  local H G rc out sbz fp_token fp_stdin
   export CCT_STICKY=0   # 크로스셸 스모크도 비고정(inline) 기준
   echo "-- install.sh H1: stored ~-path core.excludesfile is tilde-expanded (not literal)"
   H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/sub"
@@ -417,6 +417,36 @@ test_extra(){
   out="$(printf 'sk-first\n' | PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/new.env" bash -e -o pipefail -c ". '$REPO/cct.sh'; cct add first >/dev/null; cct first" 2>&1)"; rc=$?
   chk "bash set -e pipefail: first add and run -> 0" "0" "$rc"
   chk_has "bash set -e pipefail: first add injects token" "tok=[sk-first]" "$out"
+
+  echo "-- fingerprint sends Authorization only through curl stdin"
+  sbz="$(mktemp -d)"; mkdir "$sbz/bin"
+  fp_token="fixture-fp-secret"
+  write_account_fixture "$sbz/tokens.env" \
+    "CCT_TOKEN_ALPHA=$fp_token" \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  cat > "$sbz/bin/curl" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$@" > "$CCT_CURL_ARGV"
+cat > "$CCT_CURL_STDIN"
+printf '%s\n' \
+  'HTTP/1.1 200 OK' \
+  'anthropic-organization-id: org123456789' \
+  'anthropic-ratelimit-unified-7d-reset: 7d-window' \
+  'anthropic-ratelimit-unified-5h-reset: 5h-window' \
+  'anthropic-ratelimit-unified-5h-utilization: 0.25'
+SHIM
+  chmod 700 "$sbz/bin/curl"
+  out="$(PATH="$sbz/bin:/usr/bin:/bin" CCT_ENV_FILE="$sbz/tokens.env" \
+    CCT_CURL_ARGV="$sbz/curl.argv" CCT_CURL_STDIN="$sbz/curl.stdin" \
+    bash -c ". '$REPO/cct.sh'; cct fp alpha" 2>&1)"; rc=$?
+  fp_stdin="$(cat "$sbz/curl.stdin" 2>/dev/null)"
+  chk "fingerprint fake request -> 0" "0" "$rc"
+  chk_not_has "fingerprint token absent from curl argv" "$fp_token" "$(cat "$sbz/curl.argv" 2>/dev/null)"
+  chk_not_has "fingerprint token absent from output" "$fp_token" "$out"
+  chk "fingerprint Authorization arrives only on stdin" "Authorization: Bearer $fp_token" "$fp_stdin"
+  chk_has "fingerprint uses curl stdin header file" "@-" "$(cat "$sbz/curl.argv" 2>/dev/null)"
+  chk_has "fingerprint output semantics preserved" "org:org12345" "$out"
+  rm -rf "$sbz"
 
   if command -v zsh >/dev/null 2>&1; then
     echo "-- zsh smoke: cct.sh sources and runs under zsh (exercises zsh-only branches)"
@@ -510,15 +540,52 @@ test_wallet(){
     printf '# locked wallet\nCCT_TOKEN_ALPHA=sk-alpha\n#cctlabel:CCT_TOKEN_ALPHA=alpha\n' > "$CCT_ENV_FILE"
     chmod 600 "$CCT_ENV_FILE"
     mkdir "$CCT_ENV_FILE.lock"
-    printf '%s %s\n' "$$" "$(date +%s)" > "$CCT_ENV_FILE.lock/owner"
+    printf '%s %s\n' "$$" "$(($(date +%s)-120))" > "$CCT_ENV_FILE.lock/owner"
     before="$(wallet_sha "$CCT_ENV_FILE")"
     cap="$(add_tok beta "sk-beta" 2>&1)"; rc=$?
     after="$(wallet_sha "$CCT_ENV_FILE")"
-    chk "live lock mutation returns nonzero" "1" "$rc"
-    chk "live lock preserves wallet SHA-256" "$before" "$after"
-    chk_has "live lock reports wallet busy" "wallet busy" "$cap"
-    chk "live lock owner remains intact" "yes" "$([ -f "$CCT_ENV_FILE.lock/owner" ] && echo yes || echo no)"
-    case "$cap" in *완료*) chk "live lock prints no success line" "no" "yes" ;; *) chk "live lock prints no success line" "no" "no" ;; esac
+    chk "aged live lock mutation returns nonzero" "1" "$rc"
+    chk "aged live lock preserves wallet SHA-256" "$before" "$after"
+    chk_has "aged live lock reports wallet busy" "wallet busy" "$cap"
+    chk "aged live lock owner remains intact" "yes" "$([ -f "$CCT_ENV_FILE.lock/owner" ] && echo yes || echo no)"
+    case "$cap" in *완료*) chk "aged live lock prints no success line" "no" "yes" ;; *) chk "aged live lock prints no success line" "no" "no" ;; esac
+    rm -rf "$CCT_ENV_FILE.lock"
+
+    echo "-- concurrent writer is refused while owner is live, without lost update"
+    mkdir "$sb/block-cp"
+    cat > "$sb/block-cp/cp" <<'SHIM'
+#!/bin/sh
+: > "$CCT_LOCK_HELD_MARKER"
+i=0
+while [ ! -e "$CCT_LOCK_RELEASE_MARKER" ] && [ "$i" -lt 500 ]; do
+  sleep 0.01
+  i=$((i + 1))
+done
+exec "$CCT_REAL_CP" "$@"
+SHIM
+    chmod 700 "$sb/block-cp/cp"
+    before="$(wallet_sha "$CCT_ENV_FILE")"
+    (
+      CCT_LOCK_HELD_MARKER="$sb/held" CCT_LOCK_RELEASE_MARKER="$sb/release" \
+        CCT_REAL_CP="$(command -v cp)" PATH="$sb/block-cp:$PATH" \
+        add_tok first "sk-first-concurrent" >"$sb/first.out" 2>&1
+      printf '%s\n' "$?" > "$sb/first.rc"
+    ) &
+    local first_pid=$! wait_i=0
+    while [ ! -e "$sb/held" ] && [ "$wait_i" -lt 500 ]; do
+      sleep 0.01
+      wait_i=$((wait_i + 1))
+    done
+    cap="$(add_tok second "sk-second-concurrent" 2>&1)"; rc=$?
+    chk "concurrent second writer returns nonzero" "1" "$rc"
+    chk "concurrent refusal preserves pre-commit wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+    chk_has "concurrent refusal reports wallet busy" "wallet busy" "$cap"
+    : > "$sb/release"
+    wait "$first_pid"
+    chk "first writer completes after release" "0" "$(cat "$sb/first.rc" 2>/dev/null)"
+    chk_has "first writer update is retained" "CCT_TOKEN_FIRST=sk-first-concurrent" "$(cat "$CCT_ENV_FILE")"
+    chk "refused second writer creates no lost update" "0" \
+      "$(grep -c '^CCT_TOKEN_SECOND=' "$CCT_ENV_FILE" || true)"
     rm -rf "$sb"
     return
   fi
@@ -564,6 +631,30 @@ test_wallet(){
   chk "dead stale lock is reclaimed" "0" "$rc"
   chk_has "stale-lock mutation stored account" "CCT_TOKEN_STALE=sk-stale" "$(cat "$CCT_ENV_FILE")"
   chk "stale-lock mutation releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  echo "-- cleanup preserves a successor lock owner and reports failure"
+  mkdir "$sb/successor-mv"
+  cat > "$sb/successor-mv/mv" <<'SHIM'
+#!/bin/sh
+last=""
+for arg do last="$arg"; done
+"$CCT_REAL_MV" "$@" || exit $?
+if [ "$last" = "$CCT_ENV_FILE" ]; then
+  printf '%s\n' "$CCT_SUCCESSOR_OWNER" > "$CCT_ENV_FILE.lock/owner"
+fi
+SHIM
+  chmod 700 "$sb/successor-mv/mv"
+  local successor_owner
+  successor_owner="999998 $(date +%s)"
+  cap="$(CCT_REAL_MV="$(command -v mv)" CCT_SUCCESSOR_OWNER="$successor_owner" \
+    PATH="$sb/successor-mv:$PATH" add_tok successor "sk-successor" 2>&1)"; rc=$?
+  chk "successor substitution mutation reports failure" "1" "$rc"
+  chk "successor substitution preserves lock directory" "yes" \
+    "$([ -d "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+  chk "successor substitution preserves exact owner" "$successor_owner" \
+    "$(cat "$CCT_ENV_FILE.lock/owner" 2>/dev/null)"
+  case "$cap" in *완료*) chk "successor substitution prints no success" "no" "yes" ;; *) chk "successor substitution prints no success" "no" "no" ;; esac
   rm -rf "$CCT_ENV_FILE.lock"
 
   mkdir "$CCT_ENV_FILE.lock"
@@ -1037,7 +1128,7 @@ test_diagnostics(){
     mkdir "$sb/noisy-bin"
     cat > "$sb/noisy-bin/claude" <<'SHIM'
 #!/bin/sh
-printf '%s\n' 'sk-ant-oat01-noisy-version-secret user@example.com org_id=org-secret'
+printf '%s%s\n' 'sk-ant-' 'oat01-noisy-version-secret user@example.com org_id=org-secret'
 SHIM
     chmod 700 "$sb/noisy-bin/claude"
     cap="$(PATH="$sb/noisy-bin:$PATH" cct status 2>&1)"; rc=$?
@@ -1151,6 +1242,63 @@ SHIM
   chk_not_has "stale active hides token" "stale-active-secret" "$cap"
   chk "stale active preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
   chk "stale active preserves active file" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+  rm -f "$CCT_ACTIVE_FILE"
+
+  echo "-- malformed active content is never printed, trusted, or sourced"
+  local active_prefix active_tail active_payload source_cap
+  active_prefix='sk-ant-'
+  active_tail='oat01-active-private-material'
+  active_payload="alpha ${active_prefix}${active_tail} user@example.com org_id=org-private"
+  printf '%s\n' "$active_payload" > "$CCT_ACTIVE_FILE"
+  chmod 600 "$CCT_ACTIVE_FILE"
+  active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+  cap="$(cct status 2>&1)"; rc=$?
+  chk "malformed active status remains available -> 0" "0" "$rc"
+  chk_has "malformed active status uses fixed classification" "active: invalid" "$cap"
+  chk_not_has "malformed active status hides credential prefix" "${active_prefix}${active_tail}" "$cap"
+  chk_not_has "malformed active status hides email" "user@example.com" "$cap"
+  chk_not_has "malformed active status hides org metadata" "org_id=" "$cap"
+  cap="$(cct active 2>&1)"; rc=$?
+  chk "malformed active display -> 0" "0" "$rc"
+  chk_has "malformed active display treats value as absent" "활성 프로필 없음" "$cap"
+  chk_not_has "malformed active display hides credential material" "${active_prefix}${active_tail}" "$cap"
+  source_cap="$(CLAUDE_CODE_OAUTH_TOKEN='' PATH="$sb/bin:$PATH" CCT_ENV_FILE="$CCT_ENV_FILE" CCT_ACTIVE_FILE="$CCT_ACTIVE_FILE" \
+    bash -c ". '$REPO/cct.sh'; printf 'token=[%s]\\n' \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\"" 2>&1)"
+  chk_has "malformed active source does not select account" "token=[<unset>]" "$source_cap"
+  chk_not_has "malformed active source hides credential material" "${active_prefix}${active_tail}" "$source_cap"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "malformed active doctor -> 1" "1" "$rc"
+  chk_has "malformed active doctor uses fixed classification" "FAIL active: malformed label" "$cap"
+  chk_not_has "malformed active doctor hides credential material" "${active_prefix}${active_tail}" "$cap"
+  chk "malformed active diagnostics preserve file" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+
+  printf '%s\n%s\n' alpha "${active_prefix}${active_tail}" > "$CCT_ACTIVE_FILE"
+  chmod 600 "$CCT_ACTIVE_FILE"
+  cap="$(cct status 2>&1)"; rc=$?
+  chk "multiline active status remains available -> 0" "0" "$rc"
+  chk_has "multiline active status uses fixed classification" "active: invalid" "$cap"
+  chk_not_has "multiline active status hides credential material" "${active_prefix}${active_tail}" "$cap"
+
+  printf '%s\n' alpha > "$CCT_ACTIVE_FILE"
+  chmod 644 "$CCT_ACTIVE_FILE"
+  active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "mode-644 active -> 1" "1" "$rc"
+  chk_has "mode-644 active classified" "FAIL active: mode 644" "$cap"
+  chk "active mode failure preserves bytes" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
+  chk "active mode failure preserves mode" "644" "$(wallet_mode "$CCT_ACTIVE_FILE")"
+  rm -f "$CCT_ACTIVE_FILE"
+
+  target="$sb/active-target"
+  printf '%s\n' alpha > "$target"
+  chmod 600 "$target"
+  ln -s "$target" "$CCT_ACTIVE_FILE"
+  cap="$(cct status 2>&1)"; rc=$?
+  chk "symlink active status remains available -> 0" "0" "$rc"
+  chk_has "symlink active status is invalid" "active: invalid" "$cap"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "symlink active doctor -> 1" "1" "$rc"
+  chk_has "symlink active doctor classified" "FAIL active: symbolic link" "$cap"
   rm -f "$CCT_ACTIVE_FILE"
 
   cap="$(CCT_DEFAULT_LABEL=ghost cct doctor 2>&1)"; rc=$?

@@ -156,8 +156,6 @@ EOF
   return "$rc"
 }
 
-_CCT_LOCK_STALE_SECS=60
-
 _cct_wallet_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
@@ -167,33 +165,8 @@ _cct_wallet_busy() {
   return 1
 }
 
-_cct_wallet_create_lock() {
-  local lock="$1" now="$2"
-  mkdir "$lock" 2>/dev/null || return 1
-  if (umask 077; printf '%s %s\n' "$$" "$now" > "$lock/owner"); then
-    return 0
-  fi
-  rm -f "$lock/owner" 2>/dev/null
-  rmdir "$lock" 2>/dev/null
-  return 1
-}
-
-_cct_wallet_acquire_lock() {
-  local lock="$1" now owner pid epoch age
-  now="$(date +%s)" || {
-    echo "❌ wallet lock: 현재 시간 확인 실패" >&2
-    return 1
-  }
-
-  if _cct_wallet_create_lock "$lock" "$now"; then
-    return 0
-  fi
-
-  # A symlink (including a dangling one), non-directory, or malformed owner is
-  # never reclaimed.  Only an unambiguous directory owned by a dead/aged PID is.
-  [ ! -L "$lock" ] || { _cct_wallet_busy; return 1; }
-  [ -d "$lock" ] || { _cct_wallet_busy; return 1; }
-  owner="$(awk '
+_cct_wallet_read_lock_owner() {
+  awk '
     NR == 1 && NF == 2 &&
       $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ &&
       length($1) <= 18 && length($2) <= 18 &&
@@ -207,22 +180,67 @@ _cct_wallet_acquire_lock() {
       if (NR == 1 && !bad) print pid " " epoch
       else exit 1
     }
-  ' "$lock/owner" 2>/dev/null)" || { _cct_wallet_busy; return 1; }
+  ' "$1" 2>/dev/null
+}
+
+_cct_wallet_release_lock() {
+  local lock="$1" expected="$2" current
+  [ ! -L "$lock" ] && [ -d "$lock" ] ||
+    return 1
+  [ ! -L "$lock/owner" ] && [ -f "$lock/owner" ] ||
+    return 1
+  current="$(_cct_wallet_read_lock_owner "$lock/owner")" ||
+    return 1
+  [ "$current" = "$expected" ] ||
+    return 1
+  rm -f "$lock/owner" 2>/dev/null &&
+    rmdir "$lock" 2>/dev/null
+}
+
+_cct_wallet_create_lock() {
+  local lock="$1" now="$2" owner
+  _cct_wallet_lock_owner=""
+  mkdir "$lock" 2>/dev/null || return 1
+  owner="$$ $now"
+  if (umask 077; printf '%s\n' "$owner" > "$lock/owner"); then
+    _cct_wallet_lock_owner="$owner"
+    return 0
+  fi
+  # A partial or substituted owner record is ambiguous and must be preserved.
+  rmdir "$lock" 2>/dev/null
+  return 1
+}
+
+_cct_wallet_acquire_lock() {
+  local lock="$1" now owner pid epoch
+  now="$(date +%s)" || {
+    echo "❌ wallet lock: 현재 시간 확인 실패" >&2
+    return 1
+  }
+
+  if _cct_wallet_create_lock "$lock" "$now"; then
+    return 0
+  fi
+
+  # A symlink, non-directory, malformed owner, or live PID is never reclaimed.
+  # Ownership is compared again during release to preserve a substituted owner.
+  [ ! -L "$lock" ] || { _cct_wallet_busy; return 1; }
+  [ -d "$lock" ] || { _cct_wallet_busy; return 1; }
+  owner="$(_cct_wallet_read_lock_owner "$lock/owner")" ||
+    { _cct_wallet_busy; return 1; }
   pid="${owner%% *}"
   epoch="${owner#* }"
   case "$pid:$epoch" in
     *[!0-9:]*|:*|*:) _cct_wallet_busy; return 1 ;;
   esac
 
-  age=$((now - epoch))
-  if kill -0 "$pid" 2>/dev/null && [ "$age" -le "$_CCT_LOCK_STALE_SECS" ]; then
+  if kill -0 "$pid" 2>/dev/null; then
     _cct_wallet_busy
     return 1
   fi
 
-  # Exact-path cleanup only; never follow a lock symlink or recursively delete.
-  if ! rm -f "$lock/owner" 2>/dev/null ||
-    ! rmdir "$lock" 2>/dev/null; then
+  # Reclaim only the exact dead owner we observed. A substituted owner wins.
+  if ! _cct_wallet_release_lock "$lock" "$owner"; then
     _cct_wallet_busy
     return 1
   fi
@@ -245,6 +263,7 @@ _cct_wallet_mutate() (
   backup_tmp=""
   rollback_tmp=""
   locked=0
+  lock_owner=""
   transaction_pending=0
   rc=0
 
@@ -255,8 +274,11 @@ _cct_wallet_mutate() (
     [ -z "$backup_tmp" ] || rm -f "$backup_tmp" 2>/dev/null
     [ -z "$rollback_tmp" ] || rm -f "$rollback_tmp" 2>/dev/null
     if [ "$locked" -eq 1 ]; then
-      rm -f "$lock/owner" 2>/dev/null || cleanup_status=1
-      rmdir "$lock" 2>/dev/null || cleanup_status=1
+      if _cct_wallet_release_lock "$lock" "$lock_owner"; then
+        locked=0
+      else
+        cleanup_status=1
+      fi
     fi
     if [ "$original_status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
       return 1
@@ -295,6 +317,7 @@ _cct_wallet_mutate() (
   trap '_cct_wallet_on_signal' HUP INT TERM
 
   _cct_wallet_acquire_lock "$lock" || exit 1
+  lock_owner="$_cct_wallet_lock_owner"
   locked=1
 
   tmp="$(mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
@@ -523,10 +546,14 @@ _cct_fp_one() {
   _cct_validate_label "${1-}" || return
   tok="$(_cct_envtok "$(_cct_key "$1")")"
   [ -n "$tok" ] || { printf '  %-8s 토큰없음\n' "$1"; return; }
-  H="$(curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
-    -H "Authorization: Bearer $tok" -H "anthropic-version: 2023-06-01" \
-    -H "anthropic-beta: oauth-2025-04-20" -H "content-type: application/json" \
-    -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" </dev/null 2>/dev/null || true)"
+  H="$(
+    printf 'Authorization: Bearer %s\n' "$tok" |
+      curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
+        -H @- -H "anthropic-version: 2023-06-01" \
+        -H "anthropic-beta: oauth-2025-04-20" -H "content-type: application/json" \
+        -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+        2>/dev/null || true
+  )"
   org="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | tr -d '\r' | cut -c1-8 || true)"
   r5="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-reset"{print $2}' | tr -d '\r' || true)"
   r7="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-reset"{print $2}' | tr -d '\r' || true)"
@@ -588,10 +615,25 @@ unalias cct 2>/dev/null || true
 # 활성 라벨은 tokens.env 옆 cct-active 파일에 저장(CCT_ACTIVE_FILE 로 변경 가능).
 _cct_active_file() { printf '%s' "${CCT_ACTIVE_FILE:-${CCT_ENV_FILE%/*}/cct-active}"; }
 
-_cct_active_label() {  # 저장된 활성 라벨 (없으면 빈 출력)
+_cct_active_raw_label() {
   local f v
-  f="$(_cct_active_file)"; [ -f "$f" ] || return 0
-  v="$(head -n1 "$f" 2>/dev/null)"; printf '%s' "${v%%[[:space:]]*}"
+  f="$(_cct_active_file)"
+  [ ! -L "$f" ] && [ -f "$f" ] && [ -r "$f" ] || return 1
+  awk '
+    NR == 1 { sub(/\r$/, ""); value = $0; next }
+    { extra = 1 }
+    END {
+      if (NR == 1 && !extra) print value
+      else exit 1
+    }
+  ' "$f" 2>/dev/null
+}
+
+_cct_active_label() {
+  local v
+  v="$(_cct_active_raw_label)" || return 0
+  _cct_label_is_valid "$v" || return 0
+  printf '%s' "$v"
 }
 
 _cct_apply_env() {  # $1=token — 현재 셸에 토큰(+웹기능 차단 플래그) export
@@ -679,7 +721,7 @@ _cct_status() {
     echo "사용법: cct status" >&2
     return 2
   }
-  local mode accounts active default_label sticky cb version
+  local mode accounts active active_file default_label sticky cb version
 
   if [ -L "$CCT_ENV_FILE" ]; then
     mode="symbolic-link"
@@ -693,10 +735,16 @@ _cct_status() {
     accounts="0"
   fi
 
-  active="$(_cct_active_label)"
-  if [ -z "$active" ]; then
+  active_file="$(_cct_active_file)"
+  if [ ! -e "$active_file" ] && [ ! -L "$active_file" ]; then
     active="none"
-  elif ! _cct_label_is_valid "$active"; then
+  else
+    active="$(_cct_active_raw_label)" || active=""
+    if ! _cct_label_is_valid "$active"; then
+      active="invalid"
+    fi
+  fi
+  if [ -z "$active" ]; then
     active="invalid"
   fi
   default_label="${CCT_DEFAULT_LABEL:-gv}"
@@ -849,14 +897,20 @@ _cct_doctor() {
     echo "FAIL active: unreadable or not a regular file"
     failed=1
   else
-    active="$(awk 'NR == 1 { sub(/\r$/, ""); print; exit }' "$active_file" 2>/dev/null)"
-    if ! _cct_label_is_valid "$active"; then
-      echo "FAIL active: malformed label"
+    mode="$(_cct_wallet_mode "$active_file")"
+    if [ "$mode" != "600" ]; then
+      printf 'FAIL active: mode %s (expected 600)\n' "${mode:-unknown}"
       failed=1
-    elif _cct_account_exists "$(_cct_key "$active")"; then
-      echo "PASS active: label resolves"
+    elif active="$(_cct_active_raw_label)" &&
+      _cct_label_is_valid "$active"; then
+      if _cct_account_exists "$(_cct_key "$active")"; then
+        echo "PASS active: label resolves"
+      else
+        echo "FAIL active: unresolved label"
+        failed=1
+      fi
     else
-      echo "FAIL active: unresolved label"
+      echo "FAIL active: malformed label"
       failed=1
     fi
   fi
@@ -931,11 +985,11 @@ _cct_doctor() {
         failed=1
       else
         age=$((now - epoch))
-        if [ "$age" -lt 0 ]; then
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "WARN lock: live mutation in progress"
+        elif [ "$age" -lt 0 ]; then
           echo "FAIL lock: malformed owner timestamp"
           failed=1
-        elif kill -0 "$pid" 2>/dev/null && [ "$age" -le "$_CCT_LOCK_STALE_SECS" ]; then
-          echo "WARN lock: live mutation in progress"
         else
           echo "FAIL lock: dead or stale owner"
           failed=1
