@@ -75,6 +75,19 @@ jobs:
             -u CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH \
             bash tests/cct_test.sh all
 
+      - name: Run failure-path suites with a clean disable environment
+        run: |
+          set -euo pipefail
+          unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL
+          unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+          unset CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+
+          CCT_TEST_CASE=install-failures bash tests/cct_test.sh install
+          CCT_TEST_CASE=live-lock bash tests/cct_test.sh wallet
+          CCT_TEST_CASE=lifecycle-signals bash tests/cct_test.sh accounts
+          CCT_TEST_CASE=lifecycle-refusals bash tests/cct_test.sh accounts
+          CCT_TEST_CASE=diagnostic-failures bash tests/cct_test.sh diagnostics
+
       - name: Run full suite with inherited disable variables
         env:
           CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1"
