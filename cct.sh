@@ -40,6 +40,15 @@ CCT_PROBE_MODEL="${CCT_PROBE_MODEL:-claude-haiku-4-5-20251001}"
 
 _cct_key() { printf 'CCT_TOKEN_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"; }
 
+_cct_parent_dir() {
+  local parent
+  case "$1" in
+    */*) parent="${1%/*}"; [ -n "$parent" ] || parent="/" ;;
+    *) parent="." ;;
+  esac
+  printf '%s' "$parent"
+}
+
 # tokens.env 에서 KEY 값만 안전 추출 (source 안 함, CRLF·따옴표 제거)
 _cct_envtok() {
   [ -f "$CCT_ENV_FILE" ] || return 0
@@ -117,7 +126,64 @@ _cct_run_limited() {
   local secs="$1"; shift
   if   command -v timeout  >/dev/null 2>&1; then timeout  "$secs" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
-  elif command -v perl     >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  elif command -v perl     >/dev/null 2>&1; then
+    perl -e '
+      use strict;
+      use warnings;
+      use Errno qw(EINTR);
+      use POSIX ();
+
+      my $seconds = shift @ARGV;
+      exit 125 unless defined $seconds && @ARGV;
+      pipe(my $start_read, my $start_write) or exit 125;
+      my $pid = fork();
+      exit 125 unless defined $pid;
+
+      if ($pid == 0) {
+        close $start_write;
+        my $start = "";
+        my $count = sysread($start_read, $start, 1);
+        close $start_read;
+        exit 125 unless defined $count && $count == 1;
+        exec { $ARGV[0] } @ARGV;
+        exit 126;
+      }
+
+      close $start_read;
+      unless (POSIX::setpgid($pid, $pid)) {
+        close $start_write;
+        waitpid($pid, 0);
+        exit 125;
+      }
+      unless (syswrite($start_write, "1", 1) == 1) {
+        close $start_write;
+        kill "KILL", -$pid;
+        waitpid($pid, 0);
+        exit 125;
+      }
+      close $start_write;
+
+      my $timed_out = 0;
+      local $SIG{ALRM} = sub {
+        $timed_out = 1;
+        kill "TERM", -$pid;
+        select undef, undef, undef, 0.2;
+        kill "KILL", -$pid;
+      };
+      alarm $seconds;
+      my $waited;
+      do {
+        $waited = waitpid($pid, 0);
+      } while ($waited == -1 && $! == EINTR);
+      my $status = $?;
+      alarm 0;
+
+      exit 124 if $timed_out;
+      exit 125 unless $waited == $pid;
+      exit POSIX::WEXITSTATUS($status) if POSIX::WIFEXITED($status);
+      exit 128 + POSIX::WTERMSIG($status) if POSIX::WIFSIGNALED($status);
+      exit 125;
+    ' "$secs" "$@"
   else "$@"; fi
 }
 
@@ -510,7 +576,10 @@ _cct_add() {
   tok="$(printf '%s' "$tok" | tr -d '\r')"   # N3: CRLF 제거 → 중복감지/저장 일관성
   [ -n "$tok" ] || { echo "❌ 입력 없음, 취소"; return 1; }
   # N5: 디렉터리만 먼저 보장. 지갑 파일 자체는 잠금 안에서 원자적으로 생성/교체한다.
-  mkdir -p "$(dirname "$CCT_ENV_FILE")" 2>/dev/null || { echo "❌ 디렉터리 생성 실패: $(dirname "$CCT_ENV_FILE")" >&2; return 1; }
+  mkdir -p "$(_cct_parent_dir "$CCT_ENV_FILE")" 2>/dev/null || {
+    echo "❌ 디렉터리 생성 실패: $(_cct_parent_dir "$CCT_ENV_FILE")" >&2
+    return 1
+  }
   # C#1: 키가 이미 있으면 원본 라벨 비교 — 같은 라벨이면 조용히 갱신, 다른 라벨이면 충돌 경고+확인(기본 거부)
   if grep -qE "^$key=" "$CCT_ENV_FILE" 2>/dev/null; then
     action="갱신"
@@ -535,6 +604,9 @@ _cct_add() {
     echo "❌ [$label] 저장 실패 ($action) — 경로/권한 확인: $CCT_ENV_FILE" >&2
     return 1
   }
+  if [ "${CCT_STICKY:-1}" != "0" ] && [ "$(_cct_active_label)" = "$label" ]; then
+    _cct_apply_env "$_cct_wallet_token"
+  fi
   unset _cct_wallet_token
   echo "✓ [$label] $action 완료"
   echo "→ 'cct $label' 로 사용 / 'cct check $label' 로 점검"
@@ -613,7 +685,16 @@ unalias cct 2>/dev/null || true
 # 마지막으로 고른 cct <라벨> 을 "활성 프로필"로 기억해, 그냥 `claude`/`cc`/새
 # 터미널도 같은 계정으로 인증되게 한다. CCT_STICKY=0 이면 비활성(기존 inline 주입).
 # 활성 라벨은 tokens.env 옆 cct-active 파일에 저장(CCT_ACTIVE_FILE 로 변경 가능).
-_cct_active_file() { printf '%s' "${CCT_ACTIVE_FILE:-${CCT_ENV_FILE%/*}/cct-active}"; }
+_cct_active_file() {
+  local parent
+  if [ -n "${CCT_ACTIVE_FILE:-}" ]; then
+    printf '%s' "$CCT_ACTIVE_FILE"
+    return
+  fi
+  parent="$(_cct_parent_dir "$CCT_ENV_FILE")"
+  if [ "$parent" = "/" ]; then printf '/cct-active'
+  else printf '%s/cct-active' "$parent"; fi
+}
 
 _cct_active_raw_label() {
   local f v
@@ -652,7 +733,7 @@ _cct_active_write_atomic() (
   umask 077
   trap '[ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null' EXIT
   trap 'exit 1' HUP INT TERM
-  mkdir -p "${f%/*}" 2>/dev/null || exit 1
+  mkdir -p "$(_cct_parent_dir "$f")" 2>/dev/null || exit 1
   tmp="$(mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || exit 1
   chmod 600 "$tmp" 2>/dev/null || exit 1
   printf '%s\n' "$label" > "$tmp" 2>/dev/null || exit 1
@@ -763,7 +844,7 @@ _cct_status() {
     printf 'claude-version: unavailable\n'
   else
     printf 'claude: %s\n' "$cb"
-    version="$(
+    if version="$(
       (
         unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
@@ -781,7 +862,11 @@ _cct_status() {
           exit
         }
       '
-    )"
+    )"; then
+      :
+    else
+      version="unavailable"
+    fi
     [ -n "$version" ] || version="unavailable"
     printf 'claude-version: %s\n' "$version"
   fi
@@ -1088,8 +1173,8 @@ _cct_rename() {
 _cct_launch_label() {
   local label="$1" key tok
   shift
-  local flags=()
-  [ "${CCT_SKIP_PERMS:-1}" = "0" ] || flags+=(--dangerously-skip-permissions)
+  local command_args=(claude)
+  [ "${CCT_SKIP_PERMS:-1}" = "0" ] || command_args+=(--dangerously-skip-permissions)
   if [ -n "${CCT_CLAUDE_FLAGS:-}" ]; then
     local _extra
     if [ -n "${ZSH_VERSION:-}" ]; then
@@ -1097,7 +1182,7 @@ _cct_launch_label() {
     else
       read -ra _extra <<< "$CCT_CLAUDE_FLAGS"
     fi
-    flags+=("${_extra[@]}")
+    command_args+=("${_extra[@]}")
   fi
   key="$(_cct_key "$label")"; tok="$(_cct_envtok "$key")"
   if [ -z "$tok" ]; then
@@ -1109,14 +1194,14 @@ _cct_launch_label() {
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
       (
         unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
-        CLAUDE_CODE_OAUTH_TOKEN="$tok" command claude "${flags[@]}" "$@"
+        CLAUDE_CODE_OAUTH_TOKEN="$tok" command "${command_args[@]}" "$@"
       )
     else
       CLAUDE_CODE_OAUTH_TOKEN="$tok" \
         CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 \
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
         CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1 \
-        command claude "${flags[@]}" "$@"
+        command "${command_args[@]}" "$@"
     fi
   else
     _cct_active_write_atomic "$label" || {
@@ -1124,7 +1209,7 @@ _cct_launch_label() {
       return 1
     }
     _cct_apply_env "$tok"
-    command claude "${flags[@]}" "$@"
+    command "${command_args[@]}" "$@"
   fi
 }
 
