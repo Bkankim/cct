@@ -461,6 +461,7 @@ test_cct(){
 
   echo "-- N6: check probes the real binary, not a shell claude function/alias"
   # shellcheck disable=SC2329
+  # shellcheck disable=SC2317
   claude(){ echo "SHADOW-FN" >&2; return 9; }   # shadowing function must be bypassed
   cct check good >/dev/null 2>&1; chk "probe bypasses claude function -> 0" "0" "$?"
   unset -f claude
