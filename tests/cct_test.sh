@@ -353,6 +353,7 @@ test_cct(){
     "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}"
 
   echo "-- N6: check probes the real binary, not a shell claude function/alias"
+  # shellcheck disable=SC2329
   claude(){ echo "SHADOW-FN" >&2; return 9; }   # shadowing function must be bypassed
   cct check good >/dev/null 2>&1; chk "probe bypasses claude function -> 0" "0" "$?"
   unset -f claude
@@ -1413,6 +1414,203 @@ SHIM
   rm -rf "$sb"
 }
 
+test_runtime_regressions(){
+  echo "== runtime regressions =="
+  local sb out rc before after started elapsed wrapper_pid child_pid wrapper_state child_state
+  unset CCT_ACTIVE_FILE CCT_DEFAULT_LABEL CCT_CLAUDE_FLAGS CCT_DISABLE_WEB_FEATURES \
+    CCT_SHIM_LOG CLAUDE_CODE_OAUTH_TOKEN
+  sb="$(mktemp -d)"
+  mk_shim "$sb/bin"
+
+  echo "-- Bash 3 nounset: empty launcher flags remain a valid argv"
+  printf '%s\n' 'CCT_TOKEN_GV=runtime-gv-secret' > "$sb/tokens.env"
+  chmod 600 "$sb/tokens.env"
+  out="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" \
+    CCT_SKIP_PERMS=0 CCT_STICKY=0 \
+    bash -uc ". '$REPO/cct.sh'; cct --model sonnet" 2>&1)"; rc=$?
+  chk "Bash 3 set -u opt-out launch -> 0" "0" "$rc"
+  chk_has "Bash 3 launch preserves user argv" "--model sonnet" "$out"
+  chk_not_has "Bash 3 launch omits skip-permissions" "--dangerously-skip-permissions" "$out"
+  out="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" \
+    CCT_SKIP_PERMS=0 CCT_STICKY=0 CCT_CLAUDE_FLAGS='--extra-flag' \
+    bash -uc ". '$REPO/cct.sh'; cct --model sonnet" 2>&1)"; rc=$?
+  chk "Bash 3 set -u extra flags launch -> 0" "0" "$rc"
+  chk_has "Bash 3 launch preserves extra flag" "--extra-flag" "$out"
+  chk_has "Bash 3 extra flags preserve user argv" "--model sonnet" "$out"
+  if command -v zsh >/dev/null 2>&1; then
+    out="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" \
+      CCT_SKIP_PERMS=0 CCT_STICKY=0 CCT_CLAUDE_FLAGS='--extra-flag' \
+      zsh -uc ". '$REPO/cct.sh'; cct --model sonnet" 2>&1)"; rc=$?
+    chk "Zsh nounset opt-out launch -> 0" "0" "$rc"
+    chk_has "Zsh launch preserves exact extra flag and user argv" \
+      "args=[--extra-flag --model sonnet]" "$out"
+  fi
+
+  echo "-- errexit+pipefail: failed version probe is status data, not shell control flow"
+  mkdir "$sb/version-bin"
+  cat > "$sb/version-bin/claude" <<'SHIM'
+#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  printf '%s\n' 'version-stderr-private-material' >&2
+  exit 7
+fi
+exit 0
+SHIM
+  chmod 700 "$sb/version-bin/claude"
+  out="$(PATH="$sb/version-bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
+    CCT_STICKY=0 bash -e -o pipefail -c \
+    ". '$REPO/cct.sh'; cct status; printf '%s\\n' FOLLOWING-COMMAND-REACHED" 2>&1)"; rc=$?
+  chk "strict status with version rc=7 -> 0" "0" "$rc"
+  chk_has "strict status reports fixed unavailable version" "claude-version: unavailable" "$out"
+  chk_has "strict status reaches following command" "FOLLOWING-COMMAND-REACHED" "$out"
+  chk_not_has "strict status suppresses version stderr" "version-stderr-private-material" "$out"
+  PATH="$sb/version-bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
+    CCT_STICKY=0 bash -e -o pipefail -c \
+    ". '$REPO/cct.sh'; cct status extra" >/dev/null 2>&1
+  rc=$?
+  chk "strict status unexpected args -> 2" "2" "$rc"
+
+  echo "-- Perl timeout fallback terminates the complete Claude process group"
+  mkdir "$sb/perl-bin"
+  ln -s "$(command -v perl)" "$sb/perl-bin/perl"
+  ln -s "$(command -v awk)" "$sb/perl-bin/awk"
+  cat > "$sb/perl-bin/claude" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$$" > "$CCT_TIMEOUT_WRAPPER_PID"
+/bin/sleep 60 </dev/null >/dev/null 2>&1 &
+child=$!
+printf '%s\n' "$child" > "$CCT_TIMEOUT_CHILD_PID"
+wait "$child"
+SHIM
+  chmod 700 "$sb/perl-bin/claude"
+  started="$(date +%s)"
+  out="$(
+    PATH="$sb/perl-bin" CCT_ENV_FILE="$sb/perl-wallet" CCT_ACTIVE_FILE="$sb/perl-active" \
+      CCT_STICKY=0 CCT_TIMEOUT_WRAPPER_PID="$sb/wrapper.pid" \
+      CCT_TIMEOUT_CHILD_PID="$sb/child.pid" \
+      /bin/bash -e -o pipefail -c \
+      ". '$REPO/cct.sh'; cct status; printf '%s\\n' PERL-TIMEOUT-FOLLOWING" 2>&1
+  )"; rc=$?
+  elapsed=$(($(date +%s) - started))
+  wrapper_pid="$(cat "$sb/wrapper.pid" 2>/dev/null)"
+  child_pid="$(cat "$sb/child.pid" 2>/dev/null)"
+  wrapper_state="$([ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null && echo live || echo gone)"
+  child_state="$([ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null && echo live || echo gone)"
+  [ "$wrapper_state" = "gone" ] || kill -KILL "$wrapper_pid" 2>/dev/null || true
+  [ "$child_state" = "gone" ] || kill -KILL "$child_pid" 2>/dev/null || true
+  chk "Perl descendant timeout status -> 0" "0" "$rc"
+  chk "Perl descendant timeout is bounded" "yes" "$([ "$elapsed" -le 8 ] && echo yes || echo no)"
+  chk_has "Perl descendant timeout reports unavailable" "claude-version: unavailable" "$out"
+  chk_has "Perl descendant timeout reaches following command" "PERL-TIMEOUT-FOLLOWING" "$out"
+  chk "Perl timeout wrapper is gone" "gone" "$wrapper_state"
+  chk "Perl timeout child is gone" "gone" "$child_state"
+  PATH="$sb/perl-bin" CCT_STICKY=0 /bin/bash -c \
+    ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'exit 7'" >/dev/null 2>&1
+  chk "Perl fallback preserves normal exit status" "7" "$?"
+  PATH="$sb/perl-bin" CCT_STICKY=0 /bin/bash -c \
+    ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'kill -TERM \$\$'" >/dev/null 2>&1
+  chk "Perl fallback preserves signal exit status" "143" "$?"
+
+  echo "-- sticky rotation refreshes only the active account after durable commit"
+  mkdir "$sb/sticky"
+  write_account_fixture "$sb/sticky/tokens.env" \
+    'CCT_TOKEN_ALPHA=runtime-alpha-old' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'CCT_TOKEN_BETA=runtime-beta-old' \
+    '#cctlabel:CCT_TOKEN_BETA=beta'
+  printf '%s\n' alpha > "$sb/sticky/active"
+  chmod 600 "$sb/sticky/active"
+  out="$(
+    PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/sticky/tokens.env" \
+      CCT_ACTIVE_FILE="$sb/sticky/active" CCT_STICKY=1 \
+      bash -c "
+        . '$REPO/cct.sh'
+        CCT_DISABLE_WEB_FEATURES=0
+        cct add alpha <<< runtime-alpha-new >/dev/null
+        printf 'token=[%s] web=[%s,%s,%s]\\n' \
+          \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\" \
+          \"\${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>}\" \
+          \"\${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>}\" \
+          \"\${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}\"
+        cct add beta <<< runtime-beta-new >/dev/null
+        printf 'after-nonactive=[%s]\\n' \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\"
+      " 2>&1
+  )"; rc=$?
+  chk "active and non-active rotations -> 0" "0" "$rc"
+  chk_has "active rotation refreshes current token and web env" \
+    "token=[runtime-alpha-new] web=[<unset>,<unset>,<unset>]" "$out"
+  chk_has "non-active rotation preserves current token" \
+    "after-nonactive=[runtime-alpha-new]" "$out"
+  out="$(
+    PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/sticky/tokens.env" \
+      CCT_ACTIVE_FILE="$sb/sticky/active" CCT_STICKY=1 CCT_DISABLE_WEB_FEATURES=0 \
+      bash -c ". '$REPO/cct.sh'; printf 'new-shell=[%s]\\n' \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\"" 2>&1
+  )"
+  chk_has "new shell loads rotated active token" "new-shell=[runtime-alpha-new]" "$out"
+  before="$(wallet_sha "$sb/sticky/tokens.env")"
+  rm -f "$sb/sticky/tokens.env.bak"
+  mkdir "$sb/sticky/tokens.env.bak"
+  out="$(
+    PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/sticky/tokens.env" \
+      CCT_ACTIVE_FILE="$sb/sticky/active" CCT_STICKY=1 \
+      bash -c "
+        . '$REPO/cct.sh'
+        cct add alpha <<< runtime-alpha-failed >/dev/null 2>&1
+        rc=\$?
+        printf 'rc=[%s] token=[%s]\\n' \"\$rc\" \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\"
+      " 2>&1
+  )"
+  after="$(wallet_sha "$sb/sticky/tokens.env")"
+  chk_has "failed active rotation keeps old current token" \
+    "rc=[1] token=[runtime-alpha-new]" "$out"
+  chk "failed active rotation preserves wallet" "$before" "$after"
+  rm -rf "$sb/sticky/tokens.env.bak"
+
+  echo "-- relative wallet and active overrides stay files in the current directory"
+  mkdir "$sb/relative" "$sb/path with spaces"
+  out="$(
+    cd "$sb/relative" || exit
+    PATH="$sb/bin:$PATH" CCT_ENV_FILE=tokens.env CCT_ACTIVE_FILE=active \
+      CCT_STICKY=1 bash -c "
+        . '$REPO/cct.sh'
+        printf '%s\\n' runtime-relative | cct add alpha >/dev/null
+        cct alpha >/dev/null 2>&1
+        printf 'active-path=[%s] token=[%s]\\n' \"\$(_cct_active_file)\" \
+          \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\"
+        cct off >/dev/null
+      " 2>&1
+  )"; rc=$?
+  chk "relative explicit state lifecycle -> 0" "0" "$rc"
+  chk_has "relative explicit active path remains literal file" \
+    "active-path=[active] token=[runtime-relative]" "$out"
+  chk "relative wallet is a regular file" "yes" \
+    "$([ -f "$sb/relative/tokens.env" ] && echo yes || echo no)"
+  chk "relative active is removed by off" "no" \
+    "$([ -e "$sb/relative/active" ] && echo yes || echo no)"
+  chk "relative names did not become directories" "no,no" \
+    "$([ -d "$sb/relative/tokens.env" ] && echo yes || echo no),$([ -d "$sb/relative/active" ] && echo yes || echo no)"
+
+  write_account_fixture "$sb/path with spaces/tokens.env" \
+    'CCT_TOKEN_ALPHA=runtime-spaced-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  out="$(
+    cd "$sb/path with spaces" || exit
+    PATH="$sb/bin:$PATH" CCT_ENV_FILE=tokens.env CCT_STICKY=1 bash -c "
+      . '$REPO/cct.sh'
+      cct alpha >/dev/null 2>&1
+      printf 'default-active=[%s] value=[%s]\\n' \"\$(_cct_active_file)\" \
+        \"\$(cat ./cct-active 2>/dev/null)\"
+    " 2>&1
+  )"; rc=$?
+  chk "relative default active path with spaced cwd -> 0" "0" "$rc"
+  chk_has "relative wallet default active is sibling file" \
+    "default-active=[./cct-active] value=[alpha]" "$out"
+  chk "relative wallet path did not become a directory" "no" \
+    "$([ -d "$sb/path with spaces/tokens.env" ] && echo yes || echo no)"
+
+  rm -rf "$sb"
+}
+
 make_fixture(){
   local target="${1-}"
   [ -n "$target" ] || { echo "usage: $0 fixture <new-dir>" >&2; return 2; }
@@ -1456,9 +1654,10 @@ case "${1:-all}" in
       *) echo "unknown diagnostics case: ${CCT_TEST_CASE}" >&2; exit 2 ;;
     esac
     ;;
+  runtime) test_runtime_regressions ;;
   fixture) shift; make_fixture "$@"; exit $? ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_diagnostics ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|diagnostics|fixture|all]"; exit 2 ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_diagnostics; test_runtime_regressions ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|diagnostics|runtime|fixture|all]"; exit 2 ;;
 esac
 
 echo
