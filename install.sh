@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cct 계정 스위처 설치 — macOS / Linux / WSL2 공용. 멱등(여러 번 실행해도 안전).
+# cct 휴대용 Claude 계정 지갑 설치 — macOS / Linux / WSL2 공용. 멱등(여러 번 실행해도 안전).
 #   로컬(clone):  bash install.sh
 #   원격 한 줄:    curl -fsSL https://raw.githubusercontent.com/Bkankim/cct/main/install.sh | bash
 set -eu
@@ -40,7 +40,8 @@ append_wallet_ignores() {
 SRC_DIR=""
 [ -f "$0" ] && SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "")"
 LAUNCHER="$DEST/cct.sh"
-LAUNCHER_TMP="$DEST/.cct.sh.install.$$"
+LAUNCHER_TMP=""
+LAUNCHER_TMP_OWNED=0
 if [ -e "$LAUNCHER" ] || [ -L "$LAUNCHER" ]; then
   if [ ! -f "$LAUNCHER" ] || [ -L "$LAUNCHER" ]; then
     echo "❌ 런처 경로가 일반 파일이 아닙니다: $LAUNCHER" >&2
@@ -48,7 +49,12 @@ if [ -e "$LAUNCHER" ] || [ -L "$LAUNCHER" ]; then
   fi
 fi
 cleanup_launcher_tmp() {
-  rm -f "$LAUNCHER_TMP"
+  if [ "$LAUNCHER_TMP_OWNED" -eq 1 ] &&
+    [ -n "$LAUNCHER_TMP" ] &&
+    [ -f "$LAUNCHER_TMP" ] &&
+    [ ! -L "$LAUNCHER_TMP" ]; then
+    rm -f "$LAUNCHER_TMP"
+  fi
 }
 abort_launcher_install() {
   cleanup_launcher_tmp
@@ -57,15 +63,41 @@ abort_launcher_install() {
 }
 trap cleanup_launcher_tmp EXIT
 trap abort_launcher_install HUP INT TERM
+LAUNCHER_TMP="$(umask 077; mktemp "$DEST/.cct.sh.install.XXXXXX")"
+case "$LAUNCHER_TMP" in
+  "$DEST"/.cct.sh.install.??????) ;;
+  *)
+    echo "❌ 안전한 런처 임시 파일을 만들지 못했습니다." >&2
+    exit 1
+    ;;
+esac
+if [ ! -f "$LAUNCHER_TMP" ] || [ -L "$LAUNCHER_TMP" ]; then
+  echo "❌ 런처 임시 경로가 일반 파일이 아닙니다." >&2
+  exit 1
+fi
+LAUNCHER_TMP_OWNED=1
 if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/cct.sh" ]; then
-  cp "$SRC_DIR/cct.sh" "$LAUNCHER_TMP"
+  if ! cp "$SRC_DIR/cct.sh" "$LAUNCHER_TMP"; then
+    echo "❌ 런처 복사에 실패했습니다." >&2
+    exit 1
+  fi
   launcher_message="✓ 런처(로컬 복사): $LAUNCHER"
 else
   command -v curl >/dev/null 2>&1 || { echo "❌ curl 이 필요합니다."; exit 1; }
-  curl -fsSL "$REPO_RAW/cct.sh" -o "$LAUNCHER_TMP"
+  if ! curl -fsSL "$REPO_RAW/cct.sh" -o "$LAUNCHER_TMP"; then
+    echo "❌ 런처 다운로드에 실패했습니다." >&2
+    exit 1
+  fi
   launcher_message="✓ 런처(원격 다운로드): $LAUNCHER"
 fi
+if [ ! -f "$LAUNCHER_TMP" ] || [ -L "$LAUNCHER_TMP" ]; then
+  echo "❌ 런처 임시 경로가 안전하지 않습니다." >&2
+  exit 1
+fi
+chmod 600 "$LAUNCHER_TMP"
 mv "$LAUNCHER_TMP" "$LAUNCHER"
+LAUNCHER_TMP_OWNED=0
+LAUNCHER_TMP=""
 trap - EXIT HUP INT TERM
 echo "$launcher_message"
 
@@ -98,13 +130,17 @@ append_missing "$LOCAL_IGNORE" "*.pem"
 if command -v git >/dev/null 2>&1; then
   # 기존 core.excludesfile 보존: set -eu 에서 미설정 키의 비제로 rc 로 중단되지 않게 || true 가드
   CUR="$(git config --global --get core.excludesfile 2>/dev/null || true)"
+  normalize_global_ignore=0
   if [ -n "$CUR" ]; then
     TILDE="~"
     case "$CUR" in
       "$TILDE") GIG="$HOME" ;;
       "$TILDE"/*) GIG="$HOME/${CUR#"$TILDE"/}" ;;
       /*) GIG="$CUR" ;;
-      *) GIG="$PWD/$CUR" ;;
+      *)
+        GIG="$(pwd -P)/$CUR"
+        normalize_global_ignore=1
+        ;;
     esac
   else
     GIG="${HOME}/.gitignore_global"
@@ -117,7 +153,8 @@ if command -v git >/dev/null 2>&1; then
     global_ignore_ok=0
   fi
 
-  if [ "$global_ignore_ok" -eq 1 ] && [ -z "$CUR" ]; then
+  if [ "$global_ignore_ok" -eq 1 ] &&
+    { [ -z "$CUR" ] || [ "$normalize_global_ignore" -eq 1 ]; }; then
     if ! git config --global core.excludesfile "$GIG"; then
       global_ignore_ok=0
     fi
@@ -132,25 +169,21 @@ fi
 
 # 셸 rc 에 source 추가 (멱등). cc/ㅊㅊ alias 는 강제하지 않음(빌드 PC의 cc=컴파일러 충돌 회피)
 LINE='source ~/.claude/cct.sh'
-touched=
+case "$(basename "${SHELL:-}")" in
+  zsh) CURRENT_RC="${HOME}/.zshrc" ;;
+  *)   CURRENT_RC="${HOME}/.bashrc" ;;
+esac
 for RC in "${HOME}/.zshrc" "${HOME}/.bashrc"; do
-  [ -e "$RC" ] || continue
-  if grep -qF "$LINE" "$RC"; then echo "• $RC 이미 설정됨"; else
-    printf '\n# Claude Code 계정 스위처(cct)\n%s\n' "$LINE" >> "$RC"; echo "✓ $RC 에 추가"
+  [ -e "$RC" ] || [ "$RC" = "$CURRENT_RC" ] || continue
+  if [ -f "$RC" ] && grep -qF "$LINE" "$RC"; then echo "• $RC 이미 설정됨"; else
+    printf '\n# 휴대용 Claude 계정 지갑(cct)\n%s\n' "$LINE" >> "$RC"; echo "✓ $RC 에 추가"
   fi
-  touched=1
 done
-if [ -z "$touched" ]; then
-  # rc 파일이 하나도 없으면 로그인 셸($SHELL)에 맞는 rc 선택 (새 macOS=zsh 인데 .bashrc 에만 넣어 안 읽히는 문제 방지)
-  case "$(basename "${SHELL:-}")" in
-    zsh) RC="${HOME}/.zshrc" ;;
-    *)   RC="${HOME}/.bashrc" ;;
-  esac
-  printf '\n# Claude Code 계정 스위처(cct)\n%s\n' "$LINE" >> "$RC"; echo "✓ $RC 생성·추가"
-fi
 
 echo
-echo "설치 완료. 새 터미널을 열거나:  source ~/.claude/cct.sh"
+echo "휴대용 Claude 계정 지갑 설치 완료. 새 터미널을 열거나:  source ~/.claude/cct.sh"
 echo "계정 등록:  cct add gv   →   cct add pro1 ...   ('claude setup-token' 으로 발급)"
+echo "계정 선택:  cct <계정명>   — 등록한 계정을 OAuth 재로그인 없이 수동 전환"
+echo "상태/진단:  cct status  /  cct doctor"
 echo "확인:       cct ls  /  cct check  /  cct fp  /  cct help"
 echo "(선택) claude 단축 alias:  alias cc='claude --dangerously-skip-permissions'"
