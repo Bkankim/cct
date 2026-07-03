@@ -37,7 +37,7 @@ if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
   fi
   exit 0
 fi
-echo "CLAUDE args=[$*] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
+echo "CLAUDE args=[$*] argc=[$#] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
 echo "CLAUDE web=[${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}]" >&2
 case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in *BAD*) exit 1 ;; esac
 exit 0
@@ -1177,6 +1177,25 @@ SHIM
     "$(find "$fixture_target" -type f | sed "s|^$fixture_target/||" | sort)"
   chk "fixture leaves supplied HOME byte-identical" "$before" "$(wallet_sha "$fixture_home/marker")"
   chk "fixture creates nothing under supplied HOME" "no" "$([ -e "$fixture_home/.claude" ] && echo yes || echo no)"
+  cap="$(
+    HOME="$fixture_target/home" PATH="$fixture_target/bin:/usr/bin:/bin" \
+      CCT_ENV_FILE="$fixture_target/home/.claude/tokens.env" CCT_STICKY=0 \
+      bash -c ". '$REPO/cct.sh'; cct --version" 2>&1
+  )"; rc=$?
+  chk "fixture F3 version flow -> 0" "0" "$rc"
+  chk_has "fixture detects --version after default launcher flag" \
+    "Claude Code fixture 1.2.3" "$cap"
+  chk_not_has "fixture version flow never prints credential" "fixture-token-gv" "$cap"
+  cap="$(
+    HOME="$fixture_target/home" PATH="$fixture_target/bin:/usr/bin:/bin" \
+      CCT_ENV_FILE="$fixture_target/home/.claude/tokens.env" CCT_STICKY=0 \
+      bash -c ". '$REPO/cct.sh'; cct --model sonnet" 2>&1
+  )"; rc=$?
+  chk "fixture F3 non-version flow -> 0" "0" "$rc"
+  chk_has "fixture non-version flow keeps argv" \
+    "CLAUDE args=[--dangerously-skip-permissions --model sonnet]" "$cap"
+  chk_has "fixture non-version flow reports auth presence only" "auth=[set]" "$cap"
+  chk_not_has "fixture non-version flow never prints credential" "fixture-token-gv" "$cap"
   bash "$REPO/tests/cct_test.sh" fixture "$fixture_target" >/dev/null 2>&1
   chk "fixture refuses existing target -> 2" "2" "$?"
   chk "fixture creates no active file" "no" "$([ -e "$fixture_target/home/.claude/cct-active" ] && echo yes || echo no)"
@@ -1353,8 +1372,54 @@ SHIM
   chk "stale active preserves active file" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
   rm -f "$CCT_ACTIVE_FILE"
 
+  echo "-- syntax-valid active labels are trusted only when they resolve in the wallet"
+  local long_active long_key source_cap
+  long_active="$(printf '%096d' 0 | tr '0' 'a')"
+  long_key="$(printf '%s' "$long_active" | tr '[:lower:]' '[:upper:]')"
+  printf '%s\n' "$long_active" > "$CCT_ACTIVE_FILE"
+  chmod 600 "$CCT_ACTIVE_FILE"
+  cap="$(cct status 2>&1)"; rc=$?
+  chk "unresolved long active status remains available -> 0" "0" "$rc"
+  chk_has "unresolved long active status uses fixed classification" "active: invalid" "$cap"
+  chk_not_has "unresolved long active status never prints raw label" "$long_active" "$cap"
+  cap="$(cct active 2>&1)"; rc=$?
+  chk "unresolved long active display -> 0" "0" "$rc"
+  chk_has "unresolved long active display is none" "활성 프로필 없음" "$cap"
+  chk_not_has "unresolved long active display never prints raw label" "$long_active" "$cap"
+  source_cap="$(
+    CLAUDE_CODE_OAUTH_TOKEN='' PATH="$sb/bin:$PATH" CCT_ENV_FILE="$CCT_ENV_FILE" \
+      CCT_ACTIVE_FILE="$CCT_ACTIVE_FILE" CCT_STICKY=1 \
+      bash -c ". '$REPO/cct.sh'; printf 'auth=[%s]\\n' \"\${CLAUDE_CODE_OAUTH_TOKEN:+set}\"" 2>&1
+  )"
+  chk_has "unresolved long active source loads no auth" "auth=[]" "$source_cap"
+  chk_not_has "unresolved long active source never prints raw label" "$long_active" "$source_cap"
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "unresolved long active doctor -> 1" "1" "$rc"
+  chk_has "unresolved long active doctor is fixed output" "FAIL active: unresolved label" "$cap"
+  chk_not_has "unresolved long active doctor never prints raw label" "$long_active" "$cap"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    "CCT_TOKEN_${long_key}=long-label-secret" \
+    "#cctlabel:CCT_TOKEN_${long_key}=${long_active}"
+  cap="$(cct status 2>&1)"; rc=$?
+  chk "resolved long active status -> 0" "0" "$rc"
+  chk_has "resolved long active status may display label" "active: $long_active" "$cap"
+  cap="$(cct active 2>&1)"; rc=$?
+  chk "resolved long active display -> 0" "0" "$rc"
+  chk_has "resolved long active display may display label" "활성 프로필: $long_active" "$cap"
+  source_cap="$(
+    CLAUDE_CODE_OAUTH_TOKEN='' PATH="$sb/bin:$PATH" CCT_ENV_FILE="$CCT_ENV_FILE" \
+      CCT_ACTIVE_FILE="$CCT_ACTIVE_FILE" CCT_STICKY=1 \
+      bash -c ". '$REPO/cct.sh'; printf 'auth=[%s]\\n' \"\${CLAUDE_CODE_OAUTH_TOKEN:+set}\"" 2>&1
+  )"
+  chk_has "resolved long active source loads auth" "auth=[set]" "$source_cap"
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=stale-active-secret' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  rm -f "$CCT_ACTIVE_FILE"
+
   echo "-- malformed active content is never printed, trusted, or sourced"
-  local active_prefix active_tail active_payload source_cap
+  local active_prefix active_tail active_payload
   active_prefix='sk-ant-'
   active_tail='oat01-active-private-material'
   active_payload="alpha ${active_prefix}${active_tail} user@example.com org_id=org-private"
@@ -1545,6 +1610,12 @@ test_runtime_regressions(){
   chk "Bash 3 set -u extra flags launch -> 0" "0" "$rc"
   chk_has "Bash 3 launch preserves extra flag" "--extra-flag" "$out"
   chk_has "Bash 3 extra flags preserve user argv" "--model sonnet" "$out"
+  out="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" \
+    CCT_SKIP_PERMS=0 CCT_STICKY=0 CCT_CLAUDE_FLAGS=' 	  ' \
+    bash -uc ". '$REPO/cct.sh'; cct --model sonnet" 2>&1)"; rc=$?
+  chk "Bash 3 set -u whitespace-only flags launch -> 0" "0" "$rc"
+  chk_has "Bash 3 whitespace-only flags append no argv" \
+    "args=[--model sonnet] argc=[2]" "$out"
   if command -v zsh >/dev/null 2>&1; then
     out="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" \
       CCT_SKIP_PERMS=0 CCT_STICKY=0 CCT_CLAUDE_FLAGS='--extra-flag' \
@@ -1552,6 +1623,12 @@ test_runtime_regressions(){
     chk "Zsh nounset opt-out launch -> 0" "0" "$rc"
     chk_has "Zsh launch preserves exact extra flag and user argv" \
       "args=[--extra-flag --model sonnet]" "$out"
+    out="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" \
+      CCT_SKIP_PERMS=0 CCT_STICKY=0 CCT_CLAUDE_FLAGS=' 	  ' \
+      zsh -uc ". '$REPO/cct.sh'; cct --model sonnet" 2>&1)"; rc=$?
+    chk "Zsh nounset whitespace-only flags launch -> 0" "0" "$rc"
+    chk_has "Zsh whitespace-only flags append no argv" \
+      "args=[--model sonnet] argc=[2]" "$out"
   fi
 
   echo "-- errexit+pipefail: failed version probe is status data, not shell control flow"
@@ -1559,12 +1636,29 @@ test_runtime_regressions(){
   cat > "$sb/version-bin/claude" <<'SHIM'
 #!/bin/sh
 if [ "${1-}" = "--version" ]; then
+  printf '%s\n' 'Claude Code fixture 9.8.7'
   printf '%s\n' 'version-stderr-private-material' >&2
   exit 7
 fi
 exit 0
 SHIM
   chmod 700 "$sb/version-bin/claude"
+  out="$(PATH="$sb/version-bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
+    CCT_STICKY=0 bash -c ". '$REPO/cct.sh'; cct status" 2>&1)"; rc=$?
+  chk "default Bash status with safe version and rc=7 -> 0" "0" "$rc"
+  chk_has "default Bash status rejects stdout from failed probe" \
+    "claude-version: unavailable" "$out"
+  chk_not_has "default Bash status hides failed safe-looking version" \
+    "Claude Code fixture 9.8.7" "$out"
+  if command -v zsh >/dev/null 2>&1; then
+    out="$(PATH="$sb/version-bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
+      CCT_STICKY=0 zsh -c ". '$REPO/cct.sh'; cct status" 2>&1)"; rc=$?
+    chk "default Zsh status with safe version and rc=7 -> 0" "0" "$rc"
+    chk_has "default Zsh status rejects stdout from failed probe" \
+      "claude-version: unavailable" "$out"
+    chk_not_has "default Zsh status hides failed safe-looking version" \
+      "Claude Code fixture 9.8.7" "$out"
+  fi
   out="$(PATH="$sb/version-bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
     CCT_STICKY=0 bash -e -o pipefail -c \
     ". '$REPO/cct.sh'; cct status; printf '%s\\n' FOLLOWING-COMMAND-REACHED" 2>&1)"; rc=$?
@@ -1578,10 +1672,82 @@ SHIM
   rc=$?
   chk "strict status unexpected args -> 2" "2" "$rc"
 
+  echo "-- timeout and gtimeout receive a kill-after grace period"
+  mkdir "$sb/timeout-bin" "$sb/gtimeout-bin"
+  cat > "$sb/timeout-bin/timeout" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "${1-}" "${2-}" "${3-}" > "$CCT_TIMEOUT_ARGS"
+[ "${1-}" = "-k" ] && [ "${2-}" = "1" ] || exit 125
+shift 3
+exec "$@"
+SHIM
+  cp "$sb/timeout-bin/timeout" "$sb/gtimeout-bin/gtimeout"
+  chmod 700 "$sb/timeout-bin/timeout" "$sb/gtimeout-bin/gtimeout"
+  PATH="$sb/timeout-bin" CCT_STICKY=0 CCT_TIMEOUT_ARGS="$sb/timeout.args" \
+    /bin/bash -c ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'exit 7'" \
+      >/dev/null 2>&1
+  rc=$?
+  chk "timeout branch preserves normal exit status" "7" "$rc"
+  chk "timeout branch passes kill-after and duration" $'-k\n1\n2' \
+    "$(cat "$sb/timeout.args" 2>/dev/null)"
+  PATH="$sb/timeout-bin" CCT_STICKY=0 CCT_TIMEOUT_ARGS="$sb/timeout.args" \
+    /bin/bash -c ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'kill -TERM \$\$'" \
+      >/dev/null 2>&1
+  chk "timeout branch preserves signal exit status" "143" "$?"
+  PATH="$sb/gtimeout-bin" CCT_STICKY=0 CCT_TIMEOUT_ARGS="$sb/gtimeout.args" \
+    /bin/bash -c ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'exit 7'" \
+      >/dev/null 2>&1
+  rc=$?
+  chk "gtimeout branch preserves normal exit status" "7" "$rc"
+  chk "gtimeout branch passes kill-after and duration" $'-k\n1\n2' \
+    "$(cat "$sb/gtimeout.args" 2>/dev/null)"
+
   echo "-- Perl timeout fallback terminates the complete Claude process group"
   mkdir "$sb/perl-bin"
   ln -s "$(command -v perl)" "$sb/perl-bin/perl"
   ln -s "$(command -v awk)" "$sb/perl-bin/awk"
+  cat > "$sb/perl-ignore.sh" <<'SHIM'
+#!/bin/sh
+trap '' TERM
+printf '%s\n' "$$" > "$CCT_REPEAT_WRAPPER"
+/bin/sh -c '
+  trap "" TERM
+  printf "%s\n" "$$" > "$CCT_REPEAT_CHILD"
+  /bin/sleep 15
+' &
+wait "$!"
+SHIM
+  chmod 700 "$sb/perl-ignore.sh"
+  mkdir "$sb/perl-repeat"
+  local repeat_jobs=() repeat_id repeat_rc repeat_pid repeat_ok=1
+  started="$(date +%s)"
+  for repeat_id in 1 2 3 4 5 6 7 8 9 10; do
+    (
+      PATH="$sb/perl-bin" CCT_STICKY=0 \
+        CCT_REPEAT_WRAPPER="$sb/perl-repeat/$repeat_id.wrapper" \
+        CCT_REPEAT_CHILD="$sb/perl-repeat/$repeat_id.child" \
+        /bin/bash -c \
+          ". '$REPO/cct.sh'; _cct_run_limited 0.2 '$sb/perl-ignore.sh'" \
+          >/dev/null 2>&1
+      printf '%s\n' "$?" > "$sb/perl-repeat/$repeat_id.rc"
+    ) &
+    repeat_jobs+=("$!")
+  done
+  for repeat_pid in "${repeat_jobs[@]}"; do
+    wait "$repeat_pid" || true
+  done
+  elapsed=$(($(date +%s) - started))
+  for repeat_id in 1 2 3 4 5 6 7 8 9 10; do
+    repeat_rc="$(cat "$sb/perl-repeat/$repeat_id.rc" 2>/dev/null)"
+    [ "$repeat_rc" = "124" ] || repeat_ok=0
+    wrapper_pid="$(cat "$sb/perl-repeat/$repeat_id.wrapper" 2>/dev/null)"
+    child_pid="$(cat "$sb/perl-repeat/$repeat_id.child" 2>/dev/null)"
+    [ -z "$wrapper_pid" ] || ! kill -0 "$wrapper_pid" 2>/dev/null || repeat_ok=0
+    [ -z "$child_pid" ] || ! kill -0 "$child_pid" 2>/dev/null || repeat_ok=0
+  done
+  chk "Perl fallback repeat returns 124 and reaps all process groups" "1" "$repeat_ok"
+  chk "Perl fallback repeat is deterministically bounded" "yes" \
+    "$([ "$elapsed" -le 8 ] && echo yes || echo no)"
   cat > "$sb/perl-bin/claude" <<'SHIM'
 #!/bin/sh
 printf '%s\n' "$$" > "$CCT_TIMEOUT_WRAPPER_PID"
@@ -1735,11 +1901,20 @@ make_fixture(){
     chmod 600 "$target/home/.claude/tokens.env" || exit 1
     cat > "$target/bin/claude" <<'SHIM'
 #!/usr/bin/env bash
-if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+fixture_version=0
+for fixture_arg in "$@"; do
+  [ "$fixture_arg" != "--version" ] || fixture_version=1
+done
+if [ "$fixture_version" -eq 1 ]; then
   printf '%s\n' "Claude Code fixture 1.2.3"
   exit 0
 fi
-echo "CLAUDE args=[$*] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  fixture_auth=set
+else
+  fixture_auth=unset
+fi
+echo "CLAUDE args=[$*] auth=[$fixture_auth]" >&2
 exit 0
 SHIM
     chmod 700 "$target/bin/claude" || exit 1

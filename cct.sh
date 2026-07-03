@@ -124,14 +124,15 @@ _cct_list() {
 # 시간제한 실행 (timeout > gtimeout > perl > 무제한)
 _cct_run_limited() {
   local secs="$1"; shift
-  if   command -v timeout  >/dev/null 2>&1; then timeout  "$secs" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
+  if   command -v timeout  >/dev/null 2>&1; then timeout  -k 1 "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout -k 1 "$secs" "$@"
   elif command -v perl     >/dev/null 2>&1; then
     perl -e '
       use strict;
       use warnings;
       use Errno qw(EINTR);
       use POSIX ();
+      use Time::HiRes qw(time sleep);
 
       my $seconds = shift @ARGV;
       exit 125 unless defined $seconds && @ARGV;
@@ -163,22 +164,41 @@ _cct_run_limited() {
       }
       close $start_write;
 
-      my $timed_out = 0;
-      local $SIG{ALRM} = sub {
-        $timed_out = 1;
-        kill "TERM", -$pid;
-        select undef, undef, undef, 0.2;
-        kill "KILL", -$pid;
-      };
-      alarm $seconds;
-      my $waited;
-      do {
-        $waited = waitpid($pid, 0);
-      } while ($waited == -1 && $! == EINTR);
-      my $status = $?;
-      alarm 0;
+      my $deadline = time() + $seconds;
+      my ($waited, $status);
+      while (1) {
+        do {
+          $waited = waitpid($pid, POSIX::WNOHANG());
+        } while ($waited == -1 && $! == EINTR);
+        if ($waited == $pid) {
+          $status = $?;
+          last;
+        }
+        exit 125 if $waited == -1;
+        my $remaining = $deadline - time();
+        last if $remaining <= 0;
+        sleep($remaining < 0.01 ? $remaining : 0.01);
+      }
 
-      exit 124 if $timed_out;
+      if ($waited == 0) {
+        kill "TERM", -$pid;
+        my $grace_deadline = time() + 0.2;
+        while (time() < $grace_deadline) {
+          do {
+            $waited = waitpid($pid, POSIX::WNOHANG());
+          } while ($waited == -1 && $! == EINTR);
+          last if $waited == -1;
+          sleep 0.01;
+        }
+        kill "KILL", -$pid;
+        if ($waited == 0) {
+          do {
+            $waited = waitpid($pid, 0);
+          } while ($waited == -1 && $! == EINTR);
+        }
+        exit 124;
+      }
+
       exit 125 unless $waited == $pid;
       exit POSIX::WEXITSTATUS($status) if POSIX::WIFEXITED($status);
       exit 128 + POSIX::WTERMSIG($status) if POSIX::WIFSIGNALED($status);
@@ -714,6 +734,7 @@ _cct_active_label() {
   local v
   v="$(_cct_active_raw_label)" || return 0
   _cct_label_is_valid "$v" || return 0
+  _cct_account_exists "$(_cct_key "$v")" || return 0
   printf '%s' "$v"
 }
 
@@ -802,7 +823,7 @@ _cct_status() {
     echo "사용법: cct status" >&2
     return 2
   }
-  local mode accounts active active_file default_label sticky cb version
+  local mode accounts active active_file default_label sticky cb version probe_status
 
   if [ -L "$CCT_ENV_FILE" ]; then
     mode="symbolic-link"
@@ -821,7 +842,8 @@ _cct_status() {
     active="none"
   else
     active="$(_cct_active_raw_label)" || active=""
-    if ! _cct_label_is_valid "$active"; then
+    if ! _cct_label_is_valid "$active" ||
+      ! _cct_account_exists "$(_cct_key "$active")"; then
       active="invalid"
     fi
   fi
@@ -849,7 +871,14 @@ _cct_status() {
         unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
         _cct_run_limited 5 "$cb" --version </dev/null 2>/dev/null
-      ) | awk '
+      )
+    )"; then
+      probe_status=0
+    else
+      probe_status=$?
+    fi
+    if [ "$probe_status" -eq 0 ]; then
+      version="$(printf '%s\n' "$version" | awk '
         NR == 1 {
           gsub(/\r/, "")
           numeric = "[0-9]+\\.[0-9]+(\\.[0-9]+)?(\\.[0-9]+)?"
@@ -861,9 +890,7 @@ _cct_status() {
             print "unavailable"
           exit
         }
-      '
-    )"; then
-      :
+      ')"
     else
       version="unavailable"
     fi
@@ -1175,7 +1202,8 @@ _cct_launch_label() {
   shift
   local command_args=(claude)
   [ "${CCT_SKIP_PERMS:-1}" = "0" ] || command_args+=(--dangerously-skip-permissions)
-  if [ -n "${CCT_CLAUDE_FLAGS:-}" ]; then
+  case "${CCT_CLAUDE_FLAGS:-}" in
+  *[![:space:]]*)
     local _extra
     if [ -n "${ZSH_VERSION:-}" ]; then
       read -rA _extra <<< "$CCT_CLAUDE_FLAGS"
@@ -1183,7 +1211,8 @@ _cct_launch_label() {
       read -ra _extra <<< "$CCT_CLAUDE_FLAGS"
     fi
     command_args+=("${_extra[@]}")
-  fi
+    ;;
+  esac
   key="$(_cct_key "$label")"; tok="$(_cct_envtok "$key")"
   if [ -z "$tok" ]; then
     { echo "❌ '$label' 토큰 없음 (키 $key). 등록된 계정:"; _cct_list; echo "→ 등록: cct add $label"; } >&2
