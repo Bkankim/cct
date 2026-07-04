@@ -269,8 +269,29 @@ _cct_wallet_read_lock_owner() {
   ' "$1" 2>/dev/null
 }
 
+_cct_wallet_pid_state() {
+  local pid="$1" out rc probe
+  if kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  [ -x /bin/ps ] || return 2
+  out="$(LC_ALL=C /bin/ps -p "$pid" -o pid= 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    [ "$(printf '%s\n' "$out" | awk -v p="$pid" '$1 == p { found++ } END { print found + 0 }')" -eq 1 ] &&
+      return 0
+    return 2
+  fi
+  probe="$(LC_ALL=C /bin/ps -p "$$" -o pid= 2>/dev/null)" || return 2
+  [ "$(printf '%s\n' "$probe" | awk -v p="$$" '$1 == p { found++ } END { print found + 0 }')" -eq 1 ] ||
+    return 2
+  return 1
+}
+
 _cct_wallet_release_lock() {
   local lock="$1" expected="$2" current
+  [ -x /bin/rm ] && [ -x /bin/rmdir ] ||
+    return 1
   [ ! -L "$lock" ] && [ -d "$lock" ] ||
     return 1
   [ ! -L "$lock/owner" ] && [ -f "$lock/owner" ] ||
@@ -279,26 +300,34 @@ _cct_wallet_release_lock() {
     return 1
   [ "$current" = "$expected" ] ||
     return 1
-  rm -f "$lock/owner" 2>/dev/null &&
-    rmdir "$lock" 2>/dev/null
+  /bin/rm -f -- "$lock/owner" 2>/dev/null &&
+    /bin/rmdir -- "$lock" 2>/dev/null
 }
 
 _cct_wallet_create_lock() {
   local lock="$1" now="$2" owner
   _cct_wallet_lock_owner=""
-  mkdir "$lock" 2>/dev/null || return 1
-  owner="$$ $now"
-  if (umask 077; printf '%s\n' "$owner" > "$lock/owner"); then
-    _cct_wallet_lock_owner="$owner"
-    return 0
+  _cct_wallet_lock_candidate="$lock"
+  mkdir "$lock" 2>/dev/null || {
+    _cct_wallet_lock_candidate=""
+    return 1
+  }
+  [ -x /bin/sh ] && [ -x /bin/rmdir ] || return 1
+  if /bin/sh -c "umask 077; printf '%s %s\\n' \"\$PPID\" \"\$1\" > \"\$2\"" \
+    cct-lock-owner "$now" "$lock/owner"; then
+    owner="$(_cct_wallet_read_lock_owner "$lock/owner")" || owner=""
+    if [ -n "$owner" ]; then
+      _cct_wallet_lock_owner="$owner"
+      return 0
+    fi
   fi
-  # A partial or substituted owner record is ambiguous and must be preserved.
-  rmdir "$lock" 2>/dev/null
+  /bin/rmdir -- "$lock" 2>/dev/null
+  _cct_wallet_lock_candidate=""
   return 1
 }
 
 _cct_wallet_acquire_lock() {
-  local lock="$1" now owner pid epoch
+  local lock="$1" now owner pid epoch state
   now="$(date +%s)" || {
     echo "❌ wallet lock: 현재 시간 확인 실패" >&2
     return 1
@@ -320,9 +349,15 @@ _cct_wallet_acquire_lock() {
     *[!0-9:]*|:*|*:) _cct_wallet_busy; return 1 ;;
   esac
 
-  if kill -0 "$pid" 2>/dev/null; then
+  if _cct_wallet_pid_state "$pid"; then
     _cct_wallet_busy
     return 1
+  else
+    state=$?
+    if [ "$state" -ne 1 ]; then
+      _cct_wallet_busy
+      return 1
+    fi
   fi
 
   # Reclaim only the exact dead owner we observed. A substituted owner wins.
@@ -350,21 +385,32 @@ _cct_wallet_mutate() (
   rollback_tmp=""
   locked=0
   lock_owner=""
+  _cct_wallet_lock_candidate=""
   transaction_pending=0
   rc=0
+  success_rc=0
+  active=""
 
   umask 077
   _cct_wallet_cleanup() {
-    local original_status=$? cleanup_status=0
-    [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null
-    [ -z "$backup_tmp" ] || rm -f "$backup_tmp" 2>/dev/null
-    [ -z "$rollback_tmp" ] || rm -f "$rollback_tmp" 2>/dev/null
+    local original_status=$? cleanup_status=0 candidate_owner
+    [ -z "$tmp" ] || /bin/rm -f -- "$tmp" 2>/dev/null
+    [ -z "$backup_tmp" ] || /bin/rm -f -- "$backup_tmp" 2>/dev/null
+    [ -z "$rollback_tmp" ] || /bin/rm -f -- "$rollback_tmp" 2>/dev/null
     if [ "$locked" -eq 1 ]; then
       if _cct_wallet_release_lock "$lock" "$lock_owner"; then
         locked=0
       else
         cleanup_status=1
       fi
+    elif [ "$_cct_wallet_lock_candidate" = "$lock" ]; then
+      candidate_owner="$(_cct_wallet_read_lock_owner "$lock/owner")" || candidate_owner=""
+      if [ -n "$candidate_owner" ]; then
+        _cct_wallet_release_lock "$lock" "$candidate_owner" || cleanup_status=1
+      else
+        /bin/rmdir -- "$lock" 2>/dev/null || cleanup_status=1
+      fi
+      _cct_wallet_lock_candidate=""
     fi
     if [ "$original_status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
       return 1
@@ -405,6 +451,19 @@ _cct_wallet_mutate() (
   _cct_wallet_acquire_lock "$lock" || exit 1
   lock_owner="$_cct_wallet_lock_owner"
   locked=1
+  _cct_wallet_lock_candidate=""
+  case "$operation" in
+    remove)
+      active="$(_cct_active_label)"
+      if [ "$active" = "$old_label" ]; then active_action=delete
+      else active_action=""; fi
+      ;;
+    rename)
+      active="$(_cct_active_label)"
+      if [ "$active" = "$old_label" ]; then active_action="write"
+      else active_action=""; fi
+      ;;
+  esac
 
   tmp="$(mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
     echo "❌ wallet temp 생성 실패: $CCT_ENV_FILE" >&2
@@ -562,11 +621,13 @@ _cct_wallet_mutate() (
     transaction_pending=0
     trap '_cct_wallet_on_signal' HUP INT TERM
   fi
+  [ -z "$active_action" ] || success_rc=10
+  trap '' HUP INT TERM
   trap - EXIT
   _cct_wallet_cleanup
   rc=$?
-  trap - HUP INT TERM
-  exit "$rc"
+  [ "$rc" -eq 0 ] || exit "$rc"
+  exit "$success_rc"
 )
 
 _cct_wallet_store_account() {
@@ -574,11 +635,33 @@ _cct_wallet_store_account() {
 }
 
 _cct_wallet_remove_account() {
-  _cct_wallet_mutate remove "$1" "$2" "" "" "${3-}" ""
+  local rc
+  _cct_wallet_active_changed=0
+  if _cct_wallet_mutate remove "$1" "$2" "" "" "${3-}" ""; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) return 0 ;;
+    10) _cct_wallet_active_changed=1; return 0 ;;
+    *) return "$rc" ;;
+  esac
 }
 
 _cct_wallet_rename_account() {
-  _cct_wallet_mutate rename "$1" "$2" "$3" "$4" "${5-}" "$4"
+  local rc
+  _cct_wallet_active_changed=0
+  if _cct_wallet_mutate rename "$1" "$2" "$3" "$4" "${5-}" "$4"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) return 0 ;;
+    10) _cct_wallet_active_changed=1; return 0 ;;
+    *) return "$rc" ;;
+  esac
 }
 
 _cct_add() {
@@ -752,8 +835,13 @@ _cct_active_write_atomic() (
   f="$(_cct_active_file)"
   tmp=""
   umask 077
-  trap '[ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null' EXIT
+  [ -x /bin/rm ] || exit 1
+  trap '[ -z "$tmp" ] || /bin/rm -f -- "$tmp" 2>/dev/null' EXIT
   trap 'exit 1' HUP INT TERM
+  [ ! -L "$f" ] || exit 1
+  if [ -e "$f" ] && [ ! -f "$f" ]; then
+    exit 1
+  fi
   mkdir -p "$(_cct_parent_dir "$f")" 2>/dev/null || exit 1
   tmp="$(mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || exit 1
   chmod 600 "$tmp" 2>/dev/null || exit 1
@@ -766,12 +854,86 @@ _cct_active_write_atomic() (
 _cct_active_delete_checked() {
   local f
   f="$(_cct_active_file)"
-  [ -e "$f" ] || [ -L "$f" ] || return 0
-  rm -f "$f" 2>/dev/null
+  [ ! -L "$f" ] || return 1
+  [ -e "$f" ] || return 0
+  [ -f "$f" ] && [ -x /bin/rm ] || return 1
+  /bin/rm -f -- "$f" 2>/dev/null || return 1
+  [ ! -e "$f" ] && [ ! -L "$f" ]
 }
 
+_cct_active_change_locked() (
+  action="$1"
+  label="${2-}"
+  expected_token="${3-}"
+  lock="${CCT_ENV_FILE}.lock"
+  locked=0
+  lock_owner=""
+  _cct_wallet_lock_candidate=""
+  rc=0
+
+  umask 077
+  _cct_active_lock_cleanup() {
+    local original_status=$? cleanup_status=0 candidate_owner
+    if [ "$locked" -eq 1 ]; then
+      if _cct_wallet_release_lock "$lock" "$lock_owner"; then
+        locked=0
+      else
+        cleanup_status=1
+      fi
+    elif [ "$_cct_wallet_lock_candidate" = "$lock" ]; then
+      candidate_owner="$(_cct_wallet_read_lock_owner "$lock/owner")" || candidate_owner=""
+      if [ -n "$candidate_owner" ]; then
+        _cct_wallet_release_lock "$lock" "$candidate_owner" || cleanup_status=1
+      else
+        /bin/rmdir -- "$lock" 2>/dev/null || cleanup_status=1
+      fi
+      _cct_wallet_lock_candidate=""
+    fi
+    if [ "$original_status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
+      return 1
+    fi
+    return "$original_status"
+  }
+  # shellcheck disable=SC2329
+  _cct_active_lock_signal() {
+    trap '' HUP INT TERM
+    exit 1
+  }
+  trap '_cct_active_lock_cleanup' EXIT
+  trap '_cct_active_lock_signal' HUP INT TERM
+
+  _cct_wallet_acquire_lock "$lock" || exit 1
+  lock_owner="$_cct_wallet_lock_owner"
+  locked=1
+  _cct_wallet_lock_candidate=""
+
+  case "$action" in
+    write)
+      key="$(_cct_key "$label")"
+      current_token="$(_cct_envtok "$key")"
+      if [ -z "$current_token" ] || [ "$current_token" != "$expected_token" ]; then
+        echo "❌ '$label' 계정이 선택 중 변경되었음. 다시 시도하세요." >&2
+        exit 1
+      fi
+      _cct_active_write_atomic "$label" || exit 1
+      ;;
+    delete)
+      _cct_active_delete_checked || exit 1
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+
+  trap '' HUP INT TERM
+  trap - EXIT
+  _cct_active_lock_cleanup
+  rc=$?
+  exit "$rc"
+)
+
 _cct_off() {  # sticky 해제: 저장 파일 삭제 + 현재 셸 env 해제
-  _cct_active_delete_checked || {
+  _cct_active_change_locked delete || {
     echo "❌ 활성 프로필 해제 실패: $(_cct_active_file)" >&2
     return 1
   }
@@ -974,7 +1136,7 @@ _cct_doctor() {
     return 2
   }
   local failed=0 mode active_file active default_label backup lock owner
-  local pid epoch now age cb
+  local pid epoch now age cb state
 
   if [ -L "$CCT_ENV_FILE" ]; then
     echo "FAIL wallet: symbolic link"
@@ -1097,14 +1259,19 @@ _cct_doctor() {
         failed=1
       else
         age=$((now - epoch))
-        if kill -0 "$pid" 2>/dev/null; then
+        if _cct_wallet_pid_state "$pid"; then
           echo "WARN lock: live mutation in progress"
-        elif [ "$age" -lt 0 ]; then
-          echo "FAIL lock: malformed owner timestamp"
-          failed=1
         else
-          echo "FAIL lock: dead or stale owner"
-          failed=1
+          state=$?
+          if [ "$state" -eq 2 ]; then
+            echo "WARN lock: owner liveness unknown"
+          elif [ "$age" -lt 0 ]; then
+            echo "FAIL lock: malformed owner timestamp"
+            failed=1
+          else
+            echo "FAIL lock: dead or stale owner"
+            failed=1
+          fi
         fi
       fi
     fi
@@ -1129,7 +1296,7 @@ _cct_doctor() {
 }
 
 _cct_rm() {
-  local label key force=0 ans active active_action=
+  local label key force=0 ans removed_token
   [ "$#" -ge 1 ] || { echo "사용법: cct rm <라벨> [--force]" >&2; return 2; }
   [ "$#" -le 2 ] || { echo "사용법: cct rm <라벨> [--force]" >&2; return 2; }
   label="$1"
@@ -1146,18 +1313,19 @@ _cct_rm() {
     echo "❌ '$label' 계정 없음" >&2
     return 1
   }
+  removed_token="$(_cct_envtok "$key")"
   if [ "$force" -eq 0 ]; then
     printf "'%s' 계정을 삭제할까요? [y/N] " "$label" >&2
     read -r ans || ans=
     case "$ans" in y|Y|yes|YES) ;; *) echo "취소함." >&2; return 1 ;; esac
   fi
-  active="$(_cct_active_label)"
-  [ "$active" != "$label" ] || active_action="delete"
-  _cct_wallet_remove_account "$key" "$label" "$active_action" || {
+  _cct_wallet_remove_account "$key" "$label" || {
     echo "❌ [$label] 삭제 트랜잭션 실패" >&2
     return 1
   }
-  if [ "$active" = "$label" ]; then
+  if [ "$_cct_wallet_active_changed" -eq 1 ] ||
+    { [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] &&
+      [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$removed_token" ]; }; then
     unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
   fi
@@ -1165,7 +1333,7 @@ _cct_rm() {
 }
 
 _cct_rename() {
-  local old_label new_label old_key new_key active active_action=
+  local old_label new_label old_key new_key
   [ "$#" -eq 2 ] || {
     echo "사용법: cct rename <기존> <새>" >&2
     return 2
@@ -1188,9 +1356,7 @@ _cct_rename() {
     echo "❌ '$new_label' 계정이 이미 존재함" >&2
     return 1
   }
-  active="$(_cct_active_label)"
-  [ "$active" != "$old_label" ] || active_action="write"
-  _cct_wallet_rename_account "$old_key" "$old_label" "$new_key" "$new_label" "$active_action" || {
+  _cct_wallet_rename_account "$old_key" "$old_label" "$new_key" "$new_label" || {
     echo "❌ [$old_label] 이름 변경 트랜잭션 실패" >&2
     return 1
   }
@@ -1233,7 +1399,7 @@ _cct_launch_label() {
         command "${command_args[@]}" "$@"
     fi
   else
-    _cct_active_write_atomic "$label" || {
+    _cct_active_change_locked write "$label" "$tok" || {
       echo "❌ 활성 프로필 저장 실패: $(_cct_active_file)" >&2
       return 1
     }
