@@ -894,7 +894,7 @@ _cct_active_change_locked() (
     fi
     return "$original_status"
   }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   _cct_active_lock_signal() {
     trap '' HUP INT TERM
     exit 1
