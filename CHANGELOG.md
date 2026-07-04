@@ -40,9 +40,11 @@ and `2` for invocation misuse.
 
 - All wallet mutations use a mode-`600` same-directory temporary file and atomic
   replace, with a mode-`600` rolling backup at `tokens.env.bak`.
-- `tokens.env.lock/` serializes changes. A recent live owner is busy; a dead owner
-  or lock older than 60 seconds can be reclaimed by a later mutation after checks.
-  Diagnostics report lock state without recovering or modifying it.
+- `tokens.env.lock/` serializes changes. Every live owner PID remains busy
+  regardless of the recorded epoch's age. A later mutation reclaims only valid
+  owner metadata whose PID is dead, after rechecking that the owner still
+  matches. The epoch is diagnostic data, not a timeout; diagnostics report lock
+  state without recovering or modifying it.
 - `rm` and `rename` update wallet and active state as a recoverable transaction.
   An active-state failure restores the verified wallet backup.
 - `status` and `doctor` are offline and redact credentials.
