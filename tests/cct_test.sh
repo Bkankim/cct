@@ -103,6 +103,47 @@ test_install(){
   local attack_before launcher_before launcher_mode config_value other_repo
 
   if [ "${CCT_TEST_CASE:-}" = "install-failures" ]; then
+    echo "-- security: stdin execution ignores ambiguous cwd source paths"
+    H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/attack/bin"
+    printf '%s\n' '# regular cwd file that collides with the stdin command name' > "$H/attack/bash"
+    cat > "$H/attack/cct.sh" <<'ATTACK'
+printf '%s\n' attacker-launcher
+printf '%s\n' sourced > "$CCT_ATTACK_MARKER"
+ATTACK
+    cat > "$H/attack/bin/curl" <<'SHIM'
+#!/bin/sh
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+printf '%s\n' '# safe downloaded launcher' 'CCT_SAFE_LAUNCHER=1' > "$output"
+printf '%s\n' called >> "$CCT_CURL_LOG"
+SHIM
+    chmod 700 "$H/attack/bin/curl"
+    cap="$(
+      cd "$H/attack" &&
+        HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash \
+          CCT_ATTACK_MARKER="$H/attacker-sourced" CCT_CURL_LOG="$H/curl.log" \
+          PATH="$H/attack/bin:$PATH" bash < "$REPO/install.sh" 2>&1
+    )"; rc=$?
+    chk "stdin ambiguous source install rc=0" "0" "$rc"
+    chk "stdin install uses downloaded safe launcher" "CCT_SAFE_LAUNCHER=1" \
+      "$(tail -n 1 "$H/.claude/cct.sh" 2>/dev/null)"
+    chk "stdin install launcher is regular" "yes" \
+      "$([ -f "$H/.claude/cct.sh" ] && [ ! -L "$H/.claude/cct.sh" ] && echo yes || echo no)"
+    chk "stdin install launcher mode 600" "600" "$(wallet_mode "$H/.claude/cct.sh")"
+    chk "stdin install invokes remote fetch path" "1" "$(count_exact "$H/curl.log" called)"
+    chk "stdin install never sources attacker launcher" "no" \
+      "$([ -e "$H/attacker-sourced" ] && echo yes || echo no)"
+    chk_not_has "stdin install never copies attacker bytes" "attacker-launcher" \
+      "$(cat "$H/.claude/cct.sh" 2>/dev/null)"
+    chk_has "stdin install reports remote mode" "런처(원격 다운로드)" "$cap"
+    rm -rf "$H"
+
     echo "-- security: a predictable launcher temp symlink cannot redirect the copy"
     H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude"
     target="$H/preplanted-target"

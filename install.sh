@@ -35,10 +35,12 @@ append_wallet_ignores() {
   done
 }
 
-# 런처 확보: 스크립트 파일로 실행됐고($0가 실제 파일) 옆에 cct.sh 있으면 복사(clone 모드).
-# curl|bash 처럼 파이프로 실행되면 $0가 파일이 아니므로 → 원격 다운로드 (cwd의 엉뚱한 cct.sh 회피)
+# 런처 확보: 실제 실행 중인 스크립트 파일 옆에 cct.sh가 있으면 복사(clone 모드).
+# curl|bash처럼 stdin으로 실행되면 BASH_SOURCE가 비므로 → 원격 다운로드 (cwd의 엉뚱한 cct.sh 회피)
+INSTALL_SOURCE="${BASH_SOURCE[0]-}"
 SRC_DIR=""
-[ -f "$0" ] && SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "")"
+[ -n "$INSTALL_SOURCE" ] && [ -f "$INSTALL_SOURCE" ] &&
+  SRC_DIR="$(cd "$(dirname "$INSTALL_SOURCE")" 2>/dev/null && pwd || echo "")"
 LAUNCHER="$DEST/cct.sh"
 LAUNCHER_TMP=""
 LAUNCHER_TMP_OWNED=0
