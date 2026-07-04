@@ -82,7 +82,7 @@ Do not use plaintext cloud sync, chat, email, or a Git commit to move the wallet
 
 `add`, `rm`, and `rename` write a mode-`600` temporary file in the same directory and finish with an atomic `mv`. Before changing an existing wallet, cct creates a mode-`600` rolling backup at `tokens.env.bak`. Only one rolling backup is retained; keep any longer-term copy in separate encrypted storage.
 
-Concurrent mutations are serialized by a `tokens.env.lock/` directory. A recent live owner makes the operation fail as busy. A dead owner or lock older than 60 seconds can be reclaimed by the next mutation after safety checks. `cct doctor` only reports the condition; it never recovers or modifies files.
+Concurrent mutations are serialized by a `tokens.env.lock/` directory. If the PID in valid owner metadata is alive, the lock is always busy regardless of the recorded epoch's age. The next mutation can reclaim a lock only when the owner metadata is valid, its PID is dead, and the observed owner still matches during removal. The epoch is diagnostic timing data, not a timeout or reclamation condition. `cct doctor` only reports the condition; it never recovers or modifies files.
 
 If the wallet is damaged, first make sure no cct mutation is still running, then restore the backup.
 
