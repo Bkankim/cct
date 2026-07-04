@@ -1061,17 +1061,12 @@ SHIM
     chk "locked rename target conflict preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
 
     echo "-- active remove rollback when active deletion fails"
-    mkdir "$sb/fail-active-rm"
-    cat > "$sb/fail-active-rm/rm" <<'SHIM'
-#!/bin/sh
-if [ "$#" -eq 2 ] && [ "$1" = "-f" ] && [ "$2" = "$CCT_FAIL_ACTIVE_PATH" ]; then
-  [ -f "$CCT_ENV_FILE.lock/owner" ] || exit 2
-  printf 'held\n' > "$CCT_LOCK_HELD_MARKER"
-  exit 1
-fi
-exec "$CCT_REAL_RM" "$@"
-SHIM
-    chmod 700 "$sb/fail-active-rm/rm"
+    local regular_active="$CCT_ACTIVE_FILE"
+    mkdir "$sb/protected-active"
+    CCT_ACTIVE_FILE="$sb/protected-active/cct-active"
+    printf '%s\n' alpha > "$CCT_ACTIVE_FILE"
+    chmod 600 "$CCT_ACTIVE_FILE"
+    chmod 500 "$sb/protected-active"
     before="$(wallet_sha "$CCT_ENV_FILE")"
     active_before="$(wallet_sha "$CCT_ACTIVE_FILE")"
     export CLAUDE_CODE_OAUTH_TOKEN=parent-sentinel
@@ -1079,16 +1074,17 @@ SHIM
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=parent-traffic
     export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=parent-refresh
     env_before="${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
-    cap="$(CCT_FAIL_ACTIVE_PATH="$CCT_ACTIVE_FILE" CCT_LOCK_HELD_MARKER="$sb/rm-lock-held" \
-      CCT_REAL_RM="$(command -v rm)" \
-      PATH="$sb/fail-active-rm:$PATH" cct rm alpha --force 2>&1)"; rc=$?
+    cap="$(cct rm alpha --force 2>&1)"; rc=$?
+    chmod 700 "$sb/protected-active"
     chk "active rm failure -> 1" "1" "$rc"
     chk "active rm rollback restores wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
     chk "active rm failure preserves active" "$active_before" "$(wallet_sha "$CCT_ACTIVE_FILE")"
     chk "active rm failure preserves parent env" "$env_before" \
       "${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
-    chk "active rm rollback stays under wallet lock" "held" "$(cat "$sb/rm-lock-held" 2>/dev/null)"
+    chk "active rm failure releases lock" "no" \
+      "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
     chk_has "active rm failure reports rollback" "롤백" "$cap"
+    CCT_ACTIVE_FILE="$regular_active"
 
     echo "-- active rename rollback when active write fails"
     mkdir "$sb/fail-active-mv"
@@ -1926,6 +1922,333 @@ SHIM
   rm -rf "$sb"
 }
 
+test_lock_active_races(){
+  echo "== wallet lock and active-state races =="
+  set +u
+  local sb cap rc now before owner_pid mutator_pid job_pid wait_i old_path target
+  sb="$(mktemp -d)"
+  mk_shim "$sb/bin"
+  export PATH="$sb/bin:$PATH"
+  export CCT_ENV_FILE="$sb/tokens.env"
+  export CCT_ACTIVE_FILE="$sb/cct-active"
+  export CCT_DEFAULT_LABEL=alpha
+  export CCT_STICKY=1
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=fixture-alpha' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'CCT_TOKEN_BETA=fixture-beta' \
+    '#cctlabel:CCT_TOKEN_BETA=beta'
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+  now="$(date +%s)"
+
+  echo "-- kill EPERM is live/unknown, never dead"
+  mkdir "$CCT_ENV_FILE.lock"
+  printf '1 %s\n' "$now" > "$CCT_ENV_FILE.lock/owner"
+  kill(){ return 1; }
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "non-signalable live owner doctor remains healthy" "0" "$rc"
+  chk_has "non-signalable live owner is WARN" "WARN lock:" "$cap"
+  cap="$(printf '%s\n' fixture-new | cct add gamma 2>&1)"; rc=$?
+  chk "non-signalable live owner refuses mutation" "1" "$rc"
+  chk_has "non-signalable live owner reports busy" "wallet busy" "$cap"
+  chk "non-signalable live owner lock is preserved" "1" \
+    "$(awk 'NR == 1 { print $1 }' "$CCT_ENV_FILE.lock/owner" 2>/dev/null)"
+  unset -f kill
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  echo "-- lock owner is the actual asynchronous mutator"
+  mkdir "$sb/block-owner"
+  cat > "$sb/block-owner/cp" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$PPID" > "$CCT_MUTATOR_PID_MARKER"
+: > "$CCT_LOCK_HELD_MARKER"
+i=0
+while [ ! -e "$CCT_LOCK_RELEASE_MARKER" ] && [ "$i" -lt 500 ]; do
+  sleep 0.01
+  i=$((i + 1))
+done
+exec "$CCT_REAL_CP" "$@"
+SHIM
+  chmod 700 "$sb/block-owner/cp"
+  (
+    CCT_MUTATOR_PID_MARKER="$sb/mutator.pid" \
+      CCT_LOCK_HELD_MARKER="$sb/owner-held" \
+      CCT_LOCK_RELEASE_MARKER="$sb/owner-release" \
+      CCT_REAL_CP="$(command -v cp)" PATH="$sb/block-owner:$PATH" \
+      cct add gamma <<< fixture-gamma >"$sb/owner.out" 2>&1
+  ) &
+  job_pid=$!
+  wait_i=0
+  while [ ! -e "$sb/owner-held" ] && [ "$wait_i" -lt 500 ]; do
+    sleep 0.01
+    wait_i=$((wait_i + 1))
+  done
+  owner_pid="$(awk 'NR == 1 { print $1 }' "$CCT_ENV_FILE.lock/owner" 2>/dev/null)"
+  mutator_pid="$(cat "$sb/mutator.pid" 2>/dev/null)"
+  chk "lock owner matches OS mutator" "$mutator_pid" "$owner_pid"
+  chk "lock owner differs long-lived test shell" "yes" \
+    "$([ "$owner_pid" != "$$" ] && echo yes || echo no)"
+  kill -KILL "$mutator_pid" 2>/dev/null || true
+  : > "$sb/owner-release"
+  wait "$job_pid" 2>/dev/null || true
+  cap="$(printf '%s\n' fixture-delta | cct add delta 2>&1)"; rc=$?
+  chk "dead actual mutator lock is reclaimed" "0" "$rc"
+  chk_has "reclaimed mutation commits" "CCT_TOKEN_DELTA=fixture-delta" \
+    "$(cat "$CCT_ENV_FILE")"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  echo "-- TERM after lock mkdir cannot strand malformed metadata"
+  mkdir "$sb/signal-mkdir"
+  cat > "$sb/signal-mkdir/mkdir" <<'SHIM'
+#!/bin/sh
+"$CCT_REAL_MKDIR" "$@" || exit $?
+last=""
+for arg do last="$arg"; done
+if [ "$last" = "$CCT_SIGNAL_LOCK" ]; then
+  kill -TERM "$PPID"
+fi
+exit 0
+SHIM
+  chmod 700 "$sb/signal-mkdir/mkdir"
+  cap="$(
+    CCT_REAL_MKDIR="$(command -v mkdir)" CCT_SIGNAL_LOCK="$CCT_ENV_FILE.lock" \
+      PATH="$sb/signal-mkdir:$PATH" \
+      cct add signal <<< fixture-signal 2>&1
+  )"; rc=$?
+  chk "mkdir-boundary TERM aborts mutation" "1" "$rc"
+  chk "mkdir-boundary TERM leaves no lock" "no" \
+    "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+  rm -rf "$CCT_ENV_FILE.lock"
+  cap="$(printf '%s\n' fixture-after-signal | cct add after_signal 2>&1)"; rc=$?
+  chk "mutation after mkdir-boundary TERM succeeds" "0" "$rc"
+
+  echo "-- TERM after owner write releases only the lock just created"
+  mkdir "$sb/signal-owner"
+  cat > "$sb/signal-owner/awk" <<'SHIM'
+#!/bin/sh
+last=""
+for arg do last="$arg"; done
+if [ "$last" = "$CCT_SIGNAL_OWNER" ] && [ ! -e "$CCT_SIGNAL_MARKER" ]; then
+  : > "$CCT_SIGNAL_MARKER"
+  owner_pid="$("$CCT_REAL_AWK" 'NR == 1 { print $1 }' "$last" 2>/dev/null)"
+  [ -z "$owner_pid" ] || kill -TERM "$owner_pid"
+fi
+exec "$CCT_REAL_AWK" "$@"
+SHIM
+  chmod 700 "$sb/signal-owner/awk"
+  cap="$(
+    CCT_SIGNAL_OWNER="$CCT_ENV_FILE.lock/owner" \
+      CCT_SIGNAL_MARKER="$sb/owner-term" CCT_REAL_AWK="$(command -v awk)" \
+      PATH="$sb/signal-owner:$PATH" cct add owner_signal <<< fixture-owner-signal 2>&1
+  )"; rc=$?
+  chk "owner-write TERM aborts mutation" "1" "$rc"
+  chk "owner-write TERM was injected" "yes" \
+    "$([ -e "$sb/owner-term" ] && echo yes || echo no)"
+  chk "owner-write TERM leaves no lock" "no" \
+    "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  echo "-- final cleanup masks TERM across EXIT-trap handoff"
+  cap="$(
+    CCT_ENV_FILE="$sb/final-tokens.env" CCT_ACTIVE_FILE="$sb/final-active" \
+      CCT_STICKY=0 bash -c "
+        printf '%s\\n' \
+          'CCT_TOKEN_ALPHA=fixture-alpha' \
+          '#cctlabel:CCT_TOKEN_ALPHA=alpha' > \"\$CCT_ENV_FILE\"
+        chmod 600 \"\$CCT_ENV_FILE\"
+        . '$REPO/cct.sh'
+        _cct_wallet_release_lock() {
+          lock=\$1 expected=\$2
+          /bin/sh -c 'kill -TERM \"\$PPID\"'
+          current=\$(_cct_wallet_read_lock_owner \"\$lock/owner\") || return 1
+          [ \"\$current\" = \"\$expected\" ] || return 1
+          /bin/rm -f -- \"\$lock/owner\" 2>/dev/null &&
+            /bin/rmdir -- \"\$lock\" 2>/dev/null
+        }
+        printf '%s\\n' fixture-final | cct add final
+      " 2>&1
+  )"; rc=$?
+  chk "final-cleanup TERM is masked" "0" "$rc"
+  chk "final-cleanup TERM leaves no lock" "no" \
+    "$([ -e "$sb/final-tokens.env.lock" ] && echo yes || echo no)"
+
+  echo "-- active destination types are refused before replace"
+  for active_type in directory symlink fifo; do
+    rm -rf "$CCT_ACTIVE_FILE" "$sb/active-target"
+    case "$active_type" in
+      directory) mkdir "$CCT_ACTIVE_FILE" ;;
+      symlink)
+        printf '%s\n' keep > "$sb/active-target"
+        ln -s "$sb/active-target" "$CCT_ACTIVE_FILE"
+        ;;
+      fifo) mkfifo "$CCT_ACTIVE_FILE" ;;
+    esac
+    cap="$(cct alpha --version 2>&1)"; rc=$?
+    chk "$active_type active destination is refused" "1" "$rc"
+    case "$active_type" in
+      directory)
+        chk "directory active receives no temp" "0" \
+          "$(find "$CCT_ACTIVE_FILE" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+        ;;
+      symlink)
+        chk "symlink active is preserved" "yes" \
+          "$([ -L "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
+        ;;
+      fifo)
+        chk "fifo active is preserved" "yes" \
+          "$([ -p "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
+        ;;
+    esac
+  done
+  rm -rf "$CCT_ACTIVE_FILE" "$sb/active-target"
+  cct alpha --version >/dev/null 2>&1
+  chk "regular active replace stays mode 600" "600" "$(wallet_mode "$CCT_ACTIVE_FILE")"
+
+  echo "-- lifecycle ignores stale caller active actions"
+  printf '%s\n' beta > "$CCT_ACTIVE_FILE"
+  chmod 600 "$CCT_ACTIVE_FILE"
+  _cct_wallet_rename_account CCT_TOKEN_ALPHA alpha CCT_TOKEN_PRIMARY primary write \
+    >/dev/null 2>&1
+  rc=$?
+  chk "stale rename action succeeds" "0" "$rc"
+  chk "stale rename action preserves current active" "beta" \
+    "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  _cct_wallet_rename_account CCT_TOKEN_PRIMARY primary CCT_TOKEN_ALPHA alpha write \
+    >/dev/null 2>&1
+  printf '%s\n' fixture-gamma | cct add gamma >/dev/null 2>&1
+  _cct_wallet_remove_account CCT_TOKEN_GAMMA gamma delete >/dev/null 2>&1
+  rc=$?
+  chk "stale remove action succeeds" "0" "$rc"
+  chk "stale remove action preserves current active" "beta" \
+    "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  cct alpha --version >/dev/null 2>&1
+
+  echo "-- sticky selection and off serialize with lifecycle mutation"
+  mkdir "$sb/block-race"
+  cat > "$sb/block-race/cp" <<'SHIM'
+#!/bin/sh
+: > "$CCT_RACE_HELD_MARKER"
+i=0
+while [ ! -e "$CCT_RACE_RELEASE_MARKER" ] && [ "$i" -lt 500 ]; do
+  sleep 0.01
+  i=$((i + 1))
+done
+exec "$CCT_REAL_CP" "$@"
+SHIM
+  chmod 700 "$sb/block-race/cp"
+  (
+    CCT_RACE_HELD_MARKER="$sb/rm-held" \
+      CCT_RACE_RELEASE_MARKER="$sb/rm-release" \
+      CCT_REAL_CP="$(command -v cp)" PATH="$sb/block-race:$PATH" \
+      cct rm alpha --force >"$sb/rm.out" 2>&1
+    printf '%s\n' "$?" > "$sb/rm.rc"
+  ) &
+  job_pid=$!
+  wait_i=0
+  while [ ! -e "$sb/rm-held" ] && [ "$wait_i" -lt 500 ]; do
+    sleep 0.01
+    wait_i=$((wait_i + 1))
+  done
+  cap="$(cct beta --version 2>&1)"; rc=$?
+  chk "selection cannot overtake active remove" "1" "$rc"
+  chk_has "selection racing remove reports busy" "wallet busy" "$cap"
+  : > "$sb/rm-release"
+  wait "$job_pid"
+  chk "paused active remove succeeds" "0" "$(cat "$sb/rm.rc" 2>/dev/null)"
+  chk "successful racing selection is never lost" "no" \
+    "$([ -e "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
+
+  printf '%s\n' fixture-alpha-restored | cct add alpha >/dev/null 2>&1
+  cct alpha --version >/dev/null 2>&1
+  rm -f "$sb/rename-held" "$sb/rename-release"
+  (
+    CCT_RACE_HELD_MARKER="$sb/rename-held" \
+      CCT_RACE_RELEASE_MARKER="$sb/rename-release" \
+      CCT_REAL_CP="$(command -v cp)" PATH="$sb/block-race:$PATH" \
+      cct rename alpha primary >"$sb/rename.out" 2>&1
+    printf '%s\n' "$?" > "$sb/rename.rc"
+  ) &
+  job_pid=$!
+  wait_i=0
+  while [ ! -e "$sb/rename-held" ] && [ "$wait_i" -lt 500 ]; do
+    sleep 0.01
+    wait_i=$((wait_i + 1))
+  done
+  cap="$(cct off 2>&1)"; rc=$?
+  chk "off cannot overtake active rename" "1" "$rc"
+  chk_has "off racing rename reports busy" "wallet busy" "$cap"
+  : > "$sb/rename-release"
+  wait "$job_pid"
+  chk "paused active rename succeeds" "0" "$(cat "$sb/rename.rc" 2>/dev/null)"
+  chk "refused off does not erase renamed active" "primary" \
+    "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+  export CLAUDE_CODE_OAUTH_TOKEN=fixture-beta
+  cct rm beta --force >/dev/null 2>&1
+  rc=$?
+  chk "removing the currently exported token succeeds" "0" "$rc"
+  chk "removing the currently exported token clears parent env" "" \
+    "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "removing exported nonactive token preserves active label" "primary" \
+    "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
+
+  echo "-- off refuses ambiguous active targets without deleting them"
+  target="$sb/off-target"
+  printf '%s\n' keep > "$target"
+  /bin/rm -f "$CCT_ACTIVE_FILE"
+  ln -s "$target" "$CCT_ACTIVE_FILE"
+  before="$(wallet_sha "$target")"
+  cap="$(cct off 2>&1)"; rc=$?
+  chk "off refuses active symlink" "1" "$rc"
+  chk "off preserves active symlink" "yes" \
+    "$([ -L "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
+  chk "off preserves active symlink target" "$before" "$(wallet_sha "$target")"
+  chk_not_has "refused symlink off prints no success" "활성 프로필 해제 —" "$cap"
+  chk "refused symlink off releases lock" "no" \
+    "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+  rm -f "$CCT_ACTIVE_FILE"
+  mkfifo "$CCT_ACTIVE_FILE"
+  cap="$(cct off 2>&1)"; rc=$?
+  chk "off refuses active FIFO" "1" "$rc"
+  chk "off preserves active FIFO" "yes" \
+    "$([ -p "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
+  chk_not_has "refused FIFO off prints no success" "활성 프로필 해제 —" "$cap"
+  chk "refused FIFO off releases lock" "no" \
+    "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+  rm -f "$CCT_ACTIVE_FILE"
+  printf '%s\n' primary > "$CCT_ACTIVE_FILE"
+  chmod 600 "$CCT_ACTIVE_FILE"
+  cap="$(cct off 2>&1)"; rc=$?
+  chk "off deletes regular active file" "0" "$rc"
+  chk "regular off removes active file" "no" \
+    "$([ -e "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
+
+  echo "-- Bash command hash cannot enter lock release"
+  mkdir "$sb/fake-rm"
+  cat > "$sb/fake-rm/rm" <<'SHIM'
+#!/bin/sh
+: > "$CCT_FAKE_RM_MARKER"
+exit 0
+SHIM
+  chmod 700 "$sb/fake-rm/rm"
+  old_path="$PATH"
+  PATH="$sb/fake-rm:$PATH"
+  export CCT_FAKE_RM_MARKER="$sb/fake-rm-used"
+  hash -r
+  rm -f "$sb/hash-prime"
+  cct add path_guard <<< fixture-path >/dev/null 2>&1
+  rc=$?
+  PATH="$old_path"
+  hash -r
+  unset CCT_FAKE_RM_MARKER
+  chk "mutation with hashed fake PATH rm succeeds" "0" "$rc"
+  chk "hashed fake PATH rm was primed" "yes" \
+    "$([ -e "$sb/fake-rm-used" ] && echo yes || echo no)"
+  chk "hashed fake PATH rm leaves no lock" "no" \
+    "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
+
+  rm -rf "$sb"
+}
+
 make_fixture(){
   local target="${1-}"
   [ -n "$target" ] || { echo "usage: $0 fixture <new-dir>" >&2; return 2; }
@@ -1972,6 +2295,7 @@ case "${1:-all}" in
   sticky)  test_sticky ;;
   wallet)  test_wallet ;;
   accounts) test_accounts ;;
+  races) test_lock_active_races ;;
   diagnostics)
     case "${CCT_TEST_CASE:-}" in
       ""|diagnostic-failures) test_diagnostics ;;
@@ -1980,8 +2304,8 @@ case "${1:-all}" in
     ;;
   runtime) test_runtime_regressions ;;
   fixture) shift; make_fixture "$@"; exit $? ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_diagnostics; test_runtime_regressions ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|diagnostics|runtime|fixture|all]"; exit 2 ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|races|diagnostics|runtime|fixture|all]"; exit 2 ;;
 esac
 
 echo
