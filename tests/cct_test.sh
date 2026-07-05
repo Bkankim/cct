@@ -51,6 +51,11 @@ add_tok(){ # label token [confirm]
   else printf '%s\n' "$2" | cct add "$1"; fi
 }
 
+add_tok_internal(){
+  if [ "$#" -ge 3 ]; then printf '%s\n%s\n' "$2" "$3" | _cct_add_internal "$1"
+  else printf '%s\n' "$2" | _cct_add_internal "$1"; fi
+}
+
 wallet_mode(){
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
@@ -421,6 +426,7 @@ test_cct(){
   export CCT_STICKY=0   # 이 섹션은 비고정(inline) 동작 검증
   # shellcheck disable=SC1090
   . "$REPO/cct.sh"
+  _cct_system(){ command "$@"; }
 
   echo "-- C#2: cct check exit codes (0 valid / 1 invalid / 2 missing; aggregate)"
   add_tok good "sk-good" >/dev/null 2>&1
@@ -588,7 +594,7 @@ SHIM
   chmod 700 "$sbz/bin/curl"
   out="$(PATH="$sbz/bin:/usr/bin:/bin" CCT_ENV_FILE="$sbz/tokens.env" \
     CCT_CURL_ARGV="$sbz/curl.argv" CCT_CURL_STDIN="$sbz/curl.stdin" \
-    bash -c ". '$REPO/cct.sh'; cct fp alpha" 2>&1)"; rc=$?
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct fp alpha" 2>&1)"; rc=$?
   fp_stdin="$(cat "$sbz/curl.stdin" 2>/dev/null)"
   chk "fingerprint fake request -> 0" "0" "$rc"
   chk_not_has "fingerprint token absent from curl argv" "$fp_token" "$(cat "$sbz/curl.argv" 2>/dev/null)"
@@ -668,6 +674,7 @@ test_wallet(){
   chmod 640 "$CCT_ENV_FILE"
   # shellcheck disable=SC1090
   . "$REPO/cct.sh"
+  _cct_system(){ command "$@"; }
 
   echo "-- characterization: existing add/update behavior"
   cap="$(add_tok beta "sk-beta" 2>&1)"; rc=$?
@@ -718,7 +725,7 @@ SHIM
     (
       CCT_LOCK_HELD_MARKER="$sb/held" CCT_LOCK_RELEASE_MARKER="$sb/release" \
         CCT_REAL_CP="$(command -v cp)" PATH="$sb/block-cp:$PATH" \
-        add_tok first "sk-first-concurrent" >"$sb/first.out" 2>&1
+        add_tok_internal first "sk-first-concurrent" >"$sb/first.out" 2>&1
       printf '%s\n' "$?" > "$sb/first.rc"
     ) &
     local first_pid=$! wait_i=0
@@ -798,7 +805,7 @@ SHIM
   local successor_owner
   successor_owner="999998 $(date +%s)"
   cap="$(CCT_REAL_MV="$(command -v mv)" CCT_SUCCESSOR_OWNER="$successor_owner" \
-    PATH="$sb/successor-mv:$PATH" add_tok successor "sk-successor" 2>&1)"; rc=$?
+    PATH="$sb/successor-mv:$PATH" add_tok_internal successor "sk-successor" 2>&1)"; rc=$?
   chk "successor substitution mutation reports failure" "1" "$rc"
   chk "successor substitution preserves lock directory" "yes" \
     "$([ -d "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
@@ -863,14 +870,14 @@ SHIM
     "exec \"\$CCT_REAL_CHMOD\" \"\$@\"" > "$sb/fail-backup-chmod/chmod"
   chmod 700 "$sb/fail-backup-chmod/chmod"
   before="$(wallet_sha "$CCT_ENV_FILE")"
-  cap="$(PATH="$sb/fail-mktemp:$PATH" add_tok tempfail "sk-tempfail" 2>&1)"; rc=$?
+  cap="$(PATH="$sb/fail-mktemp:$PATH" add_tok_internal tempfail "sk-tempfail" 2>&1)"; rc=$?
   chk "temp creation failure returns nonzero" "1" "$rc"
   chk "temp creation failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
   case "$cap" in *완료*) chk "temp creation failure prints no success" "no" "yes" ;; *) chk "temp creation failure prints no success" "no" "no" ;; esac
   chk "temp creation failure releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
 
   before="$(wallet_sha "$CCT_ENV_FILE")"
-  cap="$(PATH="$sb/fail-cp:$PATH" add_tok backupfail "sk-backupfail" 2>&1)"; rc=$?
+  cap="$(PATH="$sb/fail-cp:$PATH" add_tok_internal backupfail "sk-backupfail" 2>&1)"; rc=$?
   chk "backup failure returns nonzero" "1" "$rc"
   chk "backup failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
   case "$cap" in *완료*) chk "backup failure prints no success" "no" "yes" ;; *) chk "backup failure prints no success" "no" "no" ;; esac
@@ -888,7 +895,7 @@ SHIM
     CCT_CHMOD_COUNT_FILE="$sb/backup-chmod-count" \
     CCT_REAL_CHMOD="$real_chmod" \
     PATH="$sb/fail-backup-chmod:$PATH" \
-    add_tok backupchmodfail "sk-backupchmodfail" 2>&1)"; rc=$?
+    add_tok_internal backupchmodfail "sk-backupchmodfail" 2>&1)"; rc=$?
   chk "backup chmod failure returns nonzero" "1" "$rc"
   chk "backup chmod failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
   chk "backup chmod failure preserves prior backup" "$backup_before" "$(wallet_sha "$CCT_ENV_FILE.bak")"
@@ -900,7 +907,7 @@ SHIM
   rm -f "$CCT_ENV_FILE.bak"
 
   before="$(wallet_sha "$CCT_ENV_FILE")"
-  cap="$(PATH="$sb/fail-chmod:$PATH" add_tok chmodfail "sk-chmodfail" 2>&1)"; rc=$?
+  cap="$(PATH="$sb/fail-chmod:$PATH" add_tok_internal chmodfail "sk-chmodfail" 2>&1)"; rc=$?
   chk "chmod failure returns nonzero" "1" "$rc"
   chk "chmod failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
   case "$cap" in *완료*) chk "chmod failure prints no success" "no" "yes" ;; *) chk "chmod failure prints no success" "no" "no" ;; esac
@@ -908,7 +915,7 @@ SHIM
   chk "chmod failure releases lock" "no" "$([ -e "$CCT_ENV_FILE.lock" ] && echo yes || echo no)"
 
   before="$(wallet_sha "$CCT_ENV_FILE")"
-  cap="$(PATH="$sb/fail-mv:$PATH" add_tok mvfail "sk-mvfail" 2>&1)"; rc=$?
+  cap="$(PATH="$sb/fail-mv:$PATH" add_tok_internal mvfail "sk-mvfail" 2>&1)"; rc=$?
   chk "mv failure returns nonzero" "1" "$rc"
   chk "mv failure preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
   case "$cap" in *완료*) chk "mv failure prints no success" "no" "yes" ;; *) chk "mv failure prints no success" "no" "no" ;; esac
@@ -946,6 +953,7 @@ test_accounts(){
     '#cctlabel:CCT_TOKEN_RENAME=rename'
   # shellcheck disable=SC1090
   . "$REPO/cct.sh"
+  _cct_system(){ command "$@"; }
 
   echo "-- characterization: normal labels and sticky selection"
   cap="$(cct alpha --version 2>&1 >/dev/null)"; rc=$?
@@ -1390,7 +1398,8 @@ SHIM
   before="$(wallet_sha "$CCT_ENV_FILE")"
   cap="$(cct doctor 2>&1)"; rc=$?
   chk "orphan annotation -> 1" "1" "$rc"
-  chk_has "orphan reports line/key only" "line 3: orphan annotation CCT_TOKEN_GHOST" "$cap"
+  chk_has "orphan reports line/category only" "line 3: orphan annotation" "$cap"
+  chk_not_has "orphan annotation key is redacted" "CCT_TOKEN_GHOST" "$cap"
   chk_not_has "orphan hides token" "orphan-base-secret" "$cap"
   chk "orphan preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
 
@@ -1721,18 +1730,18 @@ SHIM
   cp "$sb/timeout-bin/timeout" "$sb/gtimeout-bin/gtimeout"
   chmod 700 "$sb/timeout-bin/timeout" "$sb/gtimeout-bin/gtimeout"
   PATH="$sb/timeout-bin" CCT_STICKY=0 CCT_TIMEOUT_ARGS="$sb/timeout.args" \
-    /bin/bash -c ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'exit 7'" \
+    /bin/bash -c ". '$REPO/cct.sh'; _cct_timeout_path(){ builtin printf '%s' '$sb/timeout-bin/timeout'; }; _cct_run_limited 2 /bin/sh -c 'exit 7'" \
       >/dev/null 2>&1
   rc=$?
   chk "timeout branch preserves normal exit status" "7" "$rc"
   chk "timeout branch passes kill-after and duration" $'-k\n1\n2' \
     "$(cat "$sb/timeout.args" 2>/dev/null)"
   PATH="$sb/timeout-bin" CCT_STICKY=0 CCT_TIMEOUT_ARGS="$sb/timeout.args" \
-    /bin/bash -c ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'kill -TERM \$\$'" \
+    /bin/bash -c ". '$REPO/cct.sh'; _cct_timeout_path(){ builtin printf '%s' '$sb/timeout-bin/timeout'; }; _cct_run_limited 2 /bin/sh -c 'kill -TERM \$\$'" \
       >/dev/null 2>&1
   chk "timeout branch preserves signal exit status" "143" "$?"
   PATH="$sb/gtimeout-bin" CCT_STICKY=0 CCT_TIMEOUT_ARGS="$sb/gtimeout.args" \
-    /bin/bash -c ". '$REPO/cct.sh'; _cct_run_limited 2 /bin/sh -c 'exit 7'" \
+    /bin/bash -c ". '$REPO/cct.sh'; _cct_timeout_path(){ builtin printf '%s' '$sb/gtimeout-bin/gtimeout'; }; _cct_run_limited 2 /bin/sh -c 'exit 7'" \
       >/dev/null 2>&1
   rc=$?
   chk "gtimeout branch preserves normal exit status" "7" "$rc"
@@ -1922,10 +1931,212 @@ SHIM
   rm -rf "$sb"
 }
 
+test_final4_runtime_security(){
+  echo "== final4 runtime and security regressions =="
+  local sb cap rc before target marker marker_name
+  sb="$(mktemp -d)"
+  mk_shim "$sb/bin"
+  export PATH="$sb/bin:$PATH"
+  export CCT_ENV_FILE="$sb/tokens.env"
+  export CCT_ACTIVE_FILE="$sb/active"
+  export CCT_DEFAULT_LABEL=alpha
+  export CCT_STICKY=0
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+
+  echo "-- unsafe primary wallet paths fail closed"
+  target="$sb/wallet-target"
+  write_account_fixture "$target" \
+    'CCT_TOKEN_ALPHA=fixture-existing-material' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  ln -s "$target" "$CCT_ENV_FILE"
+  before="$(wallet_sha "$target")"
+  cap="$(builtin printf '%s\n' fixture-new-material | cct add beta 2>&1)"; rc=$?
+  chk "symlink wallet add is refused" "1" "$rc"
+  chk "symlink wallet remains a link" "yes" \
+    "$([ -L "$CCT_ENV_FILE" ] && echo yes || echo no)"
+  chk "symlink wallet target stays unchanged" "$before" "$(wallet_sha "$target")"
+  chk "symlink wallet creates no backup" "no" \
+    "$([ -e "$CCT_ENV_FILE.bak" ] && echo yes || echo no)"
+  chk_not_has "symlink wallet add prints no success" "완료" "$cap"
+  cap="$(cct list 2>&1)"; rc=$?
+  chk "symlink wallet list is refused" "1" "$rc"
+  cap="$(cct alpha --version 2>&1)"; rc=$?
+  chk "symlink wallet launch is refused" "1" "$rc"
+
+  rm -f "$CCT_ENV_FILE"
+  ln -s "$target" "$CCT_ENV_FILE"
+  cap="$(cct rm alpha --force 2>&1)"; rc=$?
+  chk "symlink wallet remove is refused" "1" "$rc"
+  chk "refused remove preserves symlink" "yes" \
+    "$([ -L "$CCT_ENV_FILE" ] && echo yes || echo no)"
+  rm -f "$CCT_ENV_FILE"
+  ln -s "$target" "$CCT_ENV_FILE"
+  cap="$(cct rename alpha primary 2>&1)"; rc=$?
+  chk "symlink wallet rename is refused" "1" "$rc"
+  chk "refused rename preserves symlink" "yes" \
+    "$([ -L "$CCT_ENV_FILE" ] && echo yes || echo no)"
+  chk "all symlink refusals preserve target" "$before" "$(wallet_sha "$target")"
+
+  rm -f "$CCT_ENV_FILE"
+  mkfifo "$CCT_ENV_FILE"
+  CCT_ENV_FILE="$CCT_ENV_FILE" CCT_ACTIVE_FILE="$CCT_ACTIVE_FILE" CCT_STICKY=0 \
+    /bin/bash -c "
+      . '$REPO/cct.sh'
+      _cct_run_limited 0.4 /bin/bash -c \
+        'CCT_ENV_FILE=\"\$CCT_ENV_FILE\" CCT_ACTIVE_FILE=\"\$CCT_ACTIVE_FILE\" CCT_STICKY=0; export CCT_ENV_FILE CCT_ACTIVE_FILE CCT_STICKY; . \"$REPO/cct.sh\"; builtin printf \"%s\\n\" fixture-new-material | cct add beta'
+    " >/dev/null 2>&1
+  rc=$?
+  chk "FIFO wallet add fails without timeout" "1" "$rc"
+  chk "FIFO wallet is preserved" "yes" "$([ -p "$CCT_ENV_FILE" ] && echo yes || echo no)"
+  chk "FIFO wallet creates no backup" "no" \
+    "$([ -e "$CCT_ENV_FILE.bak" ] && echo yes || echo no)"
+
+  rm -f "$CCT_ENV_FILE"
+  mkdir "$CCT_ENV_FILE"
+  cap="$(builtin printf '%s\n' fixture-new-material | cct add beta 2>&1)"; rc=$?
+  chk "directory wallet add is refused" "1" "$rc"
+  chk "directory wallet is preserved" "yes" \
+    "$([ -d "$CCT_ENV_FILE" ] && echo yes || echo no)"
+  chk_not_has "directory wallet add prints no success" "완료" "$cap"
+
+  echo "-- hostile command names cannot observe token material"
+  rm -rf "$CCT_ENV_FILE"
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=fixture-existing-material' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  marker="$sb/intercept"
+  # shellcheck disable=SC2329,SC2059
+  printf(){
+    case "$*" in *fixture-new-material*) : > "$marker.printf" ;; esac
+    builtin printf "$@"
+  }
+  # shellcheck disable=SC2329
+  tr(){
+    local data
+    data="$(cat)"
+    case "$data" in *fixture-new-material*) : > "$marker.tr" ;; esac
+    builtin printf '%s' "$data" | /usr/bin/tr "$@"
+  }
+  # shellcheck disable=SC2329
+  awk(){
+    [ "${tok-}" != "fixture-new-material" ] || : > "$marker.awk"
+    /usr/bin/awk "$@"
+  }
+  # shellcheck disable=SC2329
+  mktemp(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.mktemp"; command mktemp "$@"; }
+  # shellcheck disable=SC2329
+  chmod(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.chmod"; command chmod "$@"; }
+  # shellcheck disable=SC2329
+  cp(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.cp"; command cp "$@"; }
+  # shellcheck disable=SC2329
+  mv(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.mv"; command mv "$@"; }
+  builtin printf '%s\n' fixture-new-material | cct add beta >/dev/null 2>&1
+  rc=$?
+  unset -f printf tr awk mktemp chmod cp mv
+  chk "hostile-function add remains successful" "0" "$rc"
+  for marker_name in printf tr awk mktemp chmod cp mv; do
+    chk "hostile $marker_name cannot observe new token" "safe" \
+      "$([ -e "$marker.$marker_name" ] && echo captured || echo safe)"
+  done
+  # shellcheck disable=SC2329
+  curl(){
+    local data
+    data="$(cat)"
+    case "$data" in *fixture-existing-material*) : > "$marker.curl" ;; esac
+    builtin printf '%s\n' 'anthropic-organization-id: 12345678'
+  }
+  cct fp alpha >/dev/null 2>&1
+  rc=$?
+  unset -f curl
+  chk "fingerprint probe remains callable" "0" "$rc"
+  chk "hostile curl cannot observe bearer material" "safe" \
+    "$([ -e "$marker.curl" ] && echo captured || echo safe)"
+  (
+    # shellcheck disable=SC2329
+    read(){
+      builtin read -r "$@"
+      read_rc=$?
+      case "${tok-}:${REPLY-}" in *fixture-clean-worker-material*) : > "$marker.read" ;; esac
+      return "$read_rc"
+    }
+    # shellcheck disable=SC2329
+    unset(){ : > "$marker.unset"; return 0; }
+    /usr/bin/printf '%s\n' fixture-clean-worker-material | cct add cleanworker >/dev/null 2>&1
+  )
+  rc=$?
+  chk "clean worker survives hostile read and unset" "0" "$rc"
+  (
+    # shellcheck disable=SC2329
+    builtin(){
+      case "$*:${CLAUDE_CODE_OAUTH_TOKEN:-}" in *fixture-existing-material*) : > "$marker.builtin" ;; esac
+      return 1
+    }
+    # shellcheck disable=SC2329
+    command(){
+      case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in *fixture-existing-material*) : > "$marker.command" ;; esac
+      return 1
+    }
+    cct alpha --version >/dev/null 2>&1
+  )
+  rc=$?
+  chk "direct launcher survives hostile command builtins" "0" "$rc"
+  for marker_name in read builtin command; do
+    chk "hostile $marker_name cannot observe token lifecycle" "safe" \
+      "$([ -e "$marker.$marker_name" ] && echo captured || echo safe)"
+  done
+
+  echo "-- malformed annotations and numeric metadata stay inert"
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=fixture-existing-material' \
+    '#cctlabel:CCT_TOKEN_ALPHA=annotation-private-marker'
+  cap="$(builtin printf '%s\n' fixture-new-material | cct add alpha 2>&1)"; rc=$?
+  chk "malformed annotation blocks add" "1" "$rc"
+  chk_not_has "malformed annotation content is redacted" "annotation-private-marker" "$cap"
+  chk_not_has "malformed annotation add prints no success" "완료" "$cap"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=fixture-existing-material' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha'
+  mkdir "$CCT_ENV_FILE.lock"
+  cap="$(
+    /bin/bash -c "
+        CCT_ENV_FILE='$CCT_ENV_FILE'
+        CCT_ACTIVE_FILE='$CCT_ACTIVE_FILE'
+        CCT_DEFAULT_LABEL=alpha
+        CCT_STICKY=0
+        export CCT_ENV_FILE CCT_ACTIVE_FILE CCT_DEFAULT_LABEL CCT_STICKY
+        builtin printf '%s %s\\n' \"\$\$\" '0000000008' > '$CCT_ENV_FILE.lock/owner'
+        . '$REPO/cct.sh'
+        cct doctor >/dev/null 2>&1
+        rc=\$?
+        builtin printf 'doctor-rc=%s FOLLOWING\\n' \"\$rc\"
+      " 2>&1
+  )"; rc=$?
+  chk "leading-zero epoch does not abort Bash caller" "0" "$rc"
+  chk_has "leading-zero epoch reaches following command" "FOLLOWING" "$cap"
+  chk_has "leading-zero epoch is controlled diagnostic failure" "doctor-rc=1" "$cap"
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  echo "-- fixed-arity commands reject surplus operands"
+  for fixed_command in help list active off; do
+    cct "$fixed_command" extra >/dev/null 2>&1
+    chk "$fixed_command extra -> misuse" "2" "$?"
+  done
+  cct add alpha extra >/dev/null 2>&1
+  chk "add alpha extra -> misuse" "2" "$?"
+  cct check alpha extra >/dev/null 2>&1
+  chk "check with two labels -> misuse" "2" "$?"
+  cct fp alpha extra >/dev/null 2>&1
+  chk "fp with two labels -> misuse" "2" "$?"
+
+  rm -rf "$sb"
+}
+
 test_lock_active_races(){
   echo "== wallet lock and active-state races =="
   set +u
-  local sb cap rc now before owner_pid mutator_pid job_pid wait_i old_path target
+  local sb cap rc now before owner_before dead_pid owner_pid mutator_pid job_pid wait_i old_path target
   sb="$(mktemp -d)"
   mk_shim "$sb/bin"
   export PATH="$sb/bin:$PATH"
@@ -1940,6 +2151,7 @@ test_lock_active_races(){
     '#cctlabel:CCT_TOKEN_BETA=beta'
   # shellcheck disable=SC1090
   . "$REPO/cct.sh"
+  _cct_system(){ command "$@"; }
   now="$(date +%s)"
 
   echo "-- kill EPERM is live/unknown, never dead"
@@ -1955,6 +2167,32 @@ test_lock_active_races(){
   chk "non-signalable live owner lock is preserved" "1" \
     "$(awk 'NR == 1 { print $1 }' "$CCT_ENV_FILE.lock/owner" 2>/dev/null)"
   unset -f kill
+  rm -rf "$CCT_ENV_FILE.lock"
+
+  echo "-- restricted owner visibility remains unknown and is never reclaimed"
+  dead_pid=999999
+  while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid + 1)); done
+  mkdir "$CCT_ENV_FILE.lock"
+  printf '%s %s\n' "$dead_pid" "$now" > "$CCT_ENV_FILE.lock/owner"
+  before="$(wallet_sha "$CCT_ENV_FILE")"
+  owner_before="$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
+  cap="$(
+    (
+      kill(){ return 1; }
+      _cct_wallet_kill0_state(){ return 2; }
+      cct doctor
+      printf 'doctor-rc=%s\n' "$?"
+      printf '%s\n' fixture-invisible | _cct_add_internal invisible
+      printf 'mutation-rc=%s\n' "$?"
+    ) 2>&1
+  )"
+  chk_has "invisible owner is classified WARN" "WARN lock: owner liveness unknown" "$cap"
+  chk_has "invisible owner doctor remains healthy" "doctor-rc=0" "$cap"
+  chk_has "invisible owner refuses mutation" "mutation-rc=1" "$cap"
+  chk_has "invisible owner reports busy" "wallet busy" "$cap"
+  chk "invisible owner preserves wallet" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+  chk "invisible owner preserves exact metadata" "$owner_before" \
+    "$(wallet_sha "$CCT_ENV_FILE.lock/owner")"
   rm -rf "$CCT_ENV_FILE.lock"
 
   echo "-- lock owner is the actual asynchronous mutator"
@@ -1976,7 +2214,7 @@ SHIM
       CCT_LOCK_HELD_MARKER="$sb/owner-held" \
       CCT_LOCK_RELEASE_MARKER="$sb/owner-release" \
       CCT_REAL_CP="$(command -v cp)" PATH="$sb/block-owner:$PATH" \
-      cct add gamma <<< fixture-gamma >"$sb/owner.out" 2>&1
+      _cct_add_internal gamma <<< fixture-gamma >"$sb/owner.out" 2>&1
   ) &
   job_pid=$!
   wait_i=0
@@ -2014,7 +2252,7 @@ SHIM
   cap="$(
     CCT_REAL_MKDIR="$(command -v mkdir)" CCT_SIGNAL_LOCK="$CCT_ENV_FILE.lock" \
       PATH="$sb/signal-mkdir:$PATH" \
-      cct add signal <<< fixture-signal 2>&1
+      _cct_add_internal signal <<< fixture-signal 2>&1
   )"; rc=$?
   chk "mkdir-boundary TERM aborts mutation" "1" "$rc"
   chk "mkdir-boundary TERM leaves no lock" "no" \
@@ -2040,7 +2278,7 @@ SHIM
   cap="$(
     CCT_SIGNAL_OWNER="$CCT_ENV_FILE.lock/owner" \
       CCT_SIGNAL_MARKER="$sb/owner-term" CCT_REAL_AWK="$(command -v awk)" \
-      PATH="$sb/signal-owner:$PATH" cct add owner_signal <<< fixture-owner-signal 2>&1
+      PATH="$sb/signal-owner:$PATH" _cct_add_internal owner_signal <<< fixture-owner-signal 2>&1
   )"; rc=$?
   chk "owner-write TERM aborts mutation" "1" "$rc"
   chk "owner-write TERM was injected" "yes" \
@@ -2065,7 +2303,7 @@ SHIM
           /bin/rm -f -- \"\$lock/owner\" 2>/dev/null &&
             /bin/rmdir -- \"\$lock\" 2>/dev/null
         }
-        printf '%s\\n' fixture-final | cct add final
+        printf '%s\\n' fixture-final | _cct_add_internal final
       " 2>&1
   )"; rc=$?
   chk "final-cleanup TERM is masked" "0" "$rc"
@@ -2303,9 +2541,10 @@ case "${1:-all}" in
     esac
     ;;
   runtime) test_runtime_regressions ;;
+  final4) test_final4_runtime_security ;;
   fixture) shift; make_fixture "$@"; exit $? ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|races|diagnostics|runtime|fixture|all]"; exit 2 ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions; test_final4_runtime_security ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|races|diagnostics|runtime|final4|fixture|all]"; exit 2 ;;
 esac
 
 echo
