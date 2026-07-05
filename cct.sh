@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2016
 # cct — 휴대용 Claude 계정 지갑 / Portable Claude Account Wallet
 # 한 번 발급한 장기 setup-token들을 로컬 지갑에 두고 사용자가 계정을 명시 전환한다.
 # bash/zsh · macOS/Linux/WSL2 공용. 프록시·오케스트레이터·자동 라우터가 아니다.
@@ -35,10 +36,42 @@
 #     그냥 claude / cc / 새 터미널도 마지막 선택 계정을 유지(cct <다른라벨>/cct off 전까지). 끄려면 CCT_STICKY=0.
 #   - cct add 는 라벨 문자셋([a-z0-9_][a-z0-9_]*)·예약어를 검사한다.
 
+if [ -n "${ZSH_VERSION:-}" ]; then
+  _CCT_SCRIPT_FILE="$0"
+else
+  _CCT_SCRIPT_FILE="${BASH_SOURCE[0]:-$0}"
+fi
+case "$_CCT_SCRIPT_FILE" in
+  /*) ;;
+  */*)
+    _cct_source_dir="${_CCT_SCRIPT_FILE%/*}"
+    _cct_source_name="${_CCT_SCRIPT_FILE##*/}"
+    _cct_source_pwd="$PWD"
+    if cd "$_cct_source_dir" 2>/dev/null; then
+      _CCT_SCRIPT_FILE="$PWD/$_cct_source_name"
+      cd "$_cct_source_pwd" 2>/dev/null || true
+    fi
+    unset _cct_source_dir _cct_source_name _cct_source_pwd
+    ;;
+  *) _CCT_SCRIPT_FILE="$PWD/$_CCT_SCRIPT_FILE" ;;
+esac
+
 CCT_ENV_FILE="${CCT_ENV_FILE:-$HOME/.claude/tokens.env}"
 CCT_PROBE_MODEL="${CCT_PROBE_MODEL:-claude-haiku-4-5-20251001}"
 
-_cct_key() { printf 'CCT_TOKEN_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"; }
+_cct_system() {
+  local name="$1" path
+  shift
+  for path in "/usr/bin/$name" "/bin/$name"; do
+    if [ -x "$path" ]; then
+      "$path" "$@"
+      return
+    fi
+  done
+  return 127
+}
+
+_cct_key() { _cct_system printf 'CCT_TOKEN_%s' "$(_cct_system printf '%s' "$1" | _cct_system tr '[:lower:]' '[:upper:]')"; }
 
 _cct_parent_dir() {
   local parent
@@ -46,13 +79,37 @@ _cct_parent_dir() {
     */*) parent="${1%/*}"; [ -n "$parent" ] || parent="/" ;;
     *) parent="." ;;
   esac
-  printf '%s' "$parent"
+  builtin printf '%s' "$parent"
+}
+
+_cct_wallet_path_state() {
+  if [ -L "$CCT_ENV_FILE" ]; then return 2; fi
+  if [ -f "$CCT_ENV_FILE" ] && [ -r "$CCT_ENV_FILE" ]; then return 0; fi
+  if [ -e "$CCT_ENV_FILE" ]; then return 2; fi
+  return 1
+}
+
+_cct_wallet_require_safe() {
+  local state
+  _cct_wallet_path_state
+  state=$?
+  [ "$state" -ne 2 ] || {
+    echo "❌ wallet 경로가 읽을 수 있는 일반 파일이 아님: $CCT_ENV_FILE" >&2
+    return 1
+  }
+  return 0
 }
 
 # tokens.env 에서 KEY 값만 안전 추출 (source 안 함, CRLF·따옴표 제거)
 _cct_envtok() {
-  [ -f "$CCT_ENV_FILE" ] || return 0
-  awk -v k="$1" '
+  local state
+  _cct_wallet_path_state
+  state=$?
+  [ "$state" -eq 0 ] || {
+    [ "$state" -eq 1 ] && return 0
+    return 1
+  }
+  _cct_system awk -v k="$1" '
     BEGIN { p = k "=" }
     index($0, p) == 1 {
       v = substr($0, length(p) + 1)
@@ -65,8 +122,14 @@ _cct_envtok() {
 
 # 등록된 라벨(소문자) 한 줄씩.  #cctlabel: 주석은 ^CCT_TOKEN_ 앵커에 안 걸리므로 자동 제외.
 _cct_labels() {
-  [ -f "$CCT_ENV_FILE" ] || return 0
-  awk -F= '/^CCT_TOKEN_[A-Za-z0-9_]+=/ {
+  local state
+  _cct_wallet_path_state
+  state=$?
+  [ "$state" -eq 0 ] || {
+    [ "$state" -eq 1 ] && return 0
+    return 1
+  }
+  _cct_system awk -F= '/^CCT_TOKEN_[A-Za-z0-9_]+=/ {
     label = $1
     sub(/^CCT_TOKEN_/, "", label)
     print tolower(label)
@@ -76,7 +139,8 @@ _cct_labels() {
 # 키의 원본 라벨 조회: #cctlabel: 주석이 있으면 그 값을, 없으면(레거시) 소문자 키 꼬리를 반환.
 _cct_label_for() {  # $1 = CCT_TOKEN_XXX
   local v
-  v="$(awk -v k="#cctlabel:$1" '
+  _cct_wallet_path_state || return 1
+  v="$(_cct_system awk -v k="#cctlabel:$1" '
     BEGIN { p = k "=" }
     index($0, p) == 1 {
       v = substr($0, length(p) + 1)
@@ -85,8 +149,12 @@ _cct_label_for() {  # $1 = CCT_TOKEN_XXX
       exit
     }
   ' "$CCT_ENV_FILE" 2>/dev/null)"
-  if [ -n "$v" ]; then printf '%s' "$v"
-  else printf '%s' "$1" | sed 's/^CCT_TOKEN_//' | tr '[:upper:]' '[:lower:]'; fi
+  if [ -n "$v" ]; then
+    _cct_label_is_valid "$v" && [ "$(_cct_key "$v")" = "$1" ] || return 2
+    builtin printf '%s' "$v"
+  else
+    builtin printf '%s' "$1" | _cct_system sed 's/^CCT_TOKEN_//' | _cct_system tr '[:upper:]' '[:lower:]'
+  fi
 }
 
 # 라벨 문자셋 검증: 소문자 영숫자/언더스코어만 허용.  rc 0 통과 / 2 거부.
@@ -107,8 +175,9 @@ _cct_reserved_label() {  # $1 = label
 
 _cct_list() {
   local labels lc v active
+  _cct_wallet_require_safe || return 1
   active="$(_cct_active_label)"
-  labels="$(_cct_labels)"
+  labels="$(_cct_labels)" || return 1
   [ -n "$labels" ] || { echo "  (등록된 계정 없음 — cct add <라벨>)"; return; }
   printf '%s\n' "$labels" | while IFS= read -r lc; do
     [ -n "$lc" ] || continue
@@ -123,11 +192,11 @@ _cct_list() {
 
 # 시간제한 실행 (timeout > gtimeout > perl > 무제한)
 _cct_run_limited() {
-  local secs="$1"; shift
-  if   command -v timeout  >/dev/null 2>&1; then timeout  -k 1 "$secs" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout -k 1 "$secs" "$@"
-  elif command -v perl     >/dev/null 2>&1; then
-    perl -e '
+  local secs="$1" limiter=""; shift
+  limiter="$(_cct_timeout_path)"
+  if [ -n "$limiter" ]; then "$limiter" -k 1 "$secs" "$@"
+  elif [ -x /usr/bin/perl ]; then
+    /usr/bin/perl -e '
       use strict;
       use warnings;
       use Errno qw(EINTR);
@@ -207,6 +276,16 @@ _cct_run_limited() {
   else "$@"; fi
 }
 
+_cct_timeout_path() {
+  local limiter=""
+  if [ -x /usr/bin/timeout ]; then limiter=/usr/bin/timeout
+  elif [ -x /bin/timeout ]; then limiter=/bin/timeout
+  elif [ -x /opt/homebrew/bin/gtimeout ]; then limiter=/opt/homebrew/bin/gtimeout
+  elif [ -x /usr/local/bin/gtimeout ]; then limiter=/usr/local/bin/gtimeout
+  fi
+  builtin printf '%s' "$limiter"
+}
+
 # 토큰 점검.  rc 0 유효 / 1 무효 또는 점검불가 / 2 토큰없음.
 _cct_check_one() {  # $1 = 라벨
   local tok cb
@@ -227,6 +306,10 @@ _cct_check_one() {  # $1 = 라벨
 
 # 전체/단일 점검.  단일은 _cct_check_one 의 rc 그대로, 전체는 하나라도 비제로면 1.
 _cct_check() {
+  [ "$#" -le 1 ] || {
+    echo "사용법: cct check [라벨]" >&2
+    return 2
+  }
   if [ -n "${1-}" ]; then _cct_check_one "$1"; return; fi
   local labels lc rc=0
   labels="$(_cct_labels)"
@@ -243,7 +326,7 @@ EOF
 }
 
 _cct_wallet_mode() {
-  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+  _cct_system stat -c '%a' "$1" 2>/dev/null || _cct_system stat -f '%Lp' "$1" 2>/dev/null
 }
 
 _cct_wallet_busy() {
@@ -252,9 +335,9 @@ _cct_wallet_busy() {
 }
 
 _cct_wallet_read_lock_owner() {
-  awk '
+  _cct_system awk '
     NR == 1 && NF == 2 &&
-      $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ &&
+      $1 ~ /^[1-9][0-9]*$/ && $2 ~ /^[1-9][0-9]*$/ &&
       length($1) <= 18 && length($2) <= 18 &&
       ($1 + 0) > 0 && ($2 + 0) > 0 {
         pid = $1
@@ -269,23 +352,40 @@ _cct_wallet_read_lock_owner() {
   ' "$1" 2>/dev/null
 }
 
+_cct_wallet_kill0_state() {
+  local pid="$1" rc
+  if [ -x /usr/bin/perl ]; then
+    /usr/bin/perl -MErrno=ESRCH -e '
+      my $pid = shift;
+      exit 0 if kill 0, $pid;
+      exit 1 if $! == ESRCH;
+      exit 2;
+    ' "$pid"
+    rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      1) return 1 ;;
+    esac
+  fi
+  return 2
+}
+
 _cct_wallet_pid_state() {
-  local pid="$1" out rc probe
+  local pid="$1" rc out
   if kill -0 "$pid" 2>/dev/null; then
     return 0
   fi
-  [ -x /bin/ps ] || return 2
-  out="$(LC_ALL=C /bin/ps -p "$pid" -o pid= 2>/dev/null)"
+  _cct_wallet_kill0_state "$pid"
   rc=$?
-  if [ "$rc" -eq 0 ]; then
-    [ "$(printf '%s\n' "$out" | awk -v p="$pid" '$1 == p { found++ } END { print found + 0 }')" -eq 1 ] &&
-      return 0
-    return 2
-  fi
-  probe="$(LC_ALL=C /bin/ps -p "$$" -o pid= 2>/dev/null)" || return 2
-  [ "$(printf '%s\n' "$probe" | awk -v p="$$" '$1 == p { found++ } END { print found + 0 }')" -eq 1 ] ||
-    return 2
-  return 1
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  [ -x /bin/ps ] || return 2
+  out="$(LC_ALL=C /bin/ps -p "$pid" -o pid= 2>/dev/null)" || return 2
+  [ "$(builtin printf '%s\n' "$out" | _cct_system awk -v p="$pid" '$1 == p { found++ } END { print found + 0 }')" -eq 1 ] &&
+    return 0
+  return 2
 }
 
 _cct_wallet_release_lock() {
@@ -308,7 +408,7 @@ _cct_wallet_create_lock() {
   local lock="$1" now="$2" owner
   _cct_wallet_lock_owner=""
   _cct_wallet_lock_candidate="$lock"
-  mkdir "$lock" 2>/dev/null || {
+  _cct_system mkdir "$lock" 2>/dev/null || {
     _cct_wallet_lock_candidate=""
     return 1
   }
@@ -328,7 +428,7 @@ _cct_wallet_create_lock() {
 
 _cct_wallet_acquire_lock() {
   local lock="$1" now owner pid epoch state
-  now="$(date +%s)" || {
+  now="$(_cct_system date +%s)" || {
     echo "❌ wallet lock: 현재 시간 확인 실패" >&2
     return 1
   }
@@ -421,15 +521,15 @@ _cct_wallet_mutate() (
     rollback_tmp=""
     [ -f "$backup" ] && [ ! -L "$backup" ] &&
       [ "$(_cct_wallet_mode "$backup")" = "600" ] || return 1
-    rollback_tmp="$(mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
+    rollback_tmp="$(_cct_system mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
       rollback_tmp=""
       return 1
     }
-    chmod 600 "$rollback_tmp" 2>/dev/null &&
-      cp "$backup" "$rollback_tmp" 2>/dev/null &&
-      chmod 600 "$rollback_tmp" 2>/dev/null &&
+    _cct_system chmod 600 "$rollback_tmp" 2>/dev/null &&
+      _cct_system cp "$backup" "$rollback_tmp" 2>/dev/null &&
+      _cct_system chmod 600 "$rollback_tmp" 2>/dev/null &&
       [ "$(_cct_wallet_mode "$rollback_tmp")" = "600" ] &&
-      mv "$rollback_tmp" "$CCT_ENV_FILE" 2>/dev/null || return 1
+      _cct_system mv "$rollback_tmp" "$CCT_ENV_FILE" 2>/dev/null || return 1
     rollback_tmp=""
   }
   # shellcheck disable=SC2317,SC2329
@@ -452,6 +552,13 @@ _cct_wallet_mutate() (
   lock_owner="$_cct_wallet_lock_owner"
   locked=1
   _cct_wallet_lock_candidate=""
+  _cct_wallet_path_state
+  wallet_state=$?
+  if [ "$wallet_state" -eq 2 ] ||
+    { [ "$operation" != "store" ] && [ "$wallet_state" -ne 0 ]; }; then
+    echo "❌ wallet 경로가 읽을 수 있는 일반 파일이 아님: $CCT_ENV_FILE" >&2
+    exit 1
+  fi
   case "$operation" in
     remove)
       active="$(_cct_active_label)"
@@ -465,11 +572,11 @@ _cct_wallet_mutate() (
       ;;
   esac
 
-  tmp="$(mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
+  tmp="$(_cct_system mktemp "${CCT_ENV_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
     echo "❌ wallet temp 생성 실패: $CCT_ENV_FILE" >&2
     exit 1
   }
-  chmod 600 "$tmp" 2>/dev/null || {
+  _cct_system chmod 600 "$tmp" 2>/dev/null || {
     echo "❌ wallet temp 권한 설정 실패: $CCT_ENV_FILE" >&2
     exit 1
   }
@@ -477,7 +584,7 @@ _cct_wallet_mutate() (
   case "$operation" in
     store)
       if [ -f "$CCT_ENV_FILE" ]; then
-        tok="$tok" lbl="$old_label" awk -v k="$old_key" '
+        tok="$tok" lbl="$old_label" _cct_system awk -v k="$old_key" '
           BEGIN { t = ENVIRON["tok"]; l = ENVIRON["lbl"]; key_seen = 0; label_seen = 0 }
           $0 ~ ("^" k "=") {
             print k "=" t
@@ -499,14 +606,14 @@ _cct_wallet_mutate() (
           exit 1
         }
       else
-        printf '%s=%s\n#cctlabel:%s=%s\n' "$old_key" "$tok" "$old_key" "$old_label" > "$tmp" || {
+        builtin printf '%s=%s\n#cctlabel:%s=%s\n' "$old_key" "$tok" "$old_key" "$old_label" > "$tmp" || {
           echo "❌ wallet 내용 생성 실패: $CCT_ENV_FILE" >&2
           exit 1
         }
       fi
       ;;
     remove)
-      awk -v k="$old_key" '
+      _cct_system awk -v k="$old_key" '
         BEGIN { key_seen = 0 }
         index($0, k "=") == 1 { key_seen = 1; next }
         index($0, "#cctlabel:" k "=") == 1 { next }
@@ -518,7 +625,7 @@ _cct_wallet_mutate() (
       }
       ;;
     rename)
-      awk -v oldk="$old_key" -v newk="$new_key" -v newlabel="$new_label" '
+      _cct_system awk -v oldk="$old_key" -v newk="$new_key" -v newlabel="$new_label" '
         BEGIN { key_seen = 0; label_seen = 0; target_seen = 0 }
         index($0, oldk "=") == 1 {
           print newk substr($0, length(oldk) + 1)
@@ -552,7 +659,7 @@ _cct_wallet_mutate() (
       ;;
   esac
 
-  chmod 600 "$tmp" 2>/dev/null || {
+  _cct_system chmod 600 "$tmp" 2>/dev/null || {
     echo "❌ wallet temp 권한 설정 실패: $CCT_ENV_FILE" >&2
     exit 1
   }
@@ -566,19 +673,19 @@ _cct_wallet_mutate() (
       echo "❌ wallet backup 경로가 일반 파일이 아님: $backup" >&2
       exit 1
     fi
-    backup_tmp="$(mktemp "${backup}.tmp.XXXXXX" 2>/dev/null)" || {
+    backup_tmp="$(_cct_system mktemp "${backup}.tmp.XXXXXX" 2>/dev/null)" || {
       echo "❌ wallet backup temp 생성 실패: $backup" >&2
       exit 1
     }
-    chmod 600 "$backup_tmp" 2>/dev/null || {
+    _cct_system chmod 600 "$backup_tmp" 2>/dev/null || {
       echo "❌ wallet backup temp 권한 설정 실패: $backup" >&2
       exit 1
     }
-    cp "$CCT_ENV_FILE" "$backup_tmp" 2>/dev/null || {
+    _cct_system cp "$CCT_ENV_FILE" "$backup_tmp" 2>/dev/null || {
       echo "❌ wallet backup 생성 실패: $backup" >&2
       exit 1
     }
-    chmod 600 "$backup_tmp" 2>/dev/null || {
+    _cct_system chmod 600 "$backup_tmp" 2>/dev/null || {
       echo "❌ wallet backup 권한 설정 실패: $backup" >&2
       exit 1
     }
@@ -586,7 +693,7 @@ _cct_wallet_mutate() (
       echo "❌ wallet backup 권한 확인 실패: $backup" >&2
       exit 1
     }
-    mv "$backup_tmp" "$backup" 2>/dev/null || {
+    _cct_system mv "$backup_tmp" "$backup" 2>/dev/null || {
       echo "❌ wallet backup atomic replace 실패: $backup" >&2
       exit 1
     }
@@ -594,7 +701,7 @@ _cct_wallet_mutate() (
   fi
 
   [ -z "$active_action" ] || transaction_pending=1
-  mv "$tmp" "$CCT_ENV_FILE" 2>/dev/null || {
+  _cct_system mv "$tmp" "$CCT_ENV_FILE" 2>/dev/null || {
     echo "❌ wallet atomic replace 실패: $CCT_ENV_FILE" >&2
     exit 1
   }
@@ -664,29 +771,33 @@ _cct_wallet_rename_account() {
   esac
 }
 
-_cct_add() {
+_cct_add_internal() {
   local label key tok dupkey existing_label ans action _cct_wallet_token
-  [ -n "${1-}" ] || { echo "사용법: cct add <라벨>    예: cct add pro1"; return 2; }
+  [ "$#" -eq 1 ] || { echo "사용법: cct add <라벨>    예: cct add pro1"; return 2; }
   label="$1"
   # 입력 검증을 토큰 붙여넣기 전에 먼저 (실패 시 헛수고 방지)
   _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음. 다른 이름을 쓰세요." >&2; return 2; }
   _cct_validate_label "$label" || return 2
   key="$(_cct_key "$label")"
+  _cct_wallet_require_safe || return 1
   echo "[$label] 등록 — ⚠️ 'claude auth login' 때 브라우저가 '$label' 계정이었는지 먼저 확인하세요."
   echo "  (auth status 는 어느 계정인지 안 알려줌 → 중복 발급은 여기서만 막을 수 있음)"
   echo "  'claude setup-token' 토큰을 붙여넣고 엔터 (화면 미표시):"
   if ! read -rs tok; then echo; tok=""; else echo; fi
-  tok="$(printf '%s' "$tok" | tr -d '\r')"   # N3: CRLF 제거 → 중복감지/저장 일관성
+  tok="${tok//$'\r'/}"   # N3: CRLF 제거 → 중복감지/저장 일관성
   [ -n "$tok" ] || { echo "❌ 입력 없음, 취소"; return 1; }
   # N5: 디렉터리만 먼저 보장. 지갑 파일 자체는 잠금 안에서 원자적으로 생성/교체한다.
-  mkdir -p "$(_cct_parent_dir "$CCT_ENV_FILE")" 2>/dev/null || {
+  _cct_system mkdir -p "$(_cct_parent_dir "$CCT_ENV_FILE")" 2>/dev/null || {
     echo "❌ 디렉터리 생성 실패: $(_cct_parent_dir "$CCT_ENV_FILE")" >&2
     return 1
   }
   # C#1: 키가 이미 있으면 원본 라벨 비교 — 같은 라벨이면 조용히 갱신, 다른 라벨이면 충돌 경고+확인(기본 거부)
-  if grep -qE "^$key=" "$CCT_ENV_FILE" 2>/dev/null; then
+  if _cct_account_exists "$key"; then
     action="갱신"
-    existing_label="$(_cct_label_for "$key")"
+    existing_label="$(_cct_label_for "$key")" || {
+      echo "❌ 기존 라벨 주석이 유효하지 않음 (키 $key)" >&2
+      return 1
+    }
     if [ "$existing_label" != "$label" ]; then
       echo "⚠️  라벨 '$label' 는 기존 라벨 '$existing_label' 와 같은 키($key)로 정규화됩니다(대소문자/기호 차이)." >&2
       printf '   기존 토큰을 덮어쓸까요? [y/N] ' >&2
@@ -695,7 +806,7 @@ _cct_add() {
     fi
   else action="추가"; fi
   # 동일 토큰 중복 감지: 다른 라벨과 값이 같으면 같은 계정 재사용(브라우저 세션) 의심 — 경고만
-  dupkey="$(grep -oE '^CCT_TOKEN_[A-Za-z0-9_]+' "$CCT_ENV_FILE" 2>/dev/null | while IFS= read -r ek; do
+  dupkey="$(_cct_system grep -oE '^CCT_TOKEN_[A-Za-z0-9_]+' "$CCT_ENV_FILE" 2>/dev/null | while IFS= read -r ek; do
     [ "$ek" = "$key" ] && continue
     [ "$(_cct_envtok "$ek")" = "$tok" ] && { printf '%s' "$ek"; break; }
   done || true)"
@@ -707,23 +818,49 @@ _cct_add() {
     echo "❌ [$label] 저장 실패 ($action) — 경로/권한 확인: $CCT_ENV_FILE" >&2
     return 1
   }
-  if [ "${CCT_STICKY:-1}" != "0" ] && [ "$(_cct_active_label)" = "$label" ]; then
-    _cct_apply_env "$_cct_wallet_token"
-  fi
   unset _cct_wallet_token
   echo "✓ [$label] $action 완료"
   echo "→ 'cct $label' 로 사용 / 'cct check $label' 로 점검"
 }
 
+_cct_add() {
+  local label="${1-}" rc tok
+  [ "$#" -eq 1 ] || {
+    echo "사용법: cct add <라벨>    예: cct add pro1"
+    return 2
+  }
+  [ -x /usr/bin/env ] && [ -x /bin/bash ] || {
+    echo "❌ 안전한 토큰 입력 환경을 시작할 수 없음" >&2
+    return 1
+  }
+  /usr/bin/env -i \
+    HOME="${HOME:-}" PATH="/usr/bin:/bin" \
+    CCT_ENV_FILE="$CCT_ENV_FILE" \
+    CCT_ACTIVE_FILE="${CCT_ACTIVE_FILE:-}" \
+    CCT_STICKY="${CCT_STICKY:-1}" \
+    CCT_DEFAULT_LABEL="${CCT_DEFAULT_LABEL:-gv}" \
+    CCT_DISABLE_WEB_FEATURES="${CCT_DISABLE_WEB_FEATURES:-1}" \
+    /bin/bash --noprofile --norc -c \
+      '. "$1"; _cct_add_internal "$2"' cct-add "$_CCT_SCRIPT_FILE" "$label"
+  rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  if [ "${CCT_STICKY:-1}" != "0" ] && [ "$(_cct_active_label)" = "$label" ]; then
+    tok="$(_cct_envtok "$(_cct_key "$label")")"
+    [ -z "$tok" ] || _cct_apply_env "$tok"
+    unset tok
+  fi
+}
+
 # 계정 지문: org-id + rate-limit 윈도. 7d_reset 가 동일하면 같은 계정(중복)
-_cct_fp_one() {
+_cct_fp_one() (
   local tok H org r5 r7 u5
+  unset -f read printf tr awk curl timeout gtimeout perl mktemp chmod cp mv command builtin 2>/dev/null || true
   _cct_validate_label "${1-}" || return
   tok="$(_cct_envtok "$(_cct_key "$1")")"
   [ -n "$tok" ] || { printf '  %-8s 토큰없음\n' "$1"; return; }
   H="$(
-    printf 'Authorization: Bearer %s\n' "$tok" |
-      curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
+    builtin printf 'Authorization: Bearer %s\n' "$tok" |
+      _cct_system curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
         -H @- -H "anthropic-version: 2023-06-01" \
         -H "anthropic-beta: oauth-2025-04-20" -H "content-type: application/json" \
         -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
@@ -735,9 +872,13 @@ _cct_fp_one() {
   u5="$(printf '%s' "$H" | awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | tr -d '\r' || true)"
   [ -n "$org" ] || { printf '  %-8s 응답실패\n' "$1"; return; }
   printf '  %-8s org:%s  7d_reset:%-11s  5h_reset:%-11s  util5h:%s\n' "$1" "$org" "$r7" "$r5" "$u5"
-}
+)
 
 _cct_fp() {
+  [ "$#" -le 1 ] || {
+    echo "사용법: cct fp [라벨]" >&2
+    return 2
+  }
   echo "계정 지문 (실호출) — 7d_reset 가 같으면 = 같은 계정(중복)!"
   if [ -n "${1-}" ]; then _cct_fp_one "$1"; return; fi
   local labels lc
@@ -803,7 +944,7 @@ _cct_active_raw_label() {
   local f v
   f="$(_cct_active_file)"
   [ ! -L "$f" ] && [ -f "$f" ] && [ -r "$f" ] || return 1
-  awk '
+  _cct_system awk '
     NR == 1 { sub(/\r$/, ""); value = $0; next }
     { extra = 1 }
     END {
@@ -842,12 +983,12 @@ _cct_active_write_atomic() (
   if [ -e "$f" ] && [ ! -f "$f" ]; then
     exit 1
   fi
-  mkdir -p "$(_cct_parent_dir "$f")" 2>/dev/null || exit 1
-  tmp="$(mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || exit 1
-  chmod 600 "$tmp" 2>/dev/null || exit 1
-  printf '%s\n' "$label" > "$tmp" 2>/dev/null || exit 1
-  chmod 600 "$tmp" 2>/dev/null || exit 1
-  mv "$tmp" "$f" 2>/dev/null || exit 1
+  _cct_system mkdir -p "$(_cct_parent_dir "$f")" 2>/dev/null || exit 1
+  tmp="$(_cct_system mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || exit 1
+  _cct_system chmod 600 "$tmp" 2>/dev/null || exit 1
+  builtin printf '%s\n' "$label" > "$tmp" 2>/dev/null || exit 1
+  _cct_system chmod 600 "$tmp" 2>/dev/null || exit 1
+  _cct_system mv "$tmp" "$f" 2>/dev/null || exit 1
   tmp=""
 )
 
@@ -906,6 +1047,7 @@ _cct_active_change_locked() (
   lock_owner="$_cct_wallet_lock_owner"
   locked=1
   _cct_wallet_lock_candidate=""
+  _cct_wallet_require_safe || exit 1
 
   case "$action" in
     write)
@@ -948,7 +1090,8 @@ _cct_active_show() {  # 현재 활성 프로필 표시
 }
 
 _cct_account_exists() {
-  grep -q "^$1=" "$CCT_ENV_FILE" 2>/dev/null
+  _cct_wallet_path_state || return 1
+  _cct_system grep -q "^$1=" "$CCT_ENV_FILE" 2>/dev/null
 }
 
 _cct_label_is_valid() {
@@ -972,7 +1115,7 @@ _cct_account_count() {
     printf '0'
     return
   fi
-  awk -F= '
+  _cct_system awk -F= '
     /^CCT_TOKEN_[A-Z0-9_]+=/ {
       if (!seen[$1]++) count++
     }
@@ -994,6 +1137,9 @@ _cct_status() {
     mode="$(_cct_wallet_mode "$CCT_ENV_FILE")"
     [ -n "$mode" ] || mode="unknown"
     accounts="$(_cct_account_count)"
+  elif [ -e "$CCT_ENV_FILE" ]; then
+    mode="non-regular"
+    accounts="unavailable"
   else
     mode="missing"
     accounts="0"
@@ -1062,7 +1208,7 @@ _cct_status() {
 }
 
 _cct_doctor_structure() {
-  awk '
+  _cct_system awk '
     function fail(message) {
       printf "FAIL structure: line %d: %s\n", NR, message
       failed = 1
@@ -1087,9 +1233,9 @@ _cct_doctor_structure() {
         annotation_line[annotation_total] = NR
         annotation_count[key]++
         if (annotation_count[key] > 1)
-          fail("duplicate annotation " key)
+          fail("duplicate annotation")
         if (!valid_label(label) || key != "CCT_TOKEN_" toupper(label))
-          fail("invalid annotation ownership " key)
+          fail("invalid annotation ownership")
         next
       }
       if (line ~ /^[[:space:]]*#/) next
@@ -1118,8 +1264,8 @@ _cct_doctor_structure() {
       for (i = 1; i <= annotation_total; i++) {
         key = annotation_key[i]
         if (!(key in key_count)) {
-          printf "FAIL structure: line %d: orphan annotation %s\n",
-            annotation_line[i], key
+          printf "FAIL structure: line %d: orphan annotation\n",
+            annotation_line[i]
           failed = 1
         }
       }
@@ -1232,28 +1378,14 @@ _cct_doctor() {
     echo "FAIL lock: malformed owner metadata"
     failed=1
   else
-    owner="$(awk '
-      NR == 1 && NF == 2 &&
-        $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ &&
-        length($1) <= 18 && length($2) <= 18 &&
-        ($1 + 0) > 0 && ($2 + 0) > 0 {
-          pid = $1
-          epoch = $2
-          next
-        }
-      { bad = 1 }
-      END {
-        if (NR == 1 && !bad) print pid " " epoch
-        else exit 1
-      }
-    ' "$lock/owner" 2>/dev/null)" || owner=""
+    owner="$(_cct_wallet_read_lock_owner "$lock/owner")" || owner=""
     if [ -z "$owner" ]; then
       echo "FAIL lock: malformed owner metadata"
       failed=1
     else
       pid="${owner%% *}"
       epoch="${owner#* }"
-      now="$(date +%s 2>/dev/null)" || now=""
+      now="$(_cct_system date +%s 2>/dev/null)" || now=""
       if [ -z "$now" ]; then
         echo "FAIL lock: current time unavailable"
         failed=1
@@ -1300,6 +1432,7 @@ _cct_rm() {
   [ "$#" -ge 1 ] || { echo "사용법: cct rm <라벨> [--force]" >&2; return 2; }
   [ "$#" -le 2 ] || { echo "사용법: cct rm <라벨> [--force]" >&2; return 2; }
   label="$1"
+  _cct_wallet_require_safe || return 1
   _cct_validate_label "$label" || return 2
   if [ "$#" -eq 2 ]; then
     [ "$2" = "--force" ] || {
@@ -1340,6 +1473,7 @@ _cct_rename() {
   }
   old_label="$1"
   new_label="$2"
+  _cct_wallet_require_safe || return 1
   _cct_validate_label "$old_label" || return 2
   _cct_validate_label "$new_label" || return 2
   _cct_reserved_label "$new_label" && {
@@ -1364,9 +1498,15 @@ _cct_rename() {
 }
 
 _cct_launch_label() {
-  local label="$1" key tok
+  local label="$1" key tok cb
   shift
-  local command_args=(claude)
+  _cct_wallet_require_safe || return 1
+  cb="$(_cct_claude_binary)"
+  [ -n "$cb" ] || {
+    echo "❌ claude 가 PATH 에 없음" >&2
+    return 1
+  }
+  local command_args=("$cb")
   [ "${CCT_SKIP_PERMS:-1}" = "0" ] || command_args+=(--dangerously-skip-permissions)
   case "${CCT_CLAUDE_FLAGS:-}" in
   *[![:space:]]*)
@@ -1389,14 +1529,14 @@ _cct_launch_label() {
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
       (
         unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
-        CLAUDE_CODE_OAUTH_TOKEN="$tok" command "${command_args[@]}" "$@"
+        CLAUDE_CODE_OAUTH_TOKEN="$tok" "${command_args[@]}" "$@"
       )
     else
       CLAUDE_CODE_OAUTH_TOKEN="$tok" \
         CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 \
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
         CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1 \
-        command "${command_args[@]}" "$@"
+        "${command_args[@]}" "$@"
     fi
   else
     _cct_active_change_locked write "$label" "$tok" || {
@@ -1404,15 +1544,15 @@ _cct_launch_label() {
       return 1
     }
     _cct_apply_env "$tok"
-    command "${command_args[@]}" "$@"
+    "${command_args[@]}" "$@"
   fi
 }
 
 cct() {
   local label=""
   case "${1-}" in
-    help)     _cct_help; return ;;
-    ls|list)  _cct_list; return ;;
+    help)     shift; [ "$#" -eq 0 ] || { echo "사용법: cct help" >&2; return 2; }; _cct_help; return ;;
+    ls|list)  shift; [ "$#" -eq 0 ] || { echo "사용법: cct list" >&2; return 2; }; _cct_list; return ;;
     add)      shift; _cct_add "$@"; return ;;
     run)      shift
               [ -n "${1-}" ] || { echo "사용법: cct run <라벨> [claude 인자...]" >&2; return 2; }
@@ -1425,8 +1565,8 @@ cct() {
     doctor)   shift; _cct_doctor "$@"; return ;;
     check)    shift; _cct_check "$@"; return ;;
     fp|who)   shift; _cct_fp "$@"; return ;;
-    off)      _cct_off; return ;;
-    active)   _cct_active_show; return ;;
+    off)      shift; [ "$#" -eq 0 ] || { echo "사용법: cct off" >&2; return 2; }; _cct_off; return ;;
+    active)   shift; [ "$#" -eq 0 ] || { echo "사용법: cct active" >&2; return 2; }; _cct_active_show; return ;;
     ""|-*)    # 라벨 없는 실행: sticky 활성 프로필 → 없으면 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv).
               # 키체인 폴백 금지. 남은 인자($@)는 그대로 claude 플래그로 전달(shift 안 함).
               [ "${CCT_STICKY:-1}" = "0" ] || label="$(_cct_active_label)"
