@@ -824,7 +824,7 @@ _cct_add_internal() {
 }
 
 _cct_add() {
-  local label="${1-}" rc tok
+  local label="${1-}" rc
   [ "$#" -eq 1 ] || {
     echo "사용법: cct add <라벨>    예: cct add pro1"
     return 2
@@ -845,9 +845,36 @@ _cct_add() {
   rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   if [ "${CCT_STICKY:-1}" != "0" ] && [ "$(_cct_active_label)" = "$label" ]; then
-    tok="$(_cct_envtok "$(_cct_key "$label")")"
-    [ -z "$tok" ] || _cct_apply_env "$tok"
-    unset tok
+    export CLAUDE_CODE_OAUTH_TOKEN
+    if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
+      unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+      case "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL+x}${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC+x}${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH+x}" in
+        "") ;;
+        *) return 1 ;;
+      esac
+      /usr/bin/env | /usr/bin/grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' || return 1
+    else
+      export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
+      /usr/bin/env | /usr/bin/grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' &&
+        /usr/bin/env | /usr/bin/grep -q '^CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1$' &&
+        /usr/bin/env | /usr/bin/grep -q '^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1$' &&
+        /usr/bin/env | /usr/bin/grep -q '^CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1$' ||
+        return 1
+    fi
+    CLAUDE_CODE_OAUTH_TOKEN="$(
+      /usr/bin/env -i \
+        HOME="${HOME:-}" PATH="/usr/bin:/bin" \
+        CCT_ENV_FILE="$CCT_ENV_FILE" CCT_STICKY=0 \
+        /bin/bash --noprofile --norc -c '
+          . "$1"
+          value="$(_cct_envtok "$(_cct_key "$2")")"
+          [ -n "$value" ] || exit 1
+          builtin printf "%s" "$value"
+        ' cct-refresh "$_CCT_SCRIPT_FILE" "$label" || {
+          /usr/bin/printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN"
+          exit 1
+        }
+    )"
   fi
 }
 
