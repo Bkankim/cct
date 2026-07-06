@@ -1933,7 +1933,7 @@ SHIM
 
 test_final4_runtime_security(){
   echo "== final4 runtime and security regressions =="
-  local sb cap rc before target marker marker_name
+  local sb cap rc before target marker marker_name shell hostile_out
   sb="$(mktemp -d)"
   mk_shim "$sb/bin"
   export PATH="$sb/bin:$PATH"
@@ -2084,6 +2084,117 @@ test_final4_runtime_security(){
   for marker_name in read builtin command; do
     chk "hostile $marker_name cannot observe token lifecycle" "safe" \
       "$([ -e "$marker.$marker_name" ] && echo captured || echo safe)"
+  done
+
+  echo "-- sticky active rotation keeps refreshed token out of hostile parent functions"
+  for shell in /bin/bash /bin/zsh; do
+    [ -x "$shell" ] || continue
+    mkdir -p "$sb/${shell##*/}"
+    for marker_name in unset export read builtin command _cct_apply_env; do
+      # shellcheck disable=SC2016
+      hostile_out="$(
+        "$shell" -c '
+          repo=$1
+          root=$2
+          hostile_name=$3
+          old_token=$(/usr/bin/printf "%s%s%s" fixture -parent-old -material)
+          new_token=$(/usr/bin/printf "%s%s%s" fixture -parent-new -material)
+          CCT_ENV_FILE=$root/tokens.env
+          CCT_ACTIVE_FILE=$root/active
+          CCT_DEFAULT_LABEL=alpha
+          CCT_STICKY=1
+          export CCT_ENV_FILE CCT_ACTIVE_FILE CCT_DEFAULT_LABEL CCT_STICKY
+          /usr/bin/printf "CCT_TOKEN_ALPHA=%s\n#cctlabel:CCT_TOKEN_ALPHA=alpha\n" \
+            "$old_token" > "$CCT_ENV_FILE"
+          /bin/chmod 600 "$CCT_ENV_FILE"
+          /usr/bin/printf "%s\n" alpha > "$CCT_ACTIVE_FILE"
+          /bin/chmod 600 "$CCT_ACTIVE_FILE"
+          . "$repo/cct.sh"
+          observed=no
+          case "$hostile_name" in
+            unset)
+              unset(){
+                case "${tok-}:${CLAUDE_CODE_OAUTH_TOKEN-}:$*" in
+                  *"$new_token"*) observed=yes ;;
+                esac
+                builtin unset "$@"
+              }
+              ;;
+            export)
+              export(){
+                case "${tok-}:${CLAUDE_CODE_OAUTH_TOKEN-}:$*" in
+                  *"$new_token"*) observed=yes ;;
+                esac
+                builtin export "$@"
+              }
+              ;;
+            read)
+              read(){
+                builtin read "$@"
+                read_rc=$?
+                case "${tok-}:${REPLY-}" in *"$new_token"*) observed=yes ;; esac
+                return "$read_rc"
+              }
+              ;;
+            builtin)
+              builtin(){
+                case "${tok-}:${CLAUDE_CODE_OAUTH_TOKEN-}:$*" in
+                  *"$new_token"*) observed=yes ;;
+                esac
+                return 1
+              }
+              ;;
+            command)
+              command(){
+                case "${tok-}:${CLAUDE_CODE_OAUTH_TOKEN-}:$*" in
+                  *"$new_token"*) observed=yes ;;
+                esac
+                return 1
+              }
+              ;;
+            _cct_apply_env)
+              _cct_apply_env(){
+                case "${tok-}:${CLAUDE_CODE_OAUTH_TOKEN-}:$*" in
+                  *"$new_token"*) observed=yes ;;
+                esac
+                builtin export CLAUDE_CODE_OAUTH_TOKEN="$1"
+              }
+              ;;
+          esac
+          cct add alpha <<< "$new_token" > "$root/captured" 2>&1
+          add_rc=$?
+          following=yes
+          case "${CLAUDE_CODE_OAUTH_TOKEN-}" in
+            "$new_token") refreshed=yes ;;
+            *) refreshed=no ;;
+          esac
+          if /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_OAUTH_TOKEN="; then
+            token_exported=yes
+          else
+            token_exported=no
+          fi
+          if /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1$" &&
+             /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1$" &&
+             /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1$"; then
+            web_exported=yes
+          else
+            web_exported=no
+          fi
+          if /usr/bin/grep -Fq -- "$new_token" "$root/captured"; then
+            output_leak=yes
+          else
+            output_leak=no
+          fi
+          /usr/bin/printf \
+            "rc=%s observed=%s refreshed=%s token_exported=%s web_exported=%s following=%s output_leak=%s\n" \
+            "$add_rc" "$observed" "$refreshed" "$token_exported" \
+            "$web_exported" "$following" "$output_leak"
+        ' cct-hostile-parent "$REPO" "$sb/${shell##*/}" "$marker_name"
+      )"
+      chk "sticky rotation resists $marker_name in ${shell##*/}" \
+        "rc=0 observed=no refreshed=yes token_exported=yes web_exported=yes following=yes output_leak=no" \
+        "$hostile_out"
+    done
   done
 
   echo "-- malformed annotations and numeric metadata stay inert"
