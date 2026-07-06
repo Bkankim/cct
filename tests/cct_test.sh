@@ -1773,7 +1773,7 @@ SHIM
         CCT_REPEAT_WRAPPER="$sb/perl-repeat/$repeat_id.wrapper" \
         CCT_REPEAT_CHILD="$sb/perl-repeat/$repeat_id.child" \
         /bin/bash -c \
-          ". '$REPO/cct.sh'; _cct_run_limited 0.2 '$sb/perl-ignore.sh'" \
+          ". '$REPO/cct.sh'; _cct_timeout_path(){ builtin printf '%s' ''; }; _cct_run_limited 0.2 '$sb/perl-ignore.sh'" \
           >/dev/null 2>&1
       printf '%s\n' "$?" > "$sb/perl-repeat/$repeat_id.rc"
     ) &
@@ -1809,7 +1809,7 @@ SHIM
       CCT_STICKY=0 CCT_TIMEOUT_WRAPPER_PID="$sb/wrapper.pid" \
       CCT_TIMEOUT_CHILD_PID="$sb/child.pid" \
       /bin/bash -e -o pipefail -c \
-      ". '$REPO/cct.sh'; cct status; printf '%s\\n' PERL-TIMEOUT-FOLLOWING" 2>&1
+      ". '$REPO/cct.sh'; _cct_timeout_path(){ builtin printf '%s' ''; }; cct status; printf '%s\\n' PERL-TIMEOUT-FOLLOWING" 2>&1
   )"; rc=$?
   elapsed=$(($(date +%s) - started))
   wrapper_pid="$(cat "$sb/wrapper.pid" 2>/dev/null)"
