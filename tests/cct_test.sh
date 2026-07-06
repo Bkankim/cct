@@ -2006,30 +2006,30 @@ test_final4_runtime_security(){
     'CCT_TOKEN_ALPHA=fixture-existing-material' \
     '#cctlabel:CCT_TOKEN_ALPHA=alpha'
   marker="$sb/intercept"
-  # shellcheck disable=SC2329,SC2059
+  # shellcheck disable=SC2317,SC2329,SC2059
   printf(){
     case "$*" in *fixture-new-material*) : > "$marker.printf" ;; esac
     builtin printf "$@"
   }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   tr(){
     local data
     data="$(cat)"
     case "$data" in *fixture-new-material*) : > "$marker.tr" ;; esac
     builtin printf '%s' "$data" | /usr/bin/tr "$@"
   }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   awk(){
     [ "${tok-}" != "fixture-new-material" ] || : > "$marker.awk"
     /usr/bin/awk "$@"
   }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   mktemp(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.mktemp"; command mktemp "$@"; }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   chmod(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.chmod"; command chmod "$@"; }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   cp(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.cp"; command cp "$@"; }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   mv(){ [ "${tok-}" != "fixture-new-material" ] || : > "$marker.mv"; command mv "$@"; }
   builtin printf '%s\n' fixture-new-material | cct add beta >/dev/null 2>&1
   rc=$?
@@ -2039,7 +2039,7 @@ test_final4_runtime_security(){
     chk "hostile $marker_name cannot observe new token" "safe" \
       "$([ -e "$marker.$marker_name" ] && echo captured || echo safe)"
   done
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   curl(){
     local data
     data="$(cat)"
@@ -2053,26 +2053,26 @@ test_final4_runtime_security(){
   chk "hostile curl cannot observe bearer material" "safe" \
     "$([ -e "$marker.curl" ] && echo captured || echo safe)"
   (
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     read(){
       builtin read -r "$@"
       read_rc=$?
       case "${tok-}:${REPLY-}" in *fixture-clean-worker-material*) : > "$marker.read" ;; esac
       return "$read_rc"
     }
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     unset(){ : > "$marker.unset"; return 0; }
     /usr/bin/printf '%s\n' fixture-clean-worker-material | cct add cleanworker >/dev/null 2>&1
   )
   rc=$?
   chk "clean worker survives hostile read and unset" "0" "$rc"
   (
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     builtin(){
       case "$*:${CLAUDE_CODE_OAUTH_TOKEN:-}" in *fixture-existing-material*) : > "$marker.builtin" ;; esac
       return 1
     }
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     command(){
       case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in *fixture-existing-material*) : > "$marker.command" ;; esac
       return 1
