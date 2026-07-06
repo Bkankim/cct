@@ -829,6 +829,8 @@ _cct_add() {
     echo "사용법: cct add <라벨>    예: cct add pro1"
     return 2
   }
+  # Both tools are required; the fallback is not an if-then-else branch.
+  # shellcheck disable=SC2015
   [ -x /usr/bin/env ] && [ -x /bin/bash ] || {
     echo "❌ 안전한 토큰 입력 환경을 시작할 수 없음" >&2
     return 1
