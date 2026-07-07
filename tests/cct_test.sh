@@ -789,6 +789,8 @@ SHIM
     chk "de_DE 없음: pct 함수 LC_ALL 강제" "51%" "$(LC_ALL=C bash -c ". '$REPO/cct.sh'; _cct_usage_pct 0.505")"
   fi
   chk "비숫자 사용률 → - (0% 위장 방지)" "-" "$(bash -c ". '$REPO/cct.sh'; _cct_usage_pct abc")"
+  chk "다중 점 사용률 → - (120% 위장 방지)" "-" "$(bash -c ". '$REPO/cct.sh'; _cct_usage_pct 1.2.3")"
+  chk "점 단독 사용률 → -" "-" "$(bash -c ". '$REPO/cct.sh'; _cct_usage_pct .")"
 
   echo "-- 선행 0 reset 헤더가 8진수로 오해석되지 않는다 (레드팀 항목3 회귀)"
   cat > "$sb/bin/curl" <<'SHIM'
