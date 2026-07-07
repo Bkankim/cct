@@ -64,6 +64,8 @@ Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z
 
 Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active`, so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection. An already-open terminal does not follow a switch made in another terminal; run `cct refresh` in that shell to re-apply the on-disk active label.
 
+Before launching, `cct <label>` fixes the `hasCompletedOnboarding` flag in the Claude config so an env-token launch does not trigger the interactive login wizard (the flag is reset by `/logout` or updates). Missing, symlinked, or malformed configs are left untouched, and the file mode is preserved. Disable with `CCT_FIX_ONBOARDING=0`.
+
 ## Portability and the OSS boundary
 
 Real credentials live only outside the repository in `~/.claude/tokens.env` (or `CCT_ENV_FILE`). The public repository contains no real wallet, and cloning it grants access to no account. `.gitignore` and the installer's global ignore entries reduce accidents; they are not a security boundary, and users remain responsible for never adding credential files to Git.

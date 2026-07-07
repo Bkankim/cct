@@ -27,6 +27,7 @@
 #   CCT_DEFAULT_LABEL=gv → 라벨 없는 'cct' 가 쓸 기본 setup-token 라벨 (기본 gv)
 #   CCT_STICKY=0         → sticky 끄기 (기존 inline 주입, 셸/디스크 미변경)
 #   CCT_ACTIVE_FILE      → 활성 프로필 저장 경로 (기본 tokens.env 옆 cct-active)
+#   CCT_FIX_ONBOARDING=0 → 실행 전 hasCompletedOnboarding 자동 보정 끄기
 #
 # 종료코드 (cct check):  0 유효 / 1 무효(또는 점검불가) / 2 토큰없음.  전체 점검은 하나라도 문제면 1.
 #
@@ -949,7 +950,7 @@ _cct_help() {
     "sticky:   cct <라벨> 선택을 현재 셸과 cct-active에 기억. cct off로 해제." \
     "" \
     "환경변수: CCT_SKIP_PERMS=0  CCT_CLAUDE_FLAGS='...'  CCT_DEFAULT_LABEL=gv  CCT_STICKY=0" \
-    "          CCT_DISABLE_WEB_FEATURES=0  CCT_ENV_FILE=...  CCT_ACTIVE_FILE=..." \
+    "          CCT_DISABLE_WEB_FEATURES=0  CCT_ENV_FILE=...  CCT_ACTIVE_FILE=...  CCT_FIX_ONBOARDING=0" \
     "호환성/BREAKING 변경은 CHANGELOG.md 참고."
 }
 
@@ -1543,6 +1544,45 @@ _cct_rename() {
   echo "✓ [$old_label] → [$new_label] 이름 변경 완료"
 }
 
+# 온보딩 플래그 보정: hasCompletedOnboarding=false 면 claude 가 env 토큰이 있어도
+# 인터랙티브 시작 시 로그인/구독(웹 인증) 마법사를 강제로 띄운다 (/logout·업데이트로 리셋됨).
+# cct 의 존재 이유가 그 세리머니 스킵이므로 실행 전 자동 보정한다. CCT_FIX_ONBOARDING=0 으로 끔.
+# 설정이 없거나 symlink 거나 JSON 이 깨졌으면 건드리지 않고, 보정 시 원본 파일 mode 를 유지한다.
+_cct_ensure_onboarded() {
+  [ "${CCT_FIX_ONBOARDING:-1}" = "0" ] && return 0
+  local cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  [ -f "$cfg" ] || return 0
+  [ ! -L "$cfg" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$cfg" <<'PYEOF' 2>/dev/null || true
+import json, os, sys
+p = sys.argv[1]
+try:
+    with open(p) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+if d.get("hasCompletedOnboarding") is True:
+    sys.exit(0)
+d["hasCompletedOnboarding"] = True
+tmp = p + ".cct-tmp"
+try:
+    mode = os.stat(p).st_mode & 0o777
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, p)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.exit(0)
+print("cct: 온보딩 플래그 보정됨 (로그인 마법사 스킵)")
+PYEOF
+}
+
 _cct_launch_label() {
   local label="$1" key tok cb
   shift
@@ -1570,6 +1610,7 @@ _cct_launch_label() {
     { echo "❌ '$label' 토큰 없음 (키 $key). 등록된 계정:"; _cct_list; echo "→ 등록: cct add $label"; } >&2
     return 1
   fi
+  _cct_ensure_onboarded
   echo "▶ $label 로 실행"
   if [ "${CCT_STICKY:-1}" = "0" ]; then
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
