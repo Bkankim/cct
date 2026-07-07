@@ -14,6 +14,7 @@
 #   cct doctor                  → 지갑 구조/권한/잠금 진단 (오프라인)
 #   cct check [라벨]            → 토큰 유효성 점검 (실제 호출)
 #   cct fp|who [라벨]           → 계정 지문 (실제 호출)
+#   cct usage [라벨|--all]      → 구독 사용량 5h/7d 사용률·리셋 (실제 호출, 기본 활성 라벨)
 #   cct active                  → 현재 활성(sticky) 라벨 표시
 #   cct refresh                 → 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)
 #   cct off                     → 활성 라벨과 현재 셸 인증 환경 해제
@@ -172,7 +173,7 @@ _cct_validate_label() {  # $1 = label
 
 # 예약어(서브커맨드)와 충돌하는 라벨 거부.  rc 0 = 예약됨.
 _cct_reserved_label() {  # $1 = label
-  case "${1-}" in help|ls|list|add|run|rm|rename|status|doctor|check|fp|who|off|active|refresh) return 0 ;; *) return 1 ;; esac
+  case "${1-}" in help|ls|list|add|run|rm|rename|status|doctor|check|fp|who|usage|off|active|refresh) return 0 ;; *) return 1 ;; esac
 }
 
 _cct_list() {
@@ -918,6 +919,101 @@ _cct_fp() {
   printf '%s\n' "$labels" | while IFS= read -r lc; do [ -n "$lc" ] && _cct_fp_one "$lc"; done
 }
 
+# ── 구독 사용량 (usage) ───────────────────────────────────────────────
+# /v1/messages 1토큰 프로브 응답의 unified rate-limit 헤더로 5h/7d 사용률·리셋을 보여준다.
+# setup-token 은 user:profile scope 가 없어 공식 /api/oauth/usage 가 403 → 헤더가 유일한 창구.
+# 종료코드는 fp 규약: 사용법·라벨 형식 오류만 2, 토큰없음·응답실패는 출력으로 알리고 0.
+
+_cct_usage_pct() {  # $1=0.505 → "51%" (빈 값·비숫자 → "-")
+  # 숫자(소수점 포함)만 허용 — 손상 헤더가 awk 강제변환으로 "0%" 위장하는 것을 막고 "-" 로.
+  case "${1-}" in ''|*[!0-9.]*) printf '%s' "-"; return 0 ;; esac
+  # LC_ALL=C 강제: 쉼표-소수 로케일(de_DE 등)에서 awk 가 "0.505" 를 "." 에서 끊어
+  # 0 으로 읽어 모든 사용률이 0% 로 나오는 것을 막는다.
+  printf '%s' "$1" | LC_ALL=C _cct_system awk '{ printf "%d%%", ($1 * 100) + 0.5 }' 2>/dev/null || printf '%s' "-"
+}
+
+_cct_usage_epoch_fmt() {  # $1=epoch → 로컬 "MM-DD HH:MM" (GNU date -d@ → BSD date -r 폴백, 실패 시 원문)
+  case "${1-}" in ''|*[!0-9]*) printf '%s' "${1:--}"; return 0 ;; esac
+  _cct_system date -d "@$1" '+%m-%d %H:%M' 2>/dev/null && return 0
+  _cct_system date -r "$1" '+%m-%d %H:%M' 2>/dev/null && return 0
+  printf '%s' "$1"
+}
+
+_cct_usage_remaining() {  # $1=reset epoch, $2=now epoch → "1d13h"/"1h23m"/"45m"/"지남"/"-"
+  case "${1-}" in ''|*[!0-9]*) printf '%s' "-"; return 0 ;; esac
+  case "${2-}" in ''|*[!0-9]*) printf '%s' "-"; return 0 ;; esac
+  local diff d h m
+  # 10# 강제 10진: 가드가 순수숫자를 보장하나 선행 0(예: 0900005000)이 8진수로
+  # 오해석돼 "value too great for base" 에러/오값이 나는 것을 막는다.
+  diff=$(( 10#$1 - 10#$2 ))
+  [ "$diff" -gt 0 ] || { printf '%s' "지남"; return 0; }
+  d=$(( diff / 86400 )); h=$(( (diff % 86400) / 3600 )); m=$(( (diff % 3600) / 60 ))
+  if [ "$d" -gt 0 ]; then printf '%dd%dh' "$d" "$h"
+  elif [ "$h" -gt 0 ]; then printf '%dh%dm' "$h" "$m"
+  else printf '%dm' "$m"; fi
+}
+
+_cct_usage_one() (
+  local tok H org u5 r5 s5 u7 r7 s7 now flag
+  unset -f read printf tr awk curl date timeout gtimeout perl mktemp chmod cp mv command builtin 2>/dev/null || true
+  _cct_validate_label "${1-}" || return 2
+  tok="$(_cct_envtok "$(_cct_key "$1")")"
+  [ -n "$tok" ] || { printf '  %-8s 토큰없음\n' "$1"; return 0; }
+  # fp 와 동일: Authorization 은 argv 노출 없이 curl stdin(@-)으로만 전달
+  H="$(
+    builtin printf 'Authorization: Bearer %s\n' "$tok" |
+      _cct_system curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
+        -H @- -H "anthropic-version: 2023-06-01" \
+        -H "anthropic-beta: oauth-2025-04-20" -H "content-type: application/json" \
+        -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+        2>/dev/null || true
+  )"
+  org="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | _cct_system tr -d '\r' || true)"
+  [ -n "$org" ] || { printf '  %-8s 응답실패\n' "$1"; return 0; }
+  u5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
+  r5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-reset"{print $2}' | _cct_system tr -d '\r' || true)"
+  s5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-status"{print $2}' | _cct_system tr -d '\r' || true)"
+  u7="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
+  r7="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-reset"{print $2}' | _cct_system tr -d '\r' || true)"
+  s7="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-status"{print $2}' | _cct_system tr -d '\r' || true)"
+  # CCT_USAGE_NOW: 결정적 테스트용 now 고정 (숫자가 아니면 무시)
+  case "${CCT_USAGE_NOW-}" in
+    ''|*[!0-9]*) now="$(_cct_system date +%s 2>/dev/null || echo 0)" ;;
+    *) now="$CCT_USAGE_NOW" ;;
+  esac
+  flag=""
+  [ -n "$s5" ] && [ "$s5" != "allowed" ] && flag="$flag  [5h-status:$s5]"
+  [ -n "$s7" ] && [ "$s7" != "allowed" ] && flag="$flag  [7d-status:$s7]"
+  printf '  %-8s 5h %4s  reset %s (%s 남음)   7d %4s  reset %s (%s 남음)%s\n' \
+    "$1" \
+    "$(_cct_usage_pct "$u5")" "$(_cct_usage_epoch_fmt "$r5")" "$(_cct_usage_remaining "$r5" "$now")" \
+    "$(_cct_usage_pct "$u7")" "$(_cct_usage_epoch_fmt "$r7")" "$(_cct_usage_remaining "$r7" "$now")" \
+    "$flag"
+)
+
+_cct_usage() {
+  [ "$#" -le 1 ] || { echo "사용법: cct usage [라벨|--all]" >&2; return 2; }
+  local label=""
+  if [ "${1-}" = "--all" ]; then
+    label="--all"
+  elif [ -n "${1-}" ]; then
+    _cct_validate_label "$1" || return 2
+    label="$1"
+  else
+    label="$(_cct_active_label)"
+    [ -n "$label" ] || { echo "활성 프로필 없음 — 사용법: cct usage <라벨> | --all" >&2; return 2; }
+  fi
+  echo "구독 사용량 (실호출 1토큰 프로브) — 5h/7d 창 사용률·리셋"
+  if [ "$label" = "--all" ]; then
+    local labels lc
+    labels="$(_cct_labels)"
+    [ -n "$labels" ] || { echo "  (등록된 계정 없음)"; return 0; }
+    printf '%s\n' "$labels" | while IFS= read -r lc; do [ -n "$lc" ] && _cct_usage_one "$lc"; done
+    return 0
+  fi
+  _cct_usage_one "$label"
+}
+
 _cct_help() {
   printf '%s\n' \
     "cct — 휴대용 Claude 계정 지갑 / Portable Claude Account Wallet" \
@@ -935,6 +1031,7 @@ _cct_help() {
     "  cct doctor                  지갑 구조·권한·백업·잠금 진단 (오프라인)" \
     "  cct check [라벨]            토큰 유효성 점검 (실제 호출)" \
     "  cct fp [라벨] | cct who [라벨]  계정 지문·중복 점검 (실제 호출)" \
+    "  cct usage [라벨|--all]      구독 사용량 5h/7d 사용률·리셋 (실제 호출, 기본 활성 라벨)" \
     "  cct active                  현재 sticky 활성 라벨 표시" \
     "  cct refresh                 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)" \
     "  cct off                     활성 라벨과 현재 셸 cct 인증 환경 해제" \
@@ -1652,6 +1749,7 @@ cct() {
     doctor)   shift; _cct_doctor "$@"; return ;;
     check)    shift; _cct_check "$@"; return ;;
     fp|who)   shift; _cct_fp "$@"; return ;;
+    usage)    shift; _cct_usage "$@"; return ;;
     off)      shift; [ "$#" -eq 0 ] || { echo "사용법: cct off" >&2; return 2; }; _cct_off; return ;;
     active)   shift; [ "$#" -eq 0 ] || { echo "사용법: cct active" >&2; return 2; }; _cct_active_show; return ;;
     refresh)  shift; [ "$#" -eq 0 ] || { echo "사용법: cct refresh" >&2; return 2; }; _cct_refresh; return ;;
