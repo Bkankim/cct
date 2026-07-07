@@ -734,6 +734,155 @@ test_onboarding(){
 }
 
 # -------------------------------------------------------------------------
+test_usage(){
+  echo "== cct usage (구독 사용량 표시) =="
+  set +u
+  local sb out rc tok_secret
+  sb="$(mktemp -d)"; mkdir "$sb/bin"
+  tok_secret="fixture-usage-secret"
+  write_account_fixture "$sb/tokens.env" \
+    "CCT_TOKEN_ALPHA=$tok_secret" \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'CCT_TOKEN_BETA=fixture-usage-beta' \
+    '#cctlabel:CCT_TOKEN_BETA=beta'
+  # 고정 응답 curl 심: now=1000000000 기준 5h reset +5000s(1h23m), 7d reset +135000s(1d13h)
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$@" > "$CCT_CURL_ARGV"
+cat > "$CCT_CURL_STDIN"
+printf '%s\n' \
+  'HTTP/1.1 200 OK' \
+  'anthropic-organization-id: org123456789' \
+  'anthropic-ratelimit-unified-5h-utilization: 0.25' \
+  'anthropic-ratelimit-unified-5h-reset: 1000005000' \
+  'anthropic-ratelimit-unified-5h-status: allowed' \
+  'anthropic-ratelimit-unified-7d-utilization: 0.505' \
+  'anthropic-ratelimit-unified-7d-reset: 1000135000' \
+  'anthropic-ratelimit-unified-7d-status: allowed'
+SHIM
+  chmod 700 "$sb/bin/curl"
+
+  echo "-- 라벨 지정: 5h/7d 사용률·리셋·남은시간 렌더 (고정 now, TZ=UTC)"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
+    CCT_CURL_ARGV="$sb/curl.argv" CCT_CURL_STDIN="$sb/curl.stdin" \
+    TZ=UTC CCT_USAGE_NOW=1000000000 \
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"; rc=$?
+  chk "usage alpha rc=0" "0" "$rc"
+  chk_has "5h 사용률 25%" "5h  25%" "$out"
+  chk_has "7d 사용률 51% (반올림)" "7d  51%" "$out"
+  chk_has "5h 남은시간 1h23m" "1h23m" "$out"
+  chk_has "7d 남은시간 1d13h" "1d13h" "$out"
+  chk_has "5h 리셋 로컬시각(UTC)" "09-09 03:10" "$out"
+  chk_not_has "토큰이 출력에 없다" "$tok_secret" "$out"
+  chk_not_has "토큰이 curl argv에 없다" "$tok_secret" "$(cat "$sb/curl.argv" 2>/dev/null)"
+  chk "토큰은 curl stdin으로만" "Authorization: Bearer $tok_secret" "$(cat "$sb/curl.stdin" 2>/dev/null)"
+
+  echo "-- 쉼표-소수 로케일에서도 사용률이 0%로 뭉개지지 않는다 (레드팀 로케일 회귀)"
+  if locale -a 2>/dev/null | grep -qi '^de_DE.UTF-8$'; then
+    out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
+      LC_ALL=de_DE.UTF-8 \
+      bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"
+    chk_has "de_DE 로케일: 5h 25% 유지" "5h  25%" "$out"
+    chk_has "de_DE 로케일: 7d 51% 유지" "7d  51%" "$out"
+  else
+    echo "  (de_DE.UTF-8 로케일 없음 — 함수 단위로 대체 검증)"
+    chk "de_DE 없음: pct 함수 LC_ALL 강제" "51%" "$(LC_ALL=C bash -c ". '$REPO/cct.sh'; _cct_usage_pct 0.505")"
+  fi
+  chk "비숫자 사용률 → - (0% 위장 방지)" "-" "$(bash -c ". '$REPO/cct.sh'; _cct_usage_pct abc")"
+
+  echo "-- 선행 0 reset 헤더가 8진수로 오해석되지 않는다 (레드팀 항목3 회귀)"
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+printf '%s\n' \
+  'HTTP/1.1 200 OK' \
+  'anthropic-organization-id: org123456789' \
+  'anthropic-ratelimit-unified-5h-utilization: 0.25' \
+  'anthropic-ratelimit-unified-5h-reset: 0900005000' \
+  'anthropic-ratelimit-unified-7d-utilization: 0.5' \
+  'anthropic-ratelimit-unified-7d-reset: 0000005000'
+SHIM
+  chmod 700 "$sb/bin/curl"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"; rc=$?
+  chk "선행0 reset: rc=0 (에러 없음)" "0" "$rc"
+  chk_not_has "선행0 reset: octal 에러 없음" "value too great for base" "$out"
+  chk_not_has "선행0 reset: base 에러 문구 없음" "error token" "$out"
+
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+printf '%s\n' \
+  'HTTP/1.1 200 OK' \
+  'anthropic-organization-id: org123456789' \
+  'anthropic-ratelimit-unified-5h-utilization: 0.25' \
+  'anthropic-ratelimit-unified-5h-reset: 1000005000' \
+  'anthropic-ratelimit-unified-5h-status: allowed' \
+  'anthropic-ratelimit-unified-7d-utilization: 0.505' \
+  'anthropic-ratelimit-unified-7d-reset: 1000135000' \
+  'anthropic-ratelimit-unified-7d-status: allowed'
+SHIM
+  chmod 700 "$sb/bin/curl"
+
+  echo "-- 상태 비정상이면 표기, 정상(allowed)이면 생략"
+  chk_not_has "allowed 상태 마커 없음" "상태" "$out"
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+printf '%s\n' \
+  'HTTP/1.1 200 OK' \
+  'anthropic-organization-id: org123456789' \
+  'anthropic-ratelimit-unified-5h-utilization: 1.0' \
+  'anthropic-ratelimit-unified-5h-reset: 1000005000' \
+  'anthropic-ratelimit-unified-5h-status: rejected' \
+  'anthropic-ratelimit-unified-7d-utilization: 0.9' \
+  'anthropic-ratelimit-unified-7d-reset: 1000135000' \
+  'anthropic-ratelimit-unified-7d-status: allowed'
+SHIM
+  chmod 700 "$sb/bin/curl"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"
+  chk_has "rejected 상태 표기" "5h-status:rejected" "$out"
+
+  echo "-- 인자 없음: 활성 라벨 프로브 / 활성 없으면 rc=2"
+  printf 'alpha\n' > "$sb/active"; chmod 600 "$sb/active"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" TZ=UTC CCT_USAGE_NOW=1000000000 \
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage" 2>&1)"; rc=$?
+  chk "무인자(활성 alpha) rc=0" "0" "$rc"
+  chk_has "무인자: 활성 라벨 표시" "alpha" "$out"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/none" \
+    bash -c ". '$REPO/cct.sh'; cct usage" 2>&1)"; rc=$?
+  chk "무인자+활성없음 rc=2" "2" "$rc"
+
+  echo "-- --all: 전체 라벨 순회"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage --all" 2>&1)"; rc=$?
+  chk "--all rc=0" "0" "$rc"
+  chk_has "--all: alpha 포함" "alpha" "$out"
+  chk_has "--all: beta 포함" "beta" "$out"
+
+  echo "-- 실패 경로: 토큰없음·응답실패·라벨 오류·잉여 인자"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
+    bash -c ". '$REPO/cct.sh'; printf 'CCT_TOKEN_EMPTY=\n' >> '$sb/tokens.env'; cct usage empty" 2>&1)"; rc=$?
+  chk "토큰없음 rc=0 (출력으로만)" "0" "$rc"
+  chk_has "토큰없음 표기" "토큰없음" "$out"
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+exit 7
+SHIM
+  chmod 700 "$sb/bin/curl"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"; rc=$?
+  chk "응답실패 rc=0" "0" "$rc"
+  chk_has "응답실패 표기" "응답실패" "$out"
+  chk "라벨 형식 오류 rc=2" "2" "$(bash -c ". '$REPO/cct.sh'; cct usage 'BAD!'" >/dev/null 2>&1; echo $?)"
+  chk "잉여 인자 rc=2" "2" "$(bash -c ". '$REPO/cct.sh'; cct usage a b" >/dev/null 2>&1; echo $?)"
+  chk "usage 는 예약어 (add 거부)" "2" "$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" bash -c ". '$REPO/cct.sh'; printf 'x\n' | cct add usage" >/dev/null 2>&1; echo $?)"
+  rm -rf "$sb"
+}
+
+# -------------------------------------------------------------------------
 test_wallet(){
   echo "== wallet storage =="
   local sb cap rc before after inode_before inode_after dead_pid now cmd
@@ -2713,6 +2862,7 @@ case "${1:-all}" in
   extra)   test_extra ;;
   sticky)  test_sticky ;;
   onboarding) test_onboarding ;;
+  usage)   test_usage ;;
   wallet)  test_wallet ;;
   accounts) test_accounts ;;
   races) test_lock_active_races ;;
@@ -2725,8 +2875,8 @@ case "${1:-all}" in
   runtime) test_runtime_regressions ;;
   final4) test_final4_runtime_security ;;
   fixture) shift; make_fixture "$@"; exit $? ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_onboarding; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions; test_final4_runtime_security ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|onboarding|wallet|accounts|races|diagnostics|runtime|final4|fixture|all]"; exit 2 ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_onboarding; test_usage; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions; test_final4_runtime_security ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|onboarding|usage|wallet|accounts|races|diagnostics|runtime|final4|fixture|all]"; exit 2 ;;
 esac
 
 echo
