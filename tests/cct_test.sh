@@ -768,11 +768,12 @@ SHIM
     TZ=UTC CCT_USAGE_NOW=1000000000 \
     bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"; rc=$?
   chk "usage alpha rc=0" "0" "$rc"
-  chk_has "5h 사용률 25%" "5h  25%" "$out"
-  chk_has "7d 사용률 51% (반올림)" "7d  51%" "$out"
-  chk_has "5h 남은시간 1h23m" "1h23m" "$out"
-  chk_has "7d 남은시간 1d13h" "1d13h" "$out"
-  chk_has "5h 리셋 로컬시각(UTC)" "09-09 03:10" "$out"
+  chk_has "5h 게이지 5칸+25%" "5h [█████░░░░░░░░░░░░░░░]  25%" "$out"
+  chk_has "7d 게이지 10칸+51% (반올림)" "7d [██████████░░░░░░░░░░]  51%" "$out"
+  chk_has "5h 남은시간" "리셋 1h23m 후" "$out"
+  chk_has "7d 남은시간" "리셋 1d13h 후" "$out"
+  chk_has "5h 리셋 시각만(HH:MM, UTC)" "(03:10)" "$out"
+  chk_has "7d 리셋 날짜+시각(UTC)" "(09-10 15:16)" "$out"
   chk_not_has "토큰이 출력에 없다" "$tok_secret" "$out"
   chk_not_has "토큰이 curl argv에 없다" "$tok_secret" "$(cat "$sb/curl.argv" 2>/dev/null)"
   chk "토큰은 curl stdin으로만" "Authorization: Bearer $tok_secret" "$(cat "$sb/curl.stdin" 2>/dev/null)"
@@ -782,8 +783,8 @@ SHIM
     out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
       LC_ALL=de_DE.UTF-8 \
       bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"
-    chk_has "de_DE 로케일: 5h 25% 유지" "5h  25%" "$out"
-    chk_has "de_DE 로케일: 7d 51% 유지" "7d  51%" "$out"
+    chk_has "de_DE 로케일: 5h 25% 유지" "]  25%" "$out"
+    chk_has "de_DE 로케일: 7d 51% 유지" "]  51%" "$out"
   else
     echo "  (de_DE.UTF-8 로케일 없음 — 함수 단위로 대체 검증)"
     chk "de_DE 없음: pct 함수 LC_ALL 강제" "51%" "$(LC_ALL=C bash -c ". '$REPO/cct.sh'; _cct_usage_pct 0.505")"

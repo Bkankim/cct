@@ -933,11 +933,35 @@ _cct_usage_pct() {  # $1=0.505 → "51%" (빈 값·비숫자 → "-")
   printf '%s' "$1" | LC_ALL=C _cct_system awk '{ printf "%d%%", ($1 * 100) + 0.5 }' 2>/dev/null || printf '%s' "-"
 }
 
-_cct_usage_epoch_fmt() {  # $1=epoch → 로컬 "MM-DD HH:MM" (GNU date -d@ → BSD date -r 폴백, 실패 시 원문)
+_cct_usage_epoch_fmt() {  # $1=epoch [$2=포맷] → 로컬시각 (GNU date -d@ → BSD date -r 폴백, 실패 시 원문)
+  local fmt="${2:-%m-%d %H:%M}"
   case "${1-}" in ''|*[!0-9]*) printf '%s' "${1:--}"; return 0 ;; esac
-  _cct_system date -d "@$1" '+%m-%d %H:%M' 2>/dev/null && return 0
-  _cct_system date -r "$1" '+%m-%d %H:%M' 2>/dev/null && return 0
+  _cct_system date -d "@$1" "+$fmt" 2>/dev/null && return 0
+  _cct_system date -r "$1" "+$fmt" 2>/dev/null && return 0
   printf '%s' "$1"
+}
+
+_cct_usage_bar() {  # $1="51%" → 20칸 게이지 (비숫자 → 전부 빈 칸, 100% 초과 클램프)
+  local p filled i out=""
+  p="${1%\%}"
+  case "$p" in
+    ''|*[!0-9]*) filled=0 ;;
+    *) filled=$(( (10#$p * 20 + 50) / 100 )); [ "$filled" -le 20 ] || filled=20 ;;
+  esac
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if [ "$i" -lt "$filled" ]; then out="${out}█"; else out="${out}░"; fi
+    i=$(( i + 1 ))
+  done
+  printf '%s' "$out"
+}
+
+_cct_usage_when() {  # $1=남은시간 $2=로컬시각 → "리셋 3h51m 후 (05:40)" / "리셋 지남 (…)" / "리셋 (-)"
+  case "${1-}" in
+    지남) printf '리셋 지남 (%s)' "$2" ;;
+    -|'') printf '리셋 (%s)' "${2:--}" ;;
+    *)    printf '리셋 %s 후 (%s)' "$1" "$2" ;;
+  esac
 }
 
 _cct_usage_remaining() {  # $1=reset epoch, $2=now epoch → "1d13h"/"1h23m"/"45m"/"지남"/"-"
@@ -955,7 +979,7 @@ _cct_usage_remaining() {  # $1=reset epoch, $2=now epoch → "1d13h"/"1h23m"/"45
 }
 
 _cct_usage_one() (
-  local tok H org u5 r5 s5 u7 r7 s7 now flag
+  local tok H org u5 r5 s5 u7 r7 s7 now
   unset -f read printf tr awk curl date timeout gtimeout perl mktemp chmod cp mv command builtin 2>/dev/null || true
   _cct_validate_label "${1-}" || return 2
   tok="$(_cct_envtok "$(_cct_key "$1")")"
@@ -982,14 +1006,17 @@ _cct_usage_one() (
     ''|*[!0-9]*) now="$(_cct_system date +%s 2>/dev/null || echo 0)" ;;
     *) now="$CCT_USAGE_NOW" ;;
   esac
-  flag=""
-  [ -n "$s5" ] && [ "$s5" != "allowed" ] && flag="$flag  [5h-status:$s5]"
-  [ -n "$s7" ] && [ "$s7" != "allowed" ] && flag="$flag  [7d-status:$s7]"
-  printf '  %-8s 5h %4s  reset %s (%s 남음)   7d %4s  reset %s (%s 남음)%s\n' \
-    "$1" \
-    "$(_cct_usage_pct "$u5")" "$(_cct_usage_epoch_fmt "$r5")" "$(_cct_usage_remaining "$r5" "$now")" \
-    "$(_cct_usage_pct "$u7")" "$(_cct_usage_epoch_fmt "$r7")" "$(_cct_usage_remaining "$r7" "$now")" \
-    "$flag"
+  local flag5="" flag7="" pct5 pct7
+  [ -n "$s5" ] && [ "$s5" != "allowed" ] && flag5="  [5h-status:$s5]"
+  [ -n "$s7" ] && [ "$s7" != "allowed" ] && flag7="  [7d-status:$s7]"
+  pct5="$(_cct_usage_pct "$u5")"; pct7="$(_cct_usage_pct "$u7")"
+  # 라벨당 2줄 게이지: 5h 는 5시간 이내 리셋이라 시각만(HH:MM), 7d 는 날짜 포함
+  printf '  %-6s 5h [%s] %4s  %s%s\n' "$1" \
+    "$(_cct_usage_bar "$pct5")" "$pct5" \
+    "$(_cct_usage_when "$(_cct_usage_remaining "$r5" "$now")" "$(_cct_usage_epoch_fmt "$r5" '%H:%M')")" "$flag5"
+  printf '  %-6s 7d [%s] %4s  %s%s\n' "" \
+    "$(_cct_usage_bar "$pct7")" "$pct7" \
+    "$(_cct_usage_when "$(_cct_usage_remaining "$r7" "$now")" "$(_cct_usage_epoch_fmt "$r7")")" "$flag7"
 )
 
 _cct_usage() {
@@ -1004,7 +1031,7 @@ _cct_usage() {
     label="$(_cct_active_label)"
     [ -n "$label" ] || { echo "활성 프로필 없음 — 사용법: cct usage <라벨> | --all" >&2; return 2; }
   fi
-  echo "구독 사용량 (실호출 1토큰 프로브) — 5h/7d 창 사용률·리셋"
+  echo "구독 사용량 (실호출 1토큰 프로브)"
   if [ "$label" = "--all" ]; then
     local labels lc
     labels="$(_cct_labels)"
