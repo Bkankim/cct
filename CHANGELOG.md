@@ -28,6 +28,7 @@ be reissued for that account and replaced with `cct add <label>`.
 | `cct check [label]` | Validate token(s) through a real Claude call |
 | `cct fp [label]` / `cct who [label]` | Compare account fingerprints through a real call |
 | `cct active` | Show the sticky active label |
+| `cct refresh` | Re-apply the on-disk active label to the current shell environment |
 | `cct off` | Clear sticky state and current-shell cct auth variables |
 | `cct help` | Show the built-in command contract |
 
@@ -132,6 +133,8 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   fallback label for a bare `cct`; `CCT_STICKY=0` disables the sticky active profile;
   `CCT_ACTIVE_FILE` overrides the active-profile state path.
 - **`cct active` / `cct off`** — show or clear the sticky active profile.
+- **`cct refresh`** — re-apply the on-disk sticky active label to the current shell,
+  so an already-open terminal follows a switch (or `cct off`) made in another terminal.
 - **Claude Code 2.1.185+ token-mode guard** — labeled `cct <label>` launches now
   suppress Advisor/background plugin refresh/nonessential web calls by default because
   `claude setup-token` long-lived OAuth tokens are inference-only in current Claude Code.

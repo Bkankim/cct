@@ -56,12 +56,13 @@ A `setup-token` is the current mechanism for long-lived use, but its lifetime an
 | `cct check [label]` | Validate token(s) with a real Claude call | valid `0`; invalid/unavailable `1`; no token `2`; all-label mode returns `1` if any fail |
 | `cct fp [label]` / `cct who [label]` | Compare account fingerprints returned by a real call | A validly formed label returns `0` even when the token is missing or the probe response fails (output-only); invalid label `2` |
 | `cct active` | Show the current sticky active label | success `0` |
+| `cct refresh` | Re-apply the on-disk active label to the current shell environment (sync after switching in another terminal) | success `0`; missing token `1`; usage error `2` |
 | `cct off` | Remove active state and cct auth variables from the current shell | success `0`; state deletion failure `1` |
 | `cct help` | Show built-in help | success `0` |
 
 Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z0-9_]*`. `cct <label>` disables Advisor and nonessential web calls by default. Opt in only when needed with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`.
 
-Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active`, so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection.
+Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active`, so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection. An already-open terminal does not follow a switch made in another terminal; run `cct refresh` in that shell to re-apply the on-disk active label.
 
 ## Portability and the OSS boundary
 

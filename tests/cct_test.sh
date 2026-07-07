@@ -652,10 +652,22 @@ test_sticky(){
   chk_has "전환 후 claude 가 새 토큰" "tok=[sk-other]" "$(claude 2>&1)"
   chk_has "bare cct 가 활성(other) 사용" "tok=[sk-other]" "$(cct 2>&1)"
 
+  echo "-- cct refresh 가 디스크 활성 라벨을 현재 셸에 재적용 (다른 터미널 전환 동기화)"
+  printf 'good\n' > "$sb/active"   # 다른 터미널이 good 으로 전환했다고 가정
+  cct refresh >/dev/null 2>&1
+  chk "refresh 후 현재 셸 토큰 == good" "sk-good" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk_has "이후 그냥 claude 가 갱신된 토큰 사용" "tok=[sk-good]" "$(claude 2>&1)"
+  chk "refresh 사용법 오류 rc=2" "2" "$(cct refresh extra >/dev/null 2>&1; echo $?)"
+
   echo "-- cct off 로 해제 (파일 삭제 + 현재 셸 env 해제)"
   cct off >/dev/null 2>&1
   chk "active 파일 제거" "no" "$([ -e "$sb/active" ] && echo yes || echo no)"
   chk "현재 셸 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+
+  echo "-- 활성 없음에서 cct refresh 는 현재 셸 env 를 해제"
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-stale"
+  cct refresh >/dev/null 2>&1
+  chk "refresh: 활성 없음 → 잔존 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
 
   echo "-- CCT_STICKY=0 이면 inline 만 (셸/디스크 미변경)"
   cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" CCT_STICKY=0 bash -c ". '$REPO/cct.sh'; cct good >/dev/null 2>&1; echo tok=[\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]; [ -e '$sb/active' ] && echo FILE-YES || echo FILE-NO" 2>&1)"

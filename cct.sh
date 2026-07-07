@@ -15,6 +15,7 @@
 #   cct check [라벨]            → 토큰 유효성 점검 (실제 호출)
 #   cct fp|who [라벨]           → 계정 지문 (실제 호출)
 #   cct active                  → 현재 활성(sticky) 라벨 표시
+#   cct refresh                 → 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)
 #   cct off                     → 활성 라벨과 현재 셸 인증 환경 해제
 #   cct help                    → 도움말
 # (cc / ㅊㅊ 는 별도 alias = 그냥 claude. 단 sticky 활성 시 같은 활성 토큰을 물려받음.)
@@ -170,7 +171,7 @@ _cct_validate_label() {  # $1 = label
 
 # 예약어(서브커맨드)와 충돌하는 라벨 거부.  rc 0 = 예약됨.
 _cct_reserved_label() {  # $1 = label
-  case "${1-}" in help|ls|list|add|run|rm|rename|status|doctor|check|fp|who|off|active) return 0 ;; *) return 1 ;; esac
+  case "${1-}" in help|ls|list|add|run|rm|rename|status|doctor|check|fp|who|off|active|refresh) return 0 ;; *) return 1 ;; esac
 }
 
 _cct_list() {
@@ -934,6 +935,7 @@ _cct_help() {
     "  cct check [라벨]            토큰 유효성 점검 (실제 호출)" \
     "  cct fp [라벨] | cct who [라벨]  계정 지문·중복 점검 (실제 호출)" \
     "  cct active                  현재 sticky 활성 라벨 표시" \
+    "  cct refresh                 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)" \
     "  cct off                     활성 라벨과 현재 셸 cct 인증 환경 해제" \
     "  cct help                    이 도움말" \
     "" \
@@ -1110,6 +1112,21 @@ _cct_off() {  # sticky 해제: 저장 파일 삭제 + 현재 셸 env 해제
   }
   unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
   echo "✓ 활성 프로필 해제 — 이후 cct <라벨> 로 다시 선택"
+}
+
+_cct_refresh() {  # 디스크의 활성 라벨을 현재 셸 env 에 재적용 — 이미 열려있던 셸을
+                  # 다른 터미널의 cct <라벨> 전환·cct off 해제와 동기화한다.
+  local a tok
+  a="$(_cct_active_label)"
+  if [ -z "$a" ]; then
+    unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+    echo "활성 프로필 없음 → 현재 셸 cct 인증 환경 해제 (선택: cct <라벨>)"
+    return 0
+  fi
+  tok="$(_cct_envtok "$(_cct_key "$a")")"
+  [ -n "$tok" ] || { echo "❌ 활성 라벨 '$a' 의 토큰 없음 (등록: cct add $a)" >&2; return 1; }
+  _cct_apply_env "$tok"
+  echo "✓ 현재 셸을 활성 라벨 '$a' 로 갱신 — 이후 이 셸에서 새로 실행하는 claude 부터 적용"
 }
 
 _cct_active_show() {  # 현재 활성 프로필 표시
@@ -1596,6 +1613,7 @@ cct() {
     fp|who)   shift; _cct_fp "$@"; return ;;
     off)      shift; [ "$#" -eq 0 ] || { echo "사용법: cct off" >&2; return 2; }; _cct_off; return ;;
     active)   shift; [ "$#" -eq 0 ] || { echo "사용법: cct active" >&2; return 2; }; _cct_active_show; return ;;
+    refresh)  shift; [ "$#" -eq 0 ] || { echo "사용법: cct refresh" >&2; return 2; }; _cct_refresh; return ;;
     ""|-*)    # 라벨 없는 실행: sticky 활성 프로필 → 없으면 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv).
               # 키체인 폴백 금지. 남은 인자($@)는 그대로 claude 플래그로 전달(shift 안 함).
               [ "${CCT_STICKY:-1}" = "0" ] || label="$(_cct_active_label)"
