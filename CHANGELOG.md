@@ -135,6 +135,11 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
 - **`cct active` / `cct off`** — show or clear the sticky active profile.
 - **`cct refresh`** — re-apply the on-disk sticky active label to the current shell,
   so an already-open terminal follows a switch (or `cct off`) made in another terminal.
+- **Onboarding-flag guard** — before launching, cct sets `hasCompletedOnboarding` to
+  true in the Claude config so an env-token launch does not trigger the interactive
+  login wizard (the flag is reset by `/logout` or updates). Missing, symlinked, or
+  malformed configs are left untouched and the file mode is preserved; disable with
+  `CCT_FIX_ONBOARDING=0`.
 - **Claude Code 2.1.185+ token-mode guard** — labeled `cct <label>` launches now
   suppress Advisor/background plugin refresh/nonessential web calls by default because
   `claude setup-token` long-lived OAuth tokens are inference-only in current Claude Code.

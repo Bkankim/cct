@@ -64,6 +64,8 @@ cct personal                  # personal 계정으로 전환
 
 Sticky는 기본으로 켜져 있다. `cct <라벨>`이 선택한 계정을 현재 셸과 mode `600`의 `~/.claude/cct-active`에 기억하므로 이후 일반 `claude` 실행과 새 터미널도 같은 계정을 쓴다. `cct off`로 해제하거나 `CCT_STICKY=0`으로 저장하지 않는 실행을 선택할 수 있다. 이미 열려 있던 터미널은 다른 터미널의 전환을 자동으로 따라가지 않으므로, 그 셸에서 `cct refresh`를 실행해 디스크의 활성 라벨과 동기화한다.
 
+`cct <라벨>`은 실행 직전에 Claude 설정의 `hasCompletedOnboarding` 플래그를 자동 보정해, env 토큰이 있는데도 인터랙티브 로그인 마법사가 뜨는 것을 막는다(`/logout`이나 업데이트로 리셋되는 값). 설정 파일이 없거나 symlink이거나 JSON이 깨졌으면 건드리지 않고, 보정 시 파일 mode를 유지한다. `CCT_FIX_ONBOARDING=0`으로 끌 수 있다.
+
 ## 휴대성과 OSS 경계
 
 실제 자격 증명은 저장소 밖의 `~/.claude/tokens.env`(또는 `CCT_ENV_FILE`)에만 있다. 공개 저장소에는 실제 지갑이 없고, clone만으로는 어떤 계정에도 접근할 수 없다. `.gitignore`와 installer의 전역 ignore는 실수 방지 장치일 뿐 보안 경계가 아니므로, 자격 증명 파일을 Git에 추가하지 않는 책임은 사용자에게 있다.

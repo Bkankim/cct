@@ -676,6 +676,64 @@ test_sticky(){
 }
 
 # -------------------------------------------------------------------------
+test_onboarding(){
+  echo "== 온보딩 플래그 자동 보정 =="
+  set +u
+  local sb cfgdir cfg before
+  sb="$(mktemp -d)"; mk_shim "$sb/bin"
+  export PATH="$sb/bin:$PATH"
+  export CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active"
+  cfgdir="$sb/cfg"; mkdir -p "$cfgdir"; cfg="$cfgdir/.claude.json"
+  export CLAUDE_CONFIG_DIR="$cfgdir"
+  unset CCT_FIX_ONBOARDING CCT_STICKY CLAUDE_CODE_OAUTH_TOKEN
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+  add_tok good "sk-good" >/dev/null 2>&1
+
+  echo "-- hasCompletedOnboarding=false 가 실행 시 true 로 보정된다"
+  printf '{"hasCompletedOnboarding": false, "keep": 1}\n' > "$cfg"; chmod 600 "$cfg"
+  cct good >/dev/null 2>&1
+  chk_has "false → true 보정" '"hasCompletedOnboarding": true' "$(cat "$cfg")"
+  chk_has "다른 키 보존" '"keep": 1' "$(cat "$cfg")"
+  chk "파일 mode 600 유지" "600" "$(wallet_mode "$cfg")"
+
+  echo "-- 이미 true 면 파일을 건드리지 않는다 (바이트 불변)"
+  printf '{"hasCompletedOnboarding": true}\n' > "$cfg"
+  before="$(wallet_sha "$cfg")"
+  cct good >/dev/null 2>&1
+  chk "이미 true: 바이트 불변" "$before" "$(wallet_sha "$cfg")"
+
+  echo "-- CCT_FIX_ONBOARDING=0 이면 보정하지 않는다"
+  printf '{"hasCompletedOnboarding": false}\n' > "$cfg"
+  before="$(wallet_sha "$cfg")"
+  export CCT_FIX_ONBOARDING=0
+  cct good >/dev/null 2>&1
+  unset CCT_FIX_ONBOARDING
+  chk "knob off: 불변" "$before" "$(wallet_sha "$cfg")"
+
+  echo "-- 설정 파일이 없으면 조용히 통과하고 만들지 않는다"
+  rm -f "$cfg"
+  cct good >/dev/null 2>&1
+  chk "부재: 파일 안 생김" "no" "$([ -e "$cfg" ] && echo yes || echo no)"
+
+  echo "-- 깨진 JSON 은 그대로 보존된다"
+  printf '{broken\n' > "$cfg"
+  before="$(wallet_sha "$cfg")"
+  cct good >/dev/null 2>&1
+  chk "깨진 JSON: 불변" "$before" "$(wallet_sha "$cfg")"
+
+  echo "-- symlink 설정 파일은 건드리지 않는다 (링크 유지·원본 불변)"
+  printf '{"hasCompletedOnboarding": false}\n' > "$sb/real.json"
+  before="$(wallet_sha "$sb/real.json")"
+  ln -sf "$sb/real.json" "$cfg"
+  cct good >/dev/null 2>&1
+  chk "symlink: 원본 바이트 불변" "$before" "$(wallet_sha "$sb/real.json")"
+  chk "symlink 유지" "yes" "$([ -L "$cfg" ] && echo yes || echo no)"
+
+  unset CLAUDE_CONFIG_DIR
+}
+
+# -------------------------------------------------------------------------
 test_wallet(){
   echo "== wallet storage =="
   local sb cap rc before after inode_before inode_after dead_pid now cmd
@@ -2654,6 +2712,7 @@ case "${1:-all}" in
   cct)     test_cct ;;
   extra)   test_extra ;;
   sticky)  test_sticky ;;
+  onboarding) test_onboarding ;;
   wallet)  test_wallet ;;
   accounts) test_accounts ;;
   races) test_lock_active_races ;;
@@ -2666,8 +2725,8 @@ case "${1:-all}" in
   runtime) test_runtime_regressions ;;
   final4) test_final4_runtime_security ;;
   fixture) shift; make_fixture "$@"; exit $? ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions; test_final4_runtime_security ;;
-  *) echo "usage: $0 [install|cct|extra|sticky|wallet|accounts|races|diagnostics|runtime|final4|fixture|all]"; exit 2 ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_onboarding; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions; test_final4_runtime_security ;;
+  *) echo "usage: $0 [install|cct|extra|sticky|onboarding|wallet|accounts|races|diagnostics|runtime|final4|fixture|all]"; exit 2 ;;
 esac
 
 echo
