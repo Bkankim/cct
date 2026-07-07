@@ -14,7 +14,7 @@
 #   cct doctor                  → 지갑 구조/권한/잠금 진단 (오프라인)
 #   cct check [라벨]            → 토큰 유효성 점검 (실제 호출)
 #   cct fp|who [라벨]           → 계정 지문 (실제 호출)
-#   cct usage [라벨|--all]      → 구독 사용량 5h/7d 사용률·리셋 (실제 호출, 기본 활성 라벨)
+#   cct usage [라벨|--all]      → 구독 사용량 5h/7d/7f(프리미엄) 사용률·리셋 (실제 호출, 기본 활성 라벨)
 #   cct active                  → 현재 활성(sticky) 라벨 표시
 #   cct refresh                 → 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)
 #   cct off                     → 활성 라벨과 현재 셸 인증 환경 해제
@@ -979,20 +979,43 @@ _cct_usage_remaining() {  # $1=reset epoch, $2=now epoch → "1d13h"/"1h23m"/"45
 }
 
 _cct_usage_one() (
-  local tok H org u5 r5 s5 u7 r7 s7 now
+  local tok H org u5 r5 s5 u7 r7 s7 uo ro so now denied pm
   unset -f read printf tr awk curl date timeout gtimeout perl mktemp chmod cp mv command builtin 2>/dev/null || true
   _cct_validate_label "${1-}" || return 2
   tok="$(_cct_envtok "$(_cct_key "$1")")"
   [ -n "$tok" ] || { printf '  %-8s 토큰없음\n' "$1"; return 0; }
+  # 1차: 프리미엄 모델 프로브 (Claude Code 에뮬레이션 — 시스템 프롬프트+beta+UA 필수).
+  # 성공 응답에만 프리미엄 7d_oi(=7f) 창 헤더가 실려 오고, 에뮬레이션 없이는
+  # 프리미엄 모델이 헤더 없는 429 로 게이트된다. 프로브 비용: 프리미엄 ≤32토큰.
   # fp 와 동일: Authorization 은 argv 노출 없이 curl stdin(@-)으로만 전달
+  pm="${CCT_USAGE_PROBE_MODEL:-claude-fable-5}"
   H="$(
     builtin printf 'Authorization: Bearer %s\n' "$tok" |
       _cct_system curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
         -H @- -H "anthropic-version: 2023-06-01" \
-        -H "anthropic-beta: oauth-2025-04-20" -H "content-type: application/json" \
-        -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+        -H "anthropic-beta: claude-code-20250219,oauth-2025-04-20" \
+        -H "user-agent: claude-cli/2.1.75 (external, cli)" -H "x-app: cli" \
+        -H "content-type: application/json" \
+        -d "{\"model\":\"$pm\",\"max_tokens\":32,\"system\":\"You are Claude Code, Anthropic's official CLI for Claude.\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
         2>/dev/null || true
   )"
+  denied=""
+  case "$(printf '%s\n' "$H" | _cct_system awk 'NR==1{print $2}')" in
+    200) ;;
+    *)
+      denied="$(printf '%s\n' "$H" | _cct_system awk 'NR==1{print $2}')"
+      [ -n "$denied" ] || denied="무응답"
+      # 폴백: 표준 모델 프로브로 일반(5h/7d) 창만이라도 확보
+      H="$(
+        builtin printf 'Authorization: Bearer %s\n' "$tok" |
+          _cct_system curl -s -m 25 -D - -o /dev/null https://api.anthropic.com/v1/messages \
+            -H @- -H "anthropic-version: 2023-06-01" \
+            -H "anthropic-beta: oauth-2025-04-20" -H "content-type: application/json" \
+            -d "{\"model\":\"$CCT_PROBE_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+            2>/dev/null || true
+      )"
+      ;;
+  esac
   org="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | _cct_system tr -d '\r' || true)"
   [ -n "$org" ] || { printf '  %-8s 응답실패\n' "$1"; return 0; }
   u5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
@@ -1001,6 +1024,9 @@ _cct_usage_one() (
   u7="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
   r7="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-reset"{print $2}' | _cct_system tr -d '\r' || true)"
   s7="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d-status"{print $2}' | _cct_system tr -d '\r' || true)"
+  uo="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d_oi-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
+  ro="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d_oi-reset"{print $2}' | _cct_system tr -d '\r' || true)"
+  so="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d_oi-status"{print $2}' | _cct_system tr -d '\r' || true)"
   # CCT_USAGE_NOW: 결정적 테스트용 now 고정 (숫자가 아니면 무시)
   case "${CCT_USAGE_NOW-}" in
     ''|*[!0-9]*) now="$(_cct_system date +%s 2>/dev/null || echo 0)" ;;
@@ -1017,6 +1043,17 @@ _cct_usage_one() (
   printf '  %-6s 7d [%s] %4s  %s%s\n' "" \
     "$(_cct_usage_bar "$pct7")" "$pct7" \
     "$(_cct_usage_when "$(_cct_usage_remaining "$r7" "$now")" "$(_cct_usage_epoch_fmt "$r7")")" "$flag7"
+  # 7f = 프리미엄(fable/opus) 7일 창. 프리미엄 프로브 실패 시 거부 표시, 헤더 없으면 생략.
+  if [ -n "$denied" ]; then
+    printf '  %-6s 7f 프리미엄 프로브 거부(%s) — 창 소진 가능성\n' "" "$denied"
+  elif [ -n "$uo$ro$so" ]; then
+    local flago="" pcto
+    [ -n "$so" ] && [ "$so" != "allowed" ] && flago="  [7f-status:$so]"
+    pcto="$(_cct_usage_pct "$uo")"
+    printf '  %-6s 7f [%s] %4s  %s%s\n' "" \
+      "$(_cct_usage_bar "$pcto")" "$pcto" \
+      "$(_cct_usage_when "$(_cct_usage_remaining "$ro" "$now")" "$(_cct_usage_epoch_fmt "$ro")")" "$flago"
+  fi
 )
 
 _cct_usage() {
@@ -1059,7 +1096,7 @@ _cct_help() {
     "  cct doctor                  지갑 구조·권한·백업·잠금 진단 (오프라인)" \
     "  cct check [라벨]            토큰 유효성 점검 (실제 호출)" \
     "  cct fp [라벨] | cct who [라벨]  계정 지문·중복 점검 (실제 호출)" \
-    "  cct usage [라벨|--all]      구독 사용량 5h/7d 사용률·리셋 (실제 호출, 기본 활성 라벨)" \
+    "  cct usage [라벨|--all]      구독 사용량 5h/7d/7f(프리미엄) 사용률·리셋 (실제 호출, 기본 활성 라벨)" \
     "  cct active                  현재 sticky 활성 라벨 표시" \
     "  cct refresh                 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)" \
     "  cct off                     활성 라벨과 현재 셸 cct 인증 환경 해제" \

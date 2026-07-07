@@ -55,7 +55,7 @@ A `setup-token` is the current mechanism for long-lived use, but its lifetime an
 | `cct doctor` | Diagnose wallet structure, permissions, backup, lock, Claude, and shell as `PASS/WARN/FAIL`, offline | no FAIL `0`; health failure `1`; usage error `2` |
 | `cct check [label]` | Validate token(s) with a real Claude call | valid `0`; invalid/unavailable `1`; no token `2`; all-label mode returns `1` if any fail |
 | `cct fp [label]` / `cct who [label]` | Compare account fingerprints returned by a real call | A validly formed label returns `0` even when the token is missing or the probe response fails (output-only); invalid label `2` |
-| `cct usage [label\|--all]` | Show subscription 5h/7d utilization and reset from real-call headers (defaults to the active label) | Same as fp: output-only `0`; usage or label error `2` |
+| `cct usage [label\|--all]` | Show subscription 5h/7d/7f(premium) utilization and reset from real-call headers (defaults to the active label; premium probe costs ≤32 tokens) | Same as fp: output-only `0`; usage or label error `2` |
 | `cct active` | Show the current sticky active label | success `0` |
 | `cct refresh` | Re-apply the on-disk active label to the current shell environment (sync after switching in another terminal) | success `0`; missing token `1`; usage error `2` |
 | `cct off` | Remove active state and cct auth variables from the current shell | success `0`; state deletion failure `1` |

@@ -140,6 +140,10 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   time remaining) from `/v1/messages` rate-limit headers via a 1-token probe.
   Setup tokens lack the `user:profile` scope, so the official `/api/oauth/usage`
   endpoint returns 403; response headers are the only usage window available.
+  Also renders the premium (fable/opus) 7-day window as a `7f` gauge: the
+  `7d_oi` headers only appear on a premium-model probe with Claude Code
+  emulation (system prompt + beta + UA), costing ≤32 premium tokens per check;
+  on 429 the command falls back to the standard probe and marks `7f` as denied.
 - **Onboarding-flag guard** — before launching, cct sets `hasCompletedOnboarding` to
   true in the Claude config so an env-token launch does not trigger the interactive
   login wizard (the flag is reset by `/logout` or updates). Missing, symlinked, or

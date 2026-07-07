@@ -758,11 +758,14 @@ printf '%s\n' \
   'anthropic-ratelimit-unified-5h-status: allowed' \
   'anthropic-ratelimit-unified-7d-utilization: 0.505' \
   'anthropic-ratelimit-unified-7d-reset: 1000135000' \
-  'anthropic-ratelimit-unified-7d-status: allowed'
+  'anthropic-ratelimit-unified-7d-status: allowed' \
+  'anthropic-ratelimit-unified-7d_oi-utilization: 0.69' \
+  'anthropic-ratelimit-unified-7d_oi-reset: 1000135000' \
+  'anthropic-ratelimit-unified-7d_oi-status: allowed'
 SHIM
   chmod 700 "$sb/bin/curl"
 
-  echo "-- 라벨 지정: 5h/7d 사용률·리셋·남은시간 렌더 (고정 now, TZ=UTC)"
+  echo "-- 라벨 지정: 5h/7d/7f 사용률·리셋·남은시간 렌더 (고정 now, TZ=UTC)"
   out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
     CCT_CURL_ARGV="$sb/curl.argv" CCT_CURL_STDIN="$sb/curl.stdin" \
     TZ=UTC CCT_USAGE_NOW=1000000000 \
@@ -774,6 +777,8 @@ SHIM
   chk_has "7d 남은시간" "리셋 1d13h 후" "$out"
   chk_has "5h 리셋 시각만(HH:MM, UTC)" "(03:10)" "$out"
   chk_has "7d 리셋 날짜+시각(UTC)" "(09-10 15:16)" "$out"
+  chk_has "7f(프리미엄) 게이지 14칸+69%" "7f [██████████████░░░░░░]  69%" "$out"
+  chk_has "7f 남은시간" "리셋 1d13h 후" "$out"
   chk_not_has "토큰이 출력에 없다" "$tok_secret" "$out"
   chk_not_has "토큰이 curl argv에 없다" "$tok_secret" "$(cat "$sb/curl.argv" 2>/dev/null)"
   chk "토큰은 curl stdin으로만" "Authorization: Bearer $tok_secret" "$(cat "$sb/curl.stdin" 2>/dev/null)"
@@ -846,6 +851,34 @@ SHIM
   out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
     bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"
   chk_has "rejected 상태 표기" "5h-status:rejected" "$out"
+  chk_not_has "7d_oi 헤더 없으면 7f 줄 생략" "7f" "$out"
+
+  echo "-- 프리미엄 프로브 429 → haiku 폴백 + 7f 거부 표시"
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+# 요청 JSON 은 -d 로 argv 에 실린다 — 모델 매칭은 $* 기준
+case "$*" in
+  *claude-fable-5*|*"You are Claude Code"*)
+    printf '%s\n' 'HTTP/1.1 429 ' 'x-should-retry: true'
+    ;;
+  *)
+    printf '%s\n' \
+      'HTTP/1.1 200 OK' \
+      'anthropic-organization-id: org123456789' \
+      'anthropic-ratelimit-unified-5h-utilization: 0.25' \
+      'anthropic-ratelimit-unified-5h-reset: 1000005000' \
+      'anthropic-ratelimit-unified-7d-utilization: 0.505' \
+      'anthropic-ratelimit-unified-7d-reset: 1000135000'
+    ;;
+esac
+SHIM
+  chmod 700 "$sb/bin/curl"
+  out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
+    bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage alpha" 2>&1)"; rc=$?
+  chk "프리미엄 429 폴백 rc=0" "0" "$rc"
+  chk_has "폴백: 5h 게이지 유지" "5h [█████░░░░░░░░░░░░░░░]  25%" "$out"
+  chk_has "폴백: 7f 거부 표시" "7f 프리미엄 프로브 거부(429)" "$out"
 
   echo "-- 인자 없음: 활성 라벨 프로브 / 활성 없으면 rc=2"
   printf 'alpha\n' > "$sb/active"; chmod 600 "$sb/active"
