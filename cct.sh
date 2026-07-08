@@ -186,7 +186,12 @@ _cct_list() {
     [ -n "$lc" ] || continue
     v="$(_cct_envtok "$(_cct_key "$lc")")"
     if [ "$lc" = "$active" ]; then
-      [ -n "$v" ] && echo "  cct $lc   ← 활성" || echo "  cct $lc   (비어있음)   ← 활성"
+      # 활성 라벨: 터미널이면 붉은 글씨로 강조, 파이프/리다이렉트면 텍스트 마커 폴백
+      if [ -t 1 ]; then
+        [ -n "$v" ] && printf '  \033[31mcct %s\033[0m\n' "$lc" || printf '  \033[31mcct %s   (비어있음)\033[0m\n' "$lc"
+      else
+        [ -n "$v" ] && echo "  cct $lc   ← 활성" || echo "  cct $lc   (비어있음)   ← 활성"
+      fi
     else
       [ -n "$v" ] && echo "  cct $lc" || echo "  cct $lc   (비어있음)"
     fi
