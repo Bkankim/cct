@@ -896,6 +896,7 @@ SHIM
   chk "--all rc=0" "0" "$rc"
   chk_has "--all: alpha 포함" "alpha" "$out"
   chk_has "--all: beta 포함" "beta" "$out"
+  chk "--all: 라벨 사이 빈 줄 1개 (2라벨)" "1" "$(printf '%s' "$out" | grep -c '^$')"
 
   echo "-- 실패 경로: 토큰없음·응답실패·라벨 오류·잉여 인자"
   out="$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" \
