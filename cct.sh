@@ -983,7 +983,7 @@ _cct_usage_one() (
   unset -f read printf tr awk curl date timeout gtimeout perl mktemp chmod cp mv command builtin 2>/dev/null || true
   _cct_validate_label "${1-}" || return 2
   tok="$(_cct_envtok "$(_cct_key "$1")")"
-  [ -n "$tok" ] || { printf '  %-8s 토큰없음\n' "$1"; return 0; }
+  [ -n "$tok" ] || { printf '  %-6s 토큰없음\n' "$1"; return 0; }
   # 1차: 프리미엄 모델 프로브 (Claude Code 에뮬레이션 — 시스템 프롬프트+beta+UA 필수).
   # 성공 응답에만 프리미엄 7d_oi(=7f) 창 헤더가 실려 오고, 에뮬레이션 없이는
   # 프리미엄 모델이 헤더 없는 429 로 게이트된다. 프로브 비용: 프리미엄 ≤32토큰.
@@ -1017,7 +1017,7 @@ _cct_usage_one() (
       ;;
   esac
   org="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | _cct_system tr -d '\r' || true)"
-  [ -n "$org" ] || { printf '  %-8s 응답실패\n' "$1"; return 0; }
+  [ -n "$org" ] || { printf '  %-6s 응답실패\n' "$1"; return 0; }
   u5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
   r5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-reset"{print $2}' | _cct_system tr -d '\r' || true)"
   s5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-status"{print $2}' | _cct_system tr -d '\r' || true)"
@@ -1070,10 +1070,15 @@ _cct_usage() {
   fi
   echo "구독 사용량 (실호출 1토큰 프로브)"
   if [ "$label" = "--all" ]; then
-    local labels lc
+    local labels lc first=1
     labels="$(_cct_labels)"
     [ -n "$labels" ] || { echo "  (등록된 계정 없음)"; return 0; }
-    printf '%s\n' "$labels" | while IFS= read -r lc; do [ -n "$lc" ] && _cct_usage_one "$lc"; done
+    # 라벨마다 2~3줄 게이지가 붙어 보이지 않게 라벨 사이 빈 줄로 구분
+    printf '%s\n' "$labels" | while IFS= read -r lc; do
+      [ -n "$lc" ] || continue
+      if [ "$first" = 1 ]; then first=0; else echo ""; fi
+      _cct_usage_one "$lc"
+    done
     return 0
   fi
   _cct_usage_one "$label"
