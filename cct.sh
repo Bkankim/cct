@@ -987,8 +987,15 @@ _cct_usage_one() (
   local tok H org u5 r5 s5 u7 r7 s7 uo ro so now denied pm
   unset -f read printf tr awk curl date timeout gtimeout perl mktemp chmod cp mv command builtin 2>/dev/null || true
   _cct_validate_label "${1-}" || return 2
+  # 활성 라벨은 TTY 에서 붉은색 강조 — %-6s 패딩을 먼저 하고 ANSI 로 감싸야
+  # 이스케이프 바이트가 폭 계산에 끼어 게이지 정렬이 틀어지지 않는다.
+  local lbl
+  lbl="$(printf '%-6s' "$1")"
+  if [ -t 1 ] && [ "$1" = "$(_cct_active_label)" ]; then
+    lbl="$(printf '\033[31m%s\033[0m' "$lbl")"
+  fi
   tok="$(_cct_envtok "$(_cct_key "$1")")"
-  [ -n "$tok" ] || { printf '  %-6s 토큰없음\n' "$1"; return 0; }
+  [ -n "$tok" ] || { printf '  %s 토큰없음\n' "$lbl"; return 0; }
   # 1차: 프리미엄 모델 프로브 (Claude Code 에뮬레이션 — 시스템 프롬프트+beta+UA 필수).
   # 성공 응답에만 프리미엄 7d_oi(=7f) 창 헤더가 실려 오고, 에뮬레이션 없이는
   # 프리미엄 모델이 헤더 없는 429 로 게이트된다. 프로브 비용: 프리미엄 ≤32토큰.
@@ -1022,7 +1029,7 @@ _cct_usage_one() (
       ;;
   esac
   org="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | _cct_system tr -d '\r' || true)"
-  [ -n "$org" ] || { printf '  %-6s 응답실패\n' "$1"; return 0; }
+  [ -n "$org" ] || { printf '  %s 응답실패\n' "$lbl"; return 0; }
   u5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
   r5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-reset"{print $2}' | _cct_system tr -d '\r' || true)"
   s5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-status"{print $2}' | _cct_system tr -d '\r' || true)"
@@ -1042,7 +1049,7 @@ _cct_usage_one() (
   [ -n "$s7" ] && [ "$s7" != "allowed" ] && flag7="  [7d-status:$s7]"
   pct5="$(_cct_usage_pct "$u5")"; pct7="$(_cct_usage_pct "$u7")"
   # 라벨당 2줄 게이지: 5h 는 5시간 이내 리셋이라 시각만(HH:MM), 7d 는 날짜 포함
-  printf '  %-6s 5h [%s] %4s  %s%s\n' "$1" \
+  printf '  %s 5h [%s] %4s  %s%s\n' "$lbl" \
     "$(_cct_usage_bar "$pct5")" "$pct5" \
     "$(_cct_usage_when "$(_cct_usage_remaining "$r5" "$now")" "$(_cct_usage_epoch_fmt "$r5" '%H:%M')")" "$flag5"
   printf '  %-6s 7d [%s] %4s  %s%s\n' "" \
