@@ -1197,12 +1197,13 @@ _cct_apply_env() {  # $1=token — 현재 셸에 토큰(+웹기능 차단 플래
 # gjc 미사용 머신에서는 조용히 통과한다. DB 경로는 CCT_GJC_DB 로 재지정 가능(테스트용).
 _cct_gjc_guard() {
   [ "${CCT_GJC_WARN:-1}" = "0" ] && return 0
-  command -v sqlite3 >/dev/null 2>&1 || return 0
   local db n
   db="${CCT_GJC_DB:-$HOME/.gjc/agent/agent.db}"
+  case "$db" in -*) return 0 ;; esac   # '-' 시작 경로는 sqlite3 옵션으로 오인될 수 있어 거부
   [ -f "$db" ] || return 0
-  # disabled_cause 가 있는 행은 gjc 가 무시(/logout 은 소프트 삭제)하므로 활성 행만 센다
-  n="$(sqlite3 "$db" "SELECT count(*) FROM auth_credentials WHERE provider='anthropic' AND disabled_cause IS NULL;" 2>/dev/null)" || return 0
+  # disabled_cause 가 있는 행은 gjc 가 무시(/logout 은 소프트 삭제)하므로 활성 행만 센다.
+  # _cct_system: PATH 심 우회(/usr/bin·/bin 고정), -readonly: 실행 중인 gjc 잠금·WAL 에 간섭 금지
+  n="$(_cct_system sqlite3 -readonly "$db" "SELECT count(*) FROM auth_credentials WHERE provider='anthropic' AND disabled_cause IS NULL;" 2>/dev/null)" || return 0
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -gt 0 ] && echo "⚠️  gjc 저장 anthropic 자격증명 ${n}건 → cct 스위칭이 gjc 에 안 먹음 (gjc 에서 /logout 필요)" >&2
   return 0

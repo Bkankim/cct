@@ -676,9 +676,9 @@ test_sticky(){
   chk "refresh: 활성 없음 → ANTHROPIC 미러 해제" "" "${ANTHROPIC_OAUTH_TOKEN:-}"
 
   echo "-- gjc 연동 가드 (CCT_GJC_DB 픽스처)"
-  if command -v sqlite3 >/dev/null 2>&1; then
+  if [ -x /usr/bin/sqlite3 ] || [ -x /bin/sqlite3 ]; then   # 가드와 동일한 _cct_system 해석 기준
     gdb="$sb/gjc-agent.db"
-    sqlite3 "$gdb" "CREATE TABLE auth_credentials (provider TEXT, disabled_cause TEXT);
+    _cct_system sqlite3 "$gdb" "CREATE TABLE auth_credentials (provider TEXT, disabled_cause TEXT);
 INSERT INTO auth_credentials VALUES ('anthropic', NULL);
 INSERT INTO auth_credentials VALUES ('anthropic', 'logout');
 INSERT INTO auth_credentials VALUES ('openai', NULL);"
@@ -686,8 +686,13 @@ INSERT INTO auth_credentials VALUES ('openai', NULL);"
     chk "gjc guard: CCT_GJC_WARN=0 이면 침묵" "" "$(CCT_GJC_DB="$gdb" _cct_gjc_guard 2>&1)"
     chk "gjc guard: DB 없으면 침묵" "" "$(CCT_GJC_WARN=1 CCT_GJC_DB="$sb/no-such.db" _cct_gjc_guard 2>&1)"
     chk "gjc guard: 경고여도 rc=0" "0" "$(CCT_GJC_WARN=1 CCT_GJC_DB="$gdb" _cct_gjc_guard >/dev/null 2>&1; echo $?)"
+    : > "$sb/-cmd"   # 옵션 오인 유도용 파일 — 실제 파일이 있어도 '-' 경로는 거부돼야 한다
+    chk "gjc guard: '-' 시작 경로는 파일이 있어도 침묵" "" \
+      "$(cd "$sb" && CCT_GJC_WARN=1 CCT_GJC_DB=-cmd _cct_gjc_guard 2>&1)"
+    chk "gjc guard: 잠긴/깨진 DB 도 침묵" "" \
+      "$(printf 'not-a-sqlite-db' > "$sb/broken.db"; CCT_GJC_WARN=1 CCT_GJC_DB="$sb/broken.db" _cct_gjc_guard 2>&1)"
   else
-    echo "  (sqlite3 없음 → gjc guard 픽스처 생략)"
+    echo "  (시스템 sqlite3 없음 → gjc guard 픽스처 생략)"
   fi
 
   echo "-- CCT_STICKY=0 이면 inline 만 (셸/디스크 미변경)"
