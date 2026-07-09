@@ -857,6 +857,9 @@ _cct_add() {
   [ "$rc" -eq 0 ] || return "$rc"
   if [ "${CCT_STICKY:-1}" != "0" ] && [ "$(_cct_active_label)" = "$label" ]; then
     export CLAUDE_CODE_OAUTH_TOKEN
+    # 미러는 이름만 export — 값은 아래 일반 대입으로만 흐른다
+    # (하이재킹된 export 함수가 회전 토큰 값을 관찰하지 못하게, 회전 봉쇄 계약 유지)
+    export ANTHROPIC_OAUTH_TOKEN
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
       unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
       case "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL+x}${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC+x}${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH+x}" in
@@ -886,6 +889,10 @@ _cct_add() {
           exit 1
         }
     )"
+    rc=$?
+    # gjc/aside 등 env 상속 도구도 갱신 토큰 즉시 추종 (일반 대입 — builtin 미경유)
+    ANTHROPIC_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
+    return "$rc"
   fi
 }
 
@@ -1187,14 +1194,15 @@ _cct_apply_env() {  # $1=token — 현재 셸에 토큰(+웹기능 차단 플래
 # gjc(가재코드) 연동 가드 — 선택적: gjc 는 저장 자격증명(agent.db)이 env 토큰보다
 # 우선이라, 저장분이 남아있으면 cct 스위칭이 gjc 에 안 먹는다. 스위칭 때마다 점검·경고만
 # 한다 (자동 삭제 금지 — 실행 중인 gjc 가 다시 써넣을 수 있음). CCT_GJC_WARN=0 으로 끔.
-# gjc 미사용 머신에서는 조용히 통과한다.
+# gjc 미사용 머신에서는 조용히 통과한다. DB 경로는 CCT_GJC_DB 로 재지정 가능(테스트용).
 _cct_gjc_guard() {
   [ "${CCT_GJC_WARN:-1}" = "0" ] && return 0
   command -v sqlite3 >/dev/null 2>&1 || return 0
-  [ -f "$HOME/.gjc/agent/agent.db" ] || return 0
-  local n
+  local db n
+  db="${CCT_GJC_DB:-$HOME/.gjc/agent/agent.db}"
+  [ -f "$db" ] || return 0
   # disabled_cause 가 있는 행은 gjc 가 무시(/logout 은 소프트 삭제)하므로 활성 행만 센다
-  n="$(sqlite3 "$HOME/.gjc/agent/agent.db" "SELECT count(*) FROM auth_credentials WHERE provider='anthropic' AND disabled_cause IS NULL;" 2>/dev/null)" || return 0
+  n="$(sqlite3 "$db" "SELECT count(*) FROM auth_credentials WHERE provider='anthropic' AND disabled_cause IS NULL;" 2>/dev/null)" || return 0
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -gt 0 ] && echo "⚠️  gjc 저장 anthropic 자격증명 ${n}건 → cct 스위칭이 gjc 에 안 먹음 (gjc 에서 /logout 필요)" >&2
   return 0
@@ -1421,7 +1429,7 @@ _cct_status() {
     printf 'claude: %s\n' "$cb"
     if version="$(
       (
-        unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+        unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
         _cct_run_limited 5 "$cb" --version </dev/null 2>/dev/null
       )
@@ -1704,7 +1712,7 @@ _cct_rm() {
   if [ "$_cct_wallet_active_changed" -eq 1 ] ||
     { [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] &&
       [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$removed_token" ]; }; then
-    unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
   fi
   echo "✓ [$label] 계정 삭제 완료"
@@ -1814,10 +1822,11 @@ _cct_launch_label() {
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
       (
         unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
-        CLAUDE_CODE_OAUTH_TOKEN="$tok" "${command_args[@]}" "$@"
+        CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" "${command_args[@]}" "$@"
       )
     else
       CLAUDE_CODE_OAUTH_TOKEN="$tok" \
+        ANTHROPIC_OAUTH_TOKEN="$tok" \
         CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 \
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
         CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1 \

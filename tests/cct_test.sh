@@ -6,6 +6,8 @@
 # Each test runs in an isolated mktemp HOME with a fake `claude` shim on PATH.
 set -u
 
+export CCT_GJC_WARN=0   # 호스트의 gjc 상태가 테스트 출력에 새지 않게 기본 차단 (전용 블록에서만 켬)
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0; FAIL=0
 chk(){ # name expected actual
@@ -656,6 +658,7 @@ test_sticky(){
   printf 'good\n' > "$sb/active"   # 다른 터미널이 good 으로 전환했다고 가정
   cct refresh >/dev/null 2>&1
   chk "refresh 후 현재 셸 토큰 == good" "sk-good" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "refresh 후 ANTHROPIC 미러 == good" "sk-good" "${ANTHROPIC_OAUTH_TOKEN:-}"
   chk_has "이후 그냥 claude 가 갱신된 토큰 사용" "tok=[sk-good]" "$(claude 2>&1)"
   chk "refresh 사용법 오류 rc=2" "2" "$(cct refresh extra >/dev/null 2>&1; echo $?)"
 
@@ -663,15 +666,34 @@ test_sticky(){
   cct off >/dev/null 2>&1
   chk "active 파일 제거" "no" "$([ -e "$sb/active" ] && echo yes || echo no)"
   chk "현재 셸 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "현재 셸 ANTHROPIC 미러 해제" "" "${ANTHROPIC_OAUTH_TOKEN:-}"
 
   echo "-- 활성 없음에서 cct refresh 는 현재 셸 env 를 해제"
   export CLAUDE_CODE_OAUTH_TOKEN="sk-stale"
+  export ANTHROPIC_OAUTH_TOKEN="sk-stale"
   cct refresh >/dev/null 2>&1
   chk "refresh: 활성 없음 → 잔존 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "refresh: 활성 없음 → ANTHROPIC 미러 해제" "" "${ANTHROPIC_OAUTH_TOKEN:-}"
+
+  echo "-- gjc 연동 가드 (CCT_GJC_DB 픽스처)"
+  if command -v sqlite3 >/dev/null 2>&1; then
+    gdb="$sb/gjc-agent.db"
+    sqlite3 "$gdb" "CREATE TABLE auth_credentials (provider TEXT, disabled_cause TEXT);
+INSERT INTO auth_credentials VALUES ('anthropic', NULL);
+INSERT INTO auth_credentials VALUES ('anthropic', 'logout');
+INSERT INTO auth_credentials VALUES ('openai', NULL);"
+    chk_has "gjc guard: 활성 anthropic 1건 경고" "1건" "$(CCT_GJC_WARN=1 CCT_GJC_DB="$gdb" _cct_gjc_guard 2>&1)"
+    chk "gjc guard: CCT_GJC_WARN=0 이면 침묵" "" "$(CCT_GJC_DB="$gdb" _cct_gjc_guard 2>&1)"
+    chk "gjc guard: DB 없으면 침묵" "" "$(CCT_GJC_WARN=1 CCT_GJC_DB="$sb/no-such.db" _cct_gjc_guard 2>&1)"
+    chk "gjc guard: 경고여도 rc=0" "0" "$(CCT_GJC_WARN=1 CCT_GJC_DB="$gdb" _cct_gjc_guard >/dev/null 2>&1; echo $?)"
+  else
+    echo "  (sqlite3 없음 → gjc guard 픽스처 생략)"
+  fi
 
   echo "-- CCT_STICKY=0 이면 inline 만 (셸/디스크 미변경)"
-  cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" CCT_STICKY=0 bash -c ". '$REPO/cct.sh'; cct good >/dev/null 2>&1; echo tok=[\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]; [ -e '$sb/active' ] && echo FILE-YES || echo FILE-NO" 2>&1)"
+  cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" CCT_STICKY=0 bash -c ". '$REPO/cct.sh'; cct good >/dev/null 2>&1; echo tok=[\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]; echo anth=[\${ANTHROPIC_OAUTH_TOKEN:-<unset>}]; [ -e '$sb/active' ] && echo FILE-YES || echo FILE-NO" 2>&1)"
   chk_has "CCT_STICKY=0: 셸에 토큰 안 남음" "tok=[<unset>]" "$cap"
+  chk_has "CCT_STICKY=0: 셸에 ANTHROPIC 미러 안 남음" "anth=[<unset>]" "$cap"
   chk_has "CCT_STICKY=0: active 파일 안 생김" "FILE-NO" "$cap"
 }
 
@@ -1221,9 +1243,10 @@ test_accounts(){
   chk "characterization sticky direct launch rc=0" "0" "$rc"
   chk "characterization sticky direct writes active" "alpha" "$(cat "$CCT_ACTIVE_FILE" 2>/dev/null)"
   chk "characterization sticky direct exports token" "fixture-alpha" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "characterization sticky direct mirrors anthropic token" "fixture-alpha" "${ANTHROPIC_OAUTH_TOKEN:-}"
   export CCT_STICKY=0
   rm -f "$CCT_ACTIVE_FILE"
-  unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+  unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
 
   if [ "${CCT_TEST_CASE:-}" = "lifecycle-signals" ]; then

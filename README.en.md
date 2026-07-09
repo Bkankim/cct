@@ -67,6 +67,8 @@ Sticky mode is enabled by default. `cct <label>` remembers the selected account 
 
 Before launching, `cct <label>` fixes the `hasCompletedOnboarding` flag in the Claude config so an env-token launch does not trigger the interactive login wizard (the flag is reset by `/logout` or updates). Missing, symlinked, or malformed configs are left untouched, and the file mode is preserved. Disable with `CCT_FIX_ONBOARDING=0`.
 
+When applying or clearing an account, cct exports and unsets `ANTHROPIC_OAUTH_TOKEN` alongside `CLAUDE_CODE_OAUTH_TOKEN`, so env-inheriting tools (gjc, aside, ...) follow the active account. gjc keeps stored credentials (agent.db) that take precedence over env tokens, so cct prints a warning on switch/refresh while active anthropic credentials remain there (it never deletes them). Disable with `CCT_GJC_WARN=0`; machines without gjc pass through silently.
+
 ## Portability and the OSS boundary
 
 Real credentials live only outside the repository in `~/.claude/tokens.env` (or `CCT_ENV_FILE`). The public repository contains no real wallet, and cloning it grants access to no account. `.gitignore` and the installer's global ignore entries reduce accidents; they are not a security boundary, and users remain responsible for never adding credential files to Git.
