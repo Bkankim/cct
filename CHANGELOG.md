@@ -153,4 +153,11 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   suppress Advisor/background plugin refresh/nonessential web calls by default because
   `claude setup-token` long-lived OAuth tokens are inference-only in current Claude Code.
   Set `CCT_DISABLE_WEB_FEATURES=0` to opt back in.
+- **Env-inheriting tool follow-through (gjc/aside)** — applying an account also
+  exports `ANTHROPIC_OAUTH_TOKEN` with the same value (cleared on `off`/`refresh`/
+  active `rm`; mirrored on `add` rotation and non-sticky inline launches), so tools
+  that inherit the environment follow the active cct account. A guard warns on
+  switch/refresh when gjc still holds active stored anthropic credentials in its
+  agent.db, because stored credentials beat env tokens there; it never deletes them.
+  Disable with `CCT_GJC_WARN=0` (DB path override for tests: `CCT_GJC_DB`).
 - **Test suite** — `tests/cct_test.sh` (behavioral, no network, fake `claude` shim).
