@@ -159,5 +159,7 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   that inherit the environment follow the active cct account. A guard warns on
   switch/refresh when gjc still holds active stored anthropic credentials in its
   agent.db, because stored credentials beat env tokens there; it never deletes them.
-  Disable with `CCT_GJC_WARN=0` (DB path override for tests: `CCT_GJC_DB`).
+  Disable with `CCT_GJC_WARN=0` (DB path override for tests: `CCT_GJC_DB`). The guard
+  opens the DB read-only through the system sqlite3 (`/usr/bin`, `/bin` — no PATH
+  shims) and rejects dash-prefixed DB paths so they cannot be parsed as options.
 - **Test suite** — `tests/cct_test.sh` (behavioral, no network, fake `claude` shim).
