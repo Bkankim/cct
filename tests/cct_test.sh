@@ -32,7 +32,11 @@ if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
   if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] ||
     [ -n "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}" ] ||
     [ -n "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}" ] ||
-    [ -n "${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-}" ]; then
+    [ -n "${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-}" ] ||
+    [ -n "${DISABLE_TELEMETRY:-}" ] ||
+    [ -n "${DISABLE_ERROR_REPORTING:-}" ] ||
+    [ -n "${DISABLE_BUG_COMMAND:-}" ] ||
+    [ -n "${DISABLE_FEEDBACK_COMMAND:-}" ]; then
     printf '%s\n' "VERSION_ENV_LEAK"
   else
     printf '%s\n' "Claude Code fixture 1.2.3"
@@ -40,7 +44,7 @@ if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
   exit 0
 fi
 echo "CLAUDE args=[$*] argc=[$#] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
-echo "CLAUDE web=[${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}]" >&2
+echo "CLAUDE web=[${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${DISABLE_TELEMETRY:-<unset>},${DISABLE_ERROR_REPORTING:-<unset>},${DISABLE_BUG_COMMAND:-<unset>},${DISABLE_FEEDBACK_COMMAND:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>}]" >&2
 case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in *BAD*) exit 1 ;; esac
 exit 0
 SHIM
@@ -508,9 +512,11 @@ test_cct(){
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
   export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
   cap="$(cct use 2>&1 >/dev/null)"
-  chk_has "labeled run disables web-only feature calls" "web=[1,1,1]" "$cap"
+  # 7번째 필드(NONESSENTIAL)=<unset> 는 마이그레이션 회귀 검증: 부모 셸이 구버전 잔재로
+  # NONESSENTIAL=1 을 export(L512)했어도 기본 라벨 실행은 자식으로 상속시키지 않고 unset 한다.
+  chk_has "labeled run disables web-only feature calls" "web=[1,1,1,1,1,1,<unset>]" "$cap"
   cap="$(CCT_DISABLE_WEB_FEATURES=0 cct use 2>&1 >/dev/null)"
-  chk_has "CCT_DISABLE_WEB_FEATURES=0 opt-out" "web=[<unset>,<unset>,<unset>]" "$cap"
+  chk_has "CCT_DISABLE_WEB_FEATURES=0 opt-out" "web=[<unset>,<unset>,<unset>,<unset>,<unset>,<unset>,<unset>]" "$cap"
   chk "opt-out preserves parent web disables" "1,1,1" \
     "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}"
 
@@ -650,6 +656,15 @@ test_sticky(){
   chk_has "cct active 표시" "활성 프로필: good" "$(cct active 2>&1)"
   chk_has "이후 그냥 claude 가 활성 토큰 사용" "tok=[sk-good]" "$(claude 2>&1)"
 
+  echo "-- Site A: 구버전 잔재 NONESSENTIAL 은 in-shell sticky 라벨 실행에서 unset + NEW export"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # 구버전 cct 가 sticky 로 상속시킨 잔재 시뮬레이션
+  cct good >/dev/null 2>&1   # 명령치환 아닌 현재 셸 실행 → _cct_apply_env 가 harness 셸을 변경
+  chk "Site A: 라벨 실행이 NONESSENTIAL 잔재를 harness 셸에서 해제" "" "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}"
+  chk "Site A: 라벨 실행이 NEW 4종을 harness 셸에 남김" "1,1,1,1" \
+    "${DISABLE_TELEMETRY:-<unset>},${DISABLE_ERROR_REPORTING:-<unset>},${DISABLE_BUG_COMMAND:-<unset>},${DISABLE_FEEDBACK_COMMAND:-<unset>}"
+  chk_has "Site A: 자식 claude 는 NONESSENTIAL 상속 없이(7번째 <unset>) NEW 관측" \
+    "web=[1,1,1,1,1,1,<unset>]" "$(claude 2>&1)"
+
   echo "-- 새 셸(source)도 활성 프로필 자동 로드"
   cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" bash -c ". '$REPO/cct.sh'; claude" 2>&1)"
   chk_has "새 셸: 자동 로드된 토큰으로 claude" "tok=[sk-good]" "$cap"
@@ -673,13 +688,24 @@ test_sticky(){
   chk "active 파일 제거" "no" "$([ -e "$sb/active" ] && echo yes || echo no)"
   chk "현재 셸 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
   chk "현재 셸 ANTHROPIC 미러 해제" "" "${ANTHROPIC_OAUTH_TOKEN:-}"
+  # off 는 NEW 4종 비필수 웹 차단 플래그도 해제한다(앞선 cct 실행이 1 로 export 해 둔 상태).
+  chk "off: DISABLE_TELEMETRY 해제" "" "${DISABLE_TELEMETRY:-}"
+  chk "off: DISABLE_ERROR_REPORTING 해제" "" "${DISABLE_ERROR_REPORTING:-}"
+  chk "off: DISABLE_BUG_COMMAND 해제" "" "${DISABLE_BUG_COMMAND:-}"
+  chk "off: DISABLE_FEEDBACK_COMMAND 해제" "" "${DISABLE_FEEDBACK_COMMAND:-}"
 
   echo "-- 활성 없음에서 cct refresh 는 현재 셸 env 를 해제"
   export CLAUDE_CODE_OAUTH_TOKEN="sk-stale"
   export ANTHROPIC_OAUTH_TOKEN="sk-stale"
+  export DISABLE_TELEMETRY=stale DISABLE_ERROR_REPORTING=stale DISABLE_BUG_COMMAND=stale DISABLE_FEEDBACK_COMMAND=stale
   cct refresh >/dev/null 2>&1
   chk "refresh: 활성 없음 → 잔존 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
   chk "refresh: 활성 없음 → ANTHROPIC 미러 해제" "" "${ANTHROPIC_OAUTH_TOKEN:-}"
+  # refresh 도 활성 없음이면 NEW 4종 비필수 웹 차단 플래그를 해제한다.
+  chk "refresh 해제: DISABLE_TELEMETRY 클리어" "" "${DISABLE_TELEMETRY:-}"
+  chk "refresh 해제: DISABLE_ERROR_REPORTING 클리어" "" "${DISABLE_ERROR_REPORTING:-}"
+  chk "refresh 해제: DISABLE_BUG_COMMAND 클리어" "" "${DISABLE_BUG_COMMAND:-}"
+  chk "refresh 해제: DISABLE_FEEDBACK_COMMAND 클리어" "" "${DISABLE_FEEDBACK_COMMAND:-}"
 
   echo "-- gjc 연동 가드 (CCT_GJC_DB 픽스처)"
   if [ -x /usr/bin/sqlite3 ] || [ -x /bin/sqlite3 ]; then   # 가드와 동일한 _cct_system 해석 기준
@@ -1273,7 +1299,8 @@ test_accounts(){
   export CCT_STICKY=0
   rm -f "$CCT_ACTIVE_FILE"
   unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH \
+    DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
 
   if [ "${CCT_TEST_CASE:-}" = "lifecycle-signals" ]; then
     echo "-- TERM after wallet commit restores rename and active rm transactions"
@@ -1467,6 +1494,9 @@ SHIM
   chk "sticky active file mode 600" "600" "$(wallet_mode "$CCT_ACTIVE_FILE")"
 
   echo "-- remove confirms, backs up, and clears active only after commit"
+  # 비활성 계정 rm 은 현재 셸 인증 env 를 건드리지 않아야 한다(use != active=beta, 토큰도 불일치).
+  # 센티넬을 harness 셸(명령치환/파이프 서브셸이 아닌 현재 셸)에 두고 rm 후 보존을 검증한다.
+  export CLAUDE_CODE_OAUTH_TOKEN=nonactive-sentinel
   env_before="${CLAUDE_CODE_OAUTH_TOKEN:-}"
   cct rm use --force >/dev/null 2>&1; rc=$?
   chk "forced non-active rm rc=0" "0" "$rc"
@@ -1474,8 +1504,15 @@ SHIM
   chk "forced non-active rm preserves env" "$env_before" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
   chk "forced rm removes account" "0" "$(grep -c '^CCT_TOKEN_USE=' "$CCT_ENV_FILE" || true)"
 
+  # 활성(beta) sticky 세션이 남겼을 인증/웹 env 를 harness 셸에 재현한다. 명령치환·파이프
+  # 서브셸이 아니라 현재 셸에 두어야 활성 계정 rm 의 unset 이 harness 셸에 도달했는지 검증된다.
+  export CLAUDE_CODE_OAUTH_TOKEN=fixture-beta ANTHROPIC_OAUTH_TOKEN=fixture-beta
+  export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # 구버전 잔재 시뮬레이션
+  export DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_BUG_COMMAND=1 DISABLE_FEEDBACK_COMMAND=1
   before="$(wallet_sha "$CCT_ENV_FILE")"
-  printf 'y\n' | cct rm beta >/dev/null 2>&1; rc=$?
+  # 파이프 오른쪽은 서브셸이라 unset 이 harness 셸에 못 미친다 → 현재 셸 herestring 으로 확인 입력.
+  cct rm beta >/dev/null 2>&1 <<<'y'; rc=$?
   chk "confirmed active rm rc=0" "0" "$rc"
   chk "confirmed rm removes exact key" "0" "$(grep -c '^CCT_TOKEN_BETA=' "$CCT_ENV_FILE" || true)"
   chk "confirmed rm removes exact annotation" "0" "$(grep -c '^#cctlabel:CCT_TOKEN_BETA=' "$CCT_ENV_FILE" || true)"
@@ -1484,6 +1521,13 @@ SHIM
   chk "confirmed rm backup mode 600" "600" "$(wallet_mode "$CCT_ENV_FILE.bak")"
   chk "confirmed active rm clears active file" "no" "$([ -e "$CCT_ACTIVE_FILE" ] && echo yes || echo no)"
   chk "confirmed active rm clears token env" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "confirmed active rm clears ANTHROPIC mirror" "" "${ANTHROPIC_OAUTH_TOKEN:-}"
+  chk "confirmed active rm clears inherited NONESSENTIAL" "" "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}"
+  # 활성 계정 rm 은 NEW 4종 비필수 웹 차단 플래그도 함께 해제한다.
+  chk "confirmed active rm clears DISABLE_TELEMETRY" "" "${DISABLE_TELEMETRY:-}"
+  chk "confirmed active rm clears DISABLE_ERROR_REPORTING" "" "${DISABLE_ERROR_REPORTING:-}"
+  chk "confirmed active rm clears DISABLE_BUG_COMMAND" "" "${DISABLE_BUG_COMMAND:-}"
+  chk "confirmed active rm clears DISABLE_FEEDBACK_COMMAND" "" "${DISABLE_FEEDBACK_COMMAND:-}"
 
   echo "-- rename preserves bytes and moves active state"
   printf '%s\n' \
@@ -2152,18 +2196,22 @@ SHIM
         . '$REPO/cct.sh'
         CCT_DISABLE_WEB_FEATURES=0
         cct add alpha <<< runtime-alpha-new >/dev/null
-        printf 'token=[%s] web=[%s,%s,%s]\\n' \
+        printf 'token=[%s] web=[%s,%s,%s,%s,%s,%s,%s]\\n' \
           \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\" \
           \"\${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>}\" \
-          \"\${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>}\" \
-          \"\${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}\"
+          \"\${DISABLE_TELEMETRY:-<unset>}\" \
+          \"\${DISABLE_ERROR_REPORTING:-<unset>}\" \
+          \"\${DISABLE_BUG_COMMAND:-<unset>}\" \
+          \"\${DISABLE_FEEDBACK_COMMAND:-<unset>}\" \
+          \"\${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}\" \
+          \"\${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>}\"
         cct add beta <<< runtime-beta-new >/dev/null
         printf 'after-nonactive=[%s]\\n' \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\"
       " 2>&1
   )"; rc=$?
   chk "active and non-active rotations -> 0" "0" "$rc"
   chk_has "active rotation refreshes current token and web env" \
-    "token=[runtime-alpha-new] web=[<unset>,<unset>,<unset>]" "$out"
+    "token=[runtime-alpha-new] web=[<unset>,<unset>,<unset>,<unset>,<unset>,<unset>,<unset>]" "$out"
   chk_has "non-active rotation preserves current token" \
     "after-nonactive=[runtime-alpha-new]" "$out"
   out="$(
@@ -2466,6 +2514,10 @@ test_final4_runtime_security(){
               }
               ;;
           esac
+          # 소스타임 sticky 자동로드(Site A) 뒤에 부모 셸에 구버전 잔재 NONESSENTIAL 을 심는다.
+          # 이렇게 해야 회전(Site B)의 unset 만이 이 값을 지울 수 있어 Site B 커버리지가 성립한다.
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+          export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
           cct add alpha <<< "$new_token" > "$root/captured" 2>&1
           add_rc=$?
           following=yes
@@ -2479,8 +2531,12 @@ test_final4_runtime_security(){
             token_exported=no
           fi
           if /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1$" &&
-             /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1$" &&
-             /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1$"; then
+             /usr/bin/env | /usr/bin/grep -q "^DISABLE_TELEMETRY=1$" &&
+             /usr/bin/env | /usr/bin/grep -q "^DISABLE_ERROR_REPORTING=1$" &&
+             /usr/bin/env | /usr/bin/grep -q "^DISABLE_BUG_COMMAND=1$" &&
+             /usr/bin/env | /usr/bin/grep -q "^DISABLE_FEEDBACK_COMMAND=1$" &&
+             /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1$" &&
+             ! /usr/bin/env | /usr/bin/grep -q "^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="; then
             web_exported=yes
           else
             web_exported=no
