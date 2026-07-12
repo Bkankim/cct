@@ -61,7 +61,7 @@ A `setup-token` is the current mechanism for long-lived use, but its lifetime an
 | `cct off` | Remove active state and cct auth variables from the current shell | success `0`; state deletion failure `1` |
 | `cct help` | Show built-in help | success `0` |
 
-Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z0-9_]*`. `cct <label>` disables Advisor and nonessential web calls by default. Opt in only when needed with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`.
+Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z0-9_]*`. `cct <label>` disables Advisor and nonessential web calls (telemetry, error reporting) by default while keeping auto-update working. Opt in only when needed with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`. The blocking flags (`DISABLE_TELEMETRY` and friends) are generic variable names, so if you already set the same variables yourself, `cct off`, `cct rm` of the active account, `cct refresh` with no active label, and the opt-out clear them in that shell, while a sticky label launch (`cct <label>`) overwrites the same variable with `1` even if you had set it to a different value. To turn auto-update off on purpose, set `DISABLE_AUTOUPDATER=1` yourself; cct never reads or writes it.
 
 Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active`, so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection. An already-open terminal does not follow a switch made in another terminal; run `cct refresh` in that shell to re-apply the on-disk active label.
 

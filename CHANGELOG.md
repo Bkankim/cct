@@ -38,6 +38,27 @@ errors. `check` uses `0` for valid, `1` for invalid/unavailable, and `2` for a
 missing token. `doctor` uses `0` when there is no FAIL, `1` for health failures,
 and `2` for invocation misuse.
 
+### Changed
+
+- **Web-feature block preserves auto-update** - the labeled `cct <label>` web-feature
+  block no longer exports `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, which also disabled
+  Claude Code auto-update. It now sets the narrower `DISABLE_TELEMETRY`,
+  `DISABLE_ERROR_REPORTING`, `DISABLE_BUG_COMMAND`, and `DISABLE_FEEDBACK_COMMAND`
+  (alongside the unchanged `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` and
+  `CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH`), so nonessential web calls stay blocked
+  while auto-update keeps working. `CCT_DISABLE_WEB_FEATURES=0` still opts back in. Every
+  path that applies a label - the default web-feature block, the `CCT_DISABLE_WEB_FEATURES=0`
+  opt-out, and the `cct off`/`cct refresh`/`cct rm` clears - also unsets any inherited
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, so a stale flag left by an older cct in a
+  long-lived shell can no longer leak into the child process and keep auto-update off.
+- **Flag ownership note** - `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
+  `DISABLE_BUG_COMMAND`, and `DISABLE_FEEDBACK_COMMAND` are generic Claude Code variable
+  names, so if you set the same variables yourself, `cct off`, `cct rm` of the active account,
+  `cct refresh` with no active label, and `CCT_DISABLE_WEB_FEATURES=0` clear them in that shell,
+  while a sticky label launch (`cct <label>`) overwrites the same variable with `1` even if you
+  had set it to a different value. To turn auto-update off on purpose, set `DISABLE_AUTOUPDATER=1`
+  yourself; cct never reads or writes it.
+
 ### Wallet safety
 
 - All wallet mutations use a mode-`600` same-directory temporary file and atomic
