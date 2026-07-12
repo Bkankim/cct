@@ -62,8 +62,9 @@ jobs:
 
       - name: Run static checks
         run: |
-          shellcheck cct.sh install.sh tests/cct_test.sh
+          shellcheck cct.sh install.sh tests/cct_test.sh cct-token.sh
           bash -n cct.sh install.sh tests/cct_test.sh
+          sh -n cct-token.sh
           zsh -n cct.sh
           git diff --check
 

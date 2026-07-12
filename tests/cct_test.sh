@@ -508,8 +508,10 @@ test_cct(){
   unset CCT_DEFAULT_LABEL
 
   echo "-- C#5: labeled setup-token sessions suppress web-only feature calls by default"
+  # shellcheck disable=SC2031
   export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+  # shellcheck disable=SC2031
   export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
   cap="$(cct use 2>&1 >/dev/null)"
   # 7번째 필드(NONESSENTIAL)=<unset> 는 마이그레이션 회귀 검증: 부모 셸이 구버전 잔재로
@@ -660,6 +662,7 @@ test_sticky(){
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # 구버전 cct 가 sticky 로 상속시킨 잔재 시뮬레이션
   cct good >/dev/null 2>&1   # 명령치환 아닌 현재 셸 실행 → _cct_apply_env 가 harness 셸을 변경
   chk "Site A: 라벨 실행이 NONESSENTIAL 잔재를 harness 셸에서 해제" "" "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}"
+  # shellcheck disable=SC2031
   chk "Site A: 라벨 실행이 NEW 4종을 harness 셸에 남김" "1,1,1,1" \
     "${DISABLE_TELEMETRY:-<unset>},${DISABLE_ERROR_REPORTING:-<unset>},${DISABLE_BUG_COMMAND:-<unset>},${DISABLE_FEEDBACK_COMMAND:-<unset>}"
   chk_has "Site A: 자식 claude 는 NONESSENTIAL 상속 없이(7번째 <unset>) NEW 관측" \
@@ -689,14 +692,19 @@ test_sticky(){
   chk "현재 셸 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
   chk "현재 셸 ANTHROPIC 미러 해제" "" "${ANTHROPIC_OAUTH_TOKEN:-}"
   # off 는 NEW 4종 비필수 웹 차단 플래그도 해제한다(앞선 cct 실행이 1 로 export 해 둔 상태).
+  # shellcheck disable=SC2031
   chk "off: DISABLE_TELEMETRY 해제" "" "${DISABLE_TELEMETRY:-}"
+  # shellcheck disable=SC2031
   chk "off: DISABLE_ERROR_REPORTING 해제" "" "${DISABLE_ERROR_REPORTING:-}"
+  # shellcheck disable=SC2031
   chk "off: DISABLE_BUG_COMMAND 해제" "" "${DISABLE_BUG_COMMAND:-}"
+  # shellcheck disable=SC2031
   chk "off: DISABLE_FEEDBACK_COMMAND 해제" "" "${DISABLE_FEEDBACK_COMMAND:-}"
 
   echo "-- 활성 없음에서 cct refresh 는 현재 셸 env 를 해제"
   export CLAUDE_CODE_OAUTH_TOKEN="sk-stale"
   export ANTHROPIC_OAUTH_TOKEN="sk-stale"
+  # shellcheck disable=SC2031
   export DISABLE_TELEMETRY=stale DISABLE_ERROR_REPORTING=stale DISABLE_BUG_COMMAND=stale DISABLE_FEEDBACK_COMMAND=stale
   cct refresh >/dev/null 2>&1
   chk "refresh: 활성 없음 → 잔존 토큰 해제" "" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
@@ -741,6 +749,20 @@ INSERT INTO auth_credentials VALUES ('openai', NULL);"
   printf 'br2\n' > "$sb/bridge-active2"
   chk "bridge: 토큰 없는 라벨 → 무출력 rc=1" "rc=1 out=[]" \
     "$(out="$(CCT_ENV_FILE="$sb/bridge-tokens.env" CCT_ACTIVE_FILE="$sb/bridge-active2" sh "$REPO/cct-token.sh" 2>/dev/null)"; printf 'rc=%s out=[%s]' "$?" "$out")"
+  # 결함 회귀: CCT_ACTIVE_FILE 미지정 시 본체(_cct_active_file)와 동일하게
+  # 지갑(CCT_ENV_FILE)의 부모 디렉터리에 있는 형제 cct-active 를 봐야 한다.
+  # (하드코딩 $HOME/.claude/cct-active 는 CCT_ENV_FILE 만 커스텀한 환경에서 엉뚱한 파일을 본다.)
+  printf 'br1\n' > "$sb/cct-active"
+  chk "bridge: CCT_ACTIVE_FILE 미지정 → 지갑 옆 cct-active 추종" "sk-bridge-material" \
+    "$(unset CCT_ACTIVE_FILE; CCT_ENV_FILE="$sb/bridge-tokens.env" sh "$REPO/cct-token.sh")"
+  # 결함 회귀: 라벨 검증은 로케일 무관(LC_ALL=C 고정)이어야 한다. en_US.UTF-8 에서
+  # 콜레이션이 a-z 에 대문자를 포함시켜도, 대문자 섞인 'AbC_1' 은 거부돼
+  # 토큰(CCT_TOKEN_ABC_1)을 절대 내보내면 안 된다.
+  printf 'CCT_TOKEN_ABC_1=sk-locale-should-be-rejected\n' > "$sb/bridge-locale.env"
+  chmod 600 "$sb/bridge-locale.env"
+  printf 'AbC_1\n' > "$sb/bridge-active-locale"
+  chk "bridge: 대문자 라벨은 로케일 무관 거부 (en_US.UTF-8) rc=1" "rc=1 out=[]" \
+    "$(out="$(LC_ALL=en_US.UTF-8 CCT_ENV_FILE="$sb/bridge-locale.env" CCT_ACTIVE_FILE="$sb/bridge-active-locale" sh "$REPO/cct-token.sh" 2>/dev/null)"; printf 'rc=%s out=[%s]' "$?" "$out")"
 
   echo "-- CCT_STICKY=0 이면 inline 만 (셸/디스크 미변경)"
   cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" CCT_STICKY=0 bash -c ". '$REPO/cct.sh'; cct good >/dev/null 2>&1; echo tok=[\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]; echo anth=[\${ANTHROPIC_OAUTH_TOKEN:-<unset>}]; [ -e '$sb/active' ] && echo FILE-YES || echo FILE-NO" 2>&1)"
@@ -1307,8 +1329,10 @@ test_accounts(){
     printf '%s\n' alpha > "$CCT_ACTIVE_FILE"
     chmod 600 "$CCT_ACTIVE_FILE"
     export CLAUDE_CODE_OAUTH_TOKEN=parent-sentinel
+    # shellcheck disable=SC2031
     export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=parent-advisor
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=parent-traffic
+    # shellcheck disable=SC2031
     export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=parent-refresh
     env_before="${CLAUDE_CODE_OAUTH_TOKEN},${CLAUDE_CODE_DISABLE_ADVISOR_TOOL},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH}"
     mkdir "$sb/signal-mv"
@@ -1509,6 +1533,7 @@ SHIM
   export CLAUDE_CODE_OAUTH_TOKEN=fixture-beta ANTHROPIC_OAUTH_TOKEN=fixture-beta
   export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # 구버전 잔재 시뮬레이션
+  # shellcheck disable=SC2031
   export DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_BUG_COMMAND=1 DISABLE_FEEDBACK_COMMAND=1
   before="$(wallet_sha "$CCT_ENV_FILE")"
   # 파이프 오른쪽은 서브셸이라 unset 이 harness 셸에 못 미친다 → 현재 셸 herestring 으로 확인 입력.
