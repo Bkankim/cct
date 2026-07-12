@@ -27,7 +27,7 @@ be reissued for that account and replaced with `cct add <label>`.
 | `cct doctor` | Report deterministic local `PASS/WARN/FAIL` health checks |
 | `cct check [label]` | Validate token(s) through a real Claude call |
 | `cct fp [label]` / `cct who [label]` | Compare account fingerprints through a real call |
-| `cct usage [label\|--all]` | Show subscription 5h/7d utilization and reset from real-call rate-limit headers |
+| `cct usage [label\|--all]` | Show subscription 5h/7d/7f(premium) utilization and reset from real-call rate-limit headers |
 | `cct active` | Show the sticky active label |
 | `cct refresh` | Re-apply the on-disk active label to the current shell environment |
 | `cct off` | Clear sticky state and current-shell cct auth variables |
@@ -108,7 +108,7 @@ Verified-bug remediation across `cct.sh` and `install.sh`.
   back to `CCT_DEFAULT_LABEL`). Set `CCT_STICKY=0` for the old per-process inline behavior.
 - **Strict label rules** — labels must match `[a-z0-9_][a-z0-9_]*`. Dashes, uppercase
   letters, spaces, `@`, and non-ASCII labels are rejected. Labels that collide with a
-  subcommand (`help ls list add run rm rename status doctor check fp who off active`)
+  subcommand (`help ls list add run rm rename status doctor check fp who usage off active refresh`)
   are rejected (`use` is still allowed).
   `cct`, `cct check`, and `cct fp` now apply the same validation, so invalid labels cannot
   alias an existing normalized token key.

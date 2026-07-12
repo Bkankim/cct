@@ -306,7 +306,9 @@ _cct_check_one() {  # $1 = 라벨
   if [ -n "${ZSH_VERSION:-}" ]; then cb="$(whence -p claude 2>/dev/null || true)"; else cb="$(type -P claude 2>/dev/null || true)"; fi
   if [ -z "$cb" ]; then echo "  $1 : ⚠️ 점검 불가 (claude 가 PATH 에 없음)"; return 1; fi
   # </dev/null 필수: 전체 점검 루프에서 claude 가 while 루프의 stdin(다음 라벨)을 삼키는 것 방지
-  if CLAUDE_CODE_OAUTH_TOKEN="$tok" _cct_run_limited 30 "$cb" -p "ok" --model "$CCT_PROBE_MODEL" </dev/null >/dev/null 2>&1; then
+  # ANTHROPIC_OAUTH_TOKEN 도 검사 라벨로 덮는다 - sticky 셸의 활성 계정 미러 상속 차단.
+  # 현재 claude 는 이 변수를 인증에 쓰지 않지만(실측), 프로브 env 자기일관성을 위한 방어.
+  if CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" _cct_run_limited 30 "$cb" -p "ok" --model "$CCT_PROBE_MODEL" </dev/null >/dev/null 2>&1; then
     echo "  $1 : ✅ 유효"; return 0
   else
     echo "  $1 : ❌ 무효/실패 (재발급 필요할 수 있음)"; return 1
@@ -1148,6 +1150,7 @@ _cct_help() {
     "" \
     "환경변수: CCT_SKIP_PERMS=0  CCT_CLAUDE_FLAGS='...'  CCT_DEFAULT_LABEL=gv  CCT_STICKY=0" \
     "          CCT_DISABLE_WEB_FEATURES=0  CCT_ENV_FILE=...  CCT_ACTIVE_FILE=...  CCT_FIX_ONBOARDING=0" \
+    "          CCT_GJC_WARN=0 (gjc 잔존 자격증명 경고 끄기)" \
     "호환성/BREAKING 변경은 CHANGELOG.md 참고."
 }
 

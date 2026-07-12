@@ -2230,15 +2230,21 @@ SHIM
           \"\${DISABLE_FEEDBACK_COMMAND:-<unset>}\" \
           \"\${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}\" \
           \"\${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>}\"
+        printf 'anth=[%s]\\n' \"\${ANTHROPIC_OAUTH_TOKEN:-<unset>}\"
         cct add beta <<< runtime-beta-new >/dev/null
         printf 'after-nonactive=[%s]\\n' \"\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}\"
+        printf 'after-nonactive-anth=[%s]\\n' \"\${ANTHROPIC_OAUTH_TOKEN:-<unset>}\"
       " 2>&1
   )"; rc=$?
   chk "active and non-active rotations -> 0" "0" "$rc"
   chk_has "active rotation refreshes current token and web env" \
     "token=[runtime-alpha-new] web=[<unset>,<unset>,<unset>,<unset>,<unset>,<unset>,<unset>]" "$out"
+  chk_has "active rotation refreshes ANTHROPIC mirror (gjc/aside 추종)" \
+    "anth=[runtime-alpha-new]" "$out"
   chk_has "non-active rotation preserves current token" \
     "after-nonactive=[runtime-alpha-new]" "$out"
+  chk_has "non-active rotation preserves ANTHROPIC mirror" \
+    "after-nonactive-anth=[runtime-alpha-new]" "$out"
   out="$(
     PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/sticky/tokens.env" \
       CCT_ACTIVE_FILE="$sb/sticky/active" CCT_STICKY=1 CCT_DISABLE_WEB_FEATURES=0 \
