@@ -63,7 +63,9 @@ cct personal                  # personal 계정으로 전환
 
 라벨은 소문자 영문, 숫자, 밑줄만 허용한다: `[a-z0-9_][a-z0-9_]*`. `cct <라벨>`은 기본적으로 Advisor와 텔레메트리, 에러 리포팅 등 비필수 웹 호출을 차단하되 자동업데이트는 유지한다. 필요할 때만 `CCT_DISABLE_WEB_FEATURES=0 cct <라벨>`로 허용할 수 있다. 차단에 쓰는 `DISABLE_TELEMETRY` 등은 generic한 변수명이라, 같은 변수를 직접 쓰고 있었다면 `cct off`, 활성 계정을 지우는 `cct rm`, 활성 라벨이 없을 때의 `cct refresh`, opt-out이 그 셸에서 함께 해제하고, 반대로 라벨 sticky 실행(`cct <라벨>`)은 당신이 다른 값으로 둔 같은 변수를 `1`로 덮어쓴다. 자동업데이트를 끄고 싶으면 `DISABLE_AUTOUPDATER=1`을 직접 지정하면 되고, cct는 이 변수를 읽거나 쓰지 않는다.
 
-Sticky는 기본으로 켜져 있다. `cct <라벨>`이 선택한 계정을 현재 셸과 mode `600`의 `~/.claude/cct-active`에 기억하므로 이후 일반 `claude` 실행과 새 터미널도 같은 계정을 쓴다. `cct off`로 해제하거나 `CCT_STICKY=0`으로 저장하지 않는 실행을 선택할 수 있다. 이미 열려 있던 터미널은 다른 터미널의 전환을 자동으로 따라가지 않으므로, 그 셸에서 `cct refresh`를 실행해 디스크의 활성 라벨과 동기화한다.
+`cct <라벨>`은 기본으로 `--dangerously-skip-permissions`를 붙여 실행한다(`CCT_SKIP_PERMS=0`으로 끔). claude에 추가로 넘길 플래그는 `CCT_CLAUDE_FLAGS`(공백 구분)로 전달한다.
+
+Sticky는 기본으로 켜져 있다. `cct <라벨>`이 선택한 계정을 현재 셸과 mode `600`의 `~/.claude/cct-active`(경로는 `CCT_ACTIVE_FILE`로 변경 가능)에 기억하므로 이후 일반 `claude` 실행과 새 터미널도 같은 계정을 쓴다. `cct off`로 해제하거나 `CCT_STICKY=0`으로 저장하지 않는 실행을 선택할 수 있다. 이미 열려 있던 터미널은 다른 터미널의 전환을 자동으로 따라가지 않으므로, 그 셸에서 `cct refresh`를 실행해 디스크의 활성 라벨과 동기화한다.
 
 `cct <라벨>`은 실행 직전에 Claude 설정의 `hasCompletedOnboarding` 플래그를 자동 보정해, env 토큰이 있는데도 인터랙티브 로그인 마법사가 뜨는 것을 막는다(`/logout`이나 업데이트로 리셋되는 값). 설정 파일이 없거나 symlink이거나 JSON이 깨졌으면 건드리지 않고, 보정 시 파일 mode를 유지한다. `CCT_FIX_ONBOARDING=0`으로 끌 수 있다.
 
