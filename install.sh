@@ -103,6 +103,71 @@ LAUNCHER_TMP=""
 trap - EXIT HUP INT TERM
 echo "$launcher_message"
 
+# 토큰 브릿지 확보: 활성 프로필의 setup-token 을 stdout 으로 내는 실행 스크립트.
+# aside 등 명령값 시크릿을 지원하는 외부 도구가 cct 활성 계정을 따라가게 한다.
+# 런처와 동일한 안전 절차(사전 검사 → 소유 임시 파일 → 검증 → 원자 교체).
+BRIDGE="$DEST/cct-token.sh"
+BRIDGE_TMP=""
+BRIDGE_TMP_OWNED=0
+if [ -e "$BRIDGE" ] || [ -L "$BRIDGE" ]; then
+  if [ ! -f "$BRIDGE" ] || [ -L "$BRIDGE" ]; then
+    echo "❌ 브릿지 경로가 일반 파일이 아닙니다: $BRIDGE" >&2
+    exit 1
+  fi
+fi
+cleanup_bridge_tmp() {
+  if [ "$BRIDGE_TMP_OWNED" -eq 1 ] &&
+    [ -n "$BRIDGE_TMP" ] &&
+    [ -f "$BRIDGE_TMP" ] &&
+    [ ! -L "$BRIDGE_TMP" ]; then
+    rm -f "$BRIDGE_TMP"
+  fi
+}
+abort_bridge_install() {
+  cleanup_bridge_tmp
+  trap - EXIT HUP INT TERM
+  exit 1
+}
+trap cleanup_bridge_tmp EXIT
+trap abort_bridge_install HUP INT TERM
+BRIDGE_TMP="$(umask 077; mktemp "$DEST/.cct-token.sh.install.XXXXXX")"
+case "$BRIDGE_TMP" in
+  "$DEST"/.cct-token.sh.install.??????) ;;
+  *)
+    echo "❌ 안전한 브릿지 임시 파일을 만들지 못했습니다." >&2
+    exit 1
+    ;;
+esac
+if [ ! -f "$BRIDGE_TMP" ] || [ -L "$BRIDGE_TMP" ]; then
+  echo "❌ 브릿지 임시 경로가 일반 파일이 아닙니다." >&2
+  exit 1
+fi
+BRIDGE_TMP_OWNED=1
+if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/cct-token.sh" ]; then
+  if ! cp "$SRC_DIR/cct-token.sh" "$BRIDGE_TMP"; then
+    echo "❌ 브릿지 복사에 실패했습니다." >&2
+    exit 1
+  fi
+  bridge_message="✓ 토큰 브릿지(로컬 복사): $BRIDGE"
+else
+  command -v curl >/dev/null 2>&1 || { echo "❌ curl 이 필요합니다."; exit 1; }
+  if ! curl -fsSL "$REPO_RAW/cct-token.sh" -o "$BRIDGE_TMP"; then
+    echo "❌ 브릿지 다운로드에 실패했습니다." >&2
+    exit 1
+  fi
+  bridge_message="✓ 토큰 브릿지(원격 다운로드): $BRIDGE"
+fi
+if [ ! -f "$BRIDGE_TMP" ] || [ -L "$BRIDGE_TMP" ]; then
+  echo "❌ 브릿지 임시 경로가 안전하지 않습니다." >&2
+  exit 1
+fi
+chmod 700 "$BRIDGE_TMP"
+mv "$BRIDGE_TMP" "$BRIDGE"
+BRIDGE_TMP_OWNED=0
+BRIDGE_TMP=""
+trap - EXIT HUP INT TERM
+echo "$bridge_message"
+
 # tokens.env 템플릿 (없을 때만 — 기존 토큰 보존)
 WALLET="$DEST/tokens.env"
 if [ ! -e "$WALLET" ] && [ ! -L "$WALLET" ]; then

@@ -162,4 +162,10 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   Disable with `CCT_GJC_WARN=0` (DB path override for tests: `CCT_GJC_DB`). The guard
   opens the DB read-only through the system sqlite3 (`/usr/bin`, `/bin` — no PATH
   shims) and rejects dash-prefixed DB paths so they cannot be parsed as options.
+- **Token bridge for command-valued secrets** — the installer ships
+  `~/.claude/cct-token.sh` (mode `700`, same safe install ceremony as the launcher).
+  It prints the active profile's setup-token to stdout and exits non-zero with no
+  output when absent, so tools like aside (`models.json`
+  `"apiKey": "!<home>/.claude/cct-token.sh"`) follow the active cct account at call
+  time. Honors `CCT_ENV_FILE`/`CCT_ACTIVE_FILE` overrides and rejects invalid labels.
 - **Test suite** — `tests/cct_test.sh` (behavioral, no network, fake `claude` shim).

@@ -143,7 +143,11 @@ SHIM
     chk "stdin install launcher is regular" "yes" \
       "$([ -f "$H/.claude/cct.sh" ] && [ ! -L "$H/.claude/cct.sh" ] && echo yes || echo no)"
     chk "stdin install launcher mode 600" "600" "$(wallet_mode "$H/.claude/cct.sh")"
-    chk "stdin install invokes remote fetch path" "1" "$(count_exact "$H/curl.log" called)"
+    chk "stdin install invokes remote fetch path" "2" "$(count_exact "$H/curl.log" called)"
+    chk "stdin install bridge is regular" "yes" \
+      "$([ -f "$H/.claude/cct-token.sh" ] && [ ! -L "$H/.claude/cct-token.sh" ] && echo yes || echo no)"
+    chk "stdin install bridge mode 700" "700" "$(wallet_mode "$H/.claude/cct-token.sh")"
+    chk_has "stdin install reports remote bridge" "토큰 브릿지(원격 다운로드)" "$cap"
     chk "stdin install never sources attacker launcher" "no" \
       "$([ -e "$H/attacker-sourced" ] && echo yes || echo no)"
     chk_not_has "stdin install never copies attacker bytes" "attacker-launcher" \
@@ -300,6 +304,8 @@ SHIM
   chk "fresh wallet mode 600" "600" "$(wallet_mode "$H/.claude/tokens.env")"
   launcher_mode="$(wallet_mode "$H/.claude/cct.sh")"
   chk "fresh launcher mode 600" "600" "$launcher_mode"
+  chk "fresh bridge exists" "yes" "$([ -f "$H/.claude/cct-token.sh" ] && echo yes || echo no)"
+  chk "fresh bridge mode 700" "700" "$(wallet_mode "$H/.claude/cct-token.sh")"
   chk ".zshrc source line once" "1" "$(count_exact "$H/.zshrc" 'source ~/.claude/cct.sh')"
   chk ".bashrc not created" "no" "$([ -e "$H/.bashrc" ] && echo yes || echo no)"
   chk "default global ignore configured" "$H/.gitignore_global" \
@@ -694,6 +700,21 @@ INSERT INTO auth_credentials VALUES ('openai', NULL);"
   else
     echo "  (시스템 sqlite3 없음 → gjc guard 픽스처 생략)"
   fi
+
+  echo "-- cct-token.sh 브릿지 (aside 등 외부 도구의 활성 계정 추종)"
+  printf 'CCT_TOKEN_BR1=sk-bridge-material\n#cctlabel:CCT_TOKEN_BR1=br1\n' > "$sb/bridge-tokens.env"
+  chmod 600 "$sb/bridge-tokens.env"
+  printf 'br1\n' > "$sb/bridge-active"
+  chk "bridge: 활성 라벨 토큰 출력" "sk-bridge-material" \
+    "$(CCT_ENV_FILE="$sb/bridge-tokens.env" CCT_ACTIVE_FILE="$sb/bridge-active" sh "$REPO/cct-token.sh")"
+  chk "bridge: 활성 없음 → 무출력 rc=1" "rc=1 out=[]" \
+    "$(out="$(CCT_ENV_FILE="$sb/bridge-tokens.env" CCT_ACTIVE_FILE="$sb/no-active" sh "$REPO/cct-token.sh" 2>/dev/null)"; printf 'rc=%s out=[%s]' "$?" "$out")"
+  printf 'BAD LABEL!\n' > "$sb/bridge-active-bad"
+  chk "bridge: 비정상 라벨 → 무출력 rc=1" "rc=1 out=[]" \
+    "$(out="$(CCT_ENV_FILE="$sb/bridge-tokens.env" CCT_ACTIVE_FILE="$sb/bridge-active-bad" sh "$REPO/cct-token.sh" 2>/dev/null)"; printf 'rc=%s out=[%s]' "$?" "$out")"
+  printf 'br2\n' > "$sb/bridge-active2"
+  chk "bridge: 토큰 없는 라벨 → 무출력 rc=1" "rc=1 out=[]" \
+    "$(out="$(CCT_ENV_FILE="$sb/bridge-tokens.env" CCT_ACTIVE_FILE="$sb/bridge-active2" sh "$REPO/cct-token.sh" 2>/dev/null)"; printf 'rc=%s out=[%s]' "$?" "$out")"
 
   echo "-- CCT_STICKY=0 이면 inline 만 (셸/디스크 미변경)"
   cap="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" CCT_STICKY=0 bash -c ". '$REPO/cct.sh'; cct good >/dev/null 2>&1; echo tok=[\${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]; echo anth=[\${ANTHROPIC_OAUTH_TOKEN:-<unset>}]; [ -e '$sb/active' ] && echo FILE-YES || echo FILE-NO" 2>&1)"
