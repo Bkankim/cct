@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cct dashboard - 목업</title>
+<style>
+:root{
+  --bg:#0f1115; --panel:#161a22; --panel2:#1c212b; --line:#262c38; --text:#e6e9ef; --muted:#8b93a5;
+  --ok:#3ddc84; --warn:#f5b84d; --bad:#ff5c6c; --accent:#6ea8fe; --active:#ff5c6c;
+  --g5:#6ea8fe; --g7:#b48cff; --gf:#f5b84d;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif}
+button{font:inherit;color:inherit;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#0b0f18;border-color:transparent;font-weight:600}
+button.danger{color:var(--bad);border-color:rgba(255,92,108,.4)}
+button:disabled{opacity:.45;cursor:not-allowed}
+select,input{font:inherit;color:inherit;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:1400px;margin:0 auto;padding:16px}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:6px 0 14px;border-bottom:1px solid var(--line)}
+h1{font-size:18px;margin:0;display:flex;gap:10px;align-items:center}
+.tag{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2px 8px;font-weight:400}
+.chips{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--muted);display:inline-flex;gap:6px;align-items:center}
+.chip b{color:var(--text);font-weight:600}
+.chip.ok b{color:var(--ok)} .chip.warn b{color:var(--warn)} .chip.bad b{color:var(--bad)}
+.chip select{padding:2px 4px;font-size:12px}
+.section{margin-top:18px}
+.section h2,.card h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.help{font-size:12px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0}
+.two{display:grid;grid-template-columns:2fr 1fr;gap:12px}
+@media (max-width:900px){.two{grid-template-columns:1fr}}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;position:relative}
+.card.active{border-color:var(--active);box-shadow:inset 0 0 0 1px rgba(255,92,108,.25)}
+.card.rec{border-color:var(--ok)}
+.card.dead{opacity:.8}
+.card h3{margin:0 0 10px;font-size:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.card.active h3 .lbl{color:var(--active)}
+.badge{font-size:11px;border-radius:6px;padding:1px 6px;border:1px solid var(--line);color:var(--muted);font-weight:400}
+.badge.active{color:var(--active);border-color:var(--active)}
+.badge.rec{color:var(--ok);border-color:var(--ok)}
+.badge.def{color:var(--accent);border-color:var(--accent)}
+.badge.warn{color:var(--warn);border-color:var(--warn)}
+.gauge{display:grid;grid-template-columns:28px 1fr 44px;gap:8px;align-items:center;margin:6px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.gauge .k{color:var(--muted)}
+.bar{height:10px;background:#0b0e14;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--g5)}
+.gauge.w7 .bar i{background:var(--g7)} .gauge.wf .bar i{background:var(--gf)}
+.bar i.hot{background:var(--bad)}
+.gauge .pct{text-align:right}
+.sub{display:grid;grid-template-columns:28px 1fr;gap:8px;font-size:12px;color:var(--muted);margin:1px 0 4px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.sub .k{color:var(--muted)}
+.flag{color:var(--warn)}
+.dead-msg{font-size:12px;color:var(--muted);padding:8px 0}
+.dead-msg.bad{color:var(--bad)}
+.meta{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--muted);margin-top:8px;border-top:1px dashed var(--line);padding-top:8px}
+.meta b{color:var(--text);font-weight:500}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;align-items:center}
+.actions button{padding:4px 9px;font-size:12px}
+.actions code{background:#0b0e14;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px}
+.write-only{display:none}
+body.write .write-only{display:inline-flex}
+.add{border-style:dashed;display:none}
+body.write .add{display:block}
+.add form{display:grid;gap:8px}
+.add .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.add input{flex:1;min-width:160px}
+.banner{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;background:linear-gradient(90deg,rgba(61,220,132,.12),transparent);border:1px solid rgba(61,220,132,.35);border-radius:12px;padding:12px 14px}
+.banner b{font-size:15px}
+.live{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
+.kv{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.kv .k{font-size:11px;color:var(--muted)} .kv .v{font-size:15px;font-weight:600;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.kv .v small{font-size:11px;color:var(--muted);font-weight:400}
+.tl-axis{position:relative;height:18px;font-size:11px;color:var(--muted);margin-left:64px;border-bottom:1px solid var(--line)}
+.tl-axis span{position:absolute;top:0;transform:translateX(-50%)}
+.tl-axis span:first-child{transform:none}
+.tl-row{display:grid;grid-template-columns:64px 1fr;align-items:center;height:28px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.tl-track{position:relative;height:100%;border-left:2px dashed rgba(110,168,254,.6)}
+.dot{position:absolute;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;border:2px solid var(--bg)}
+.dot.d5{background:var(--g5)} .dot.d7{background:var(--g7);top:32%} .dot.df{background:var(--gf);top:68%}
+.legend{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;font-size:12px;color:var(--muted);margin-top:10px}
+.legend .dot{position:static;transform:none;display:inline-block;width:10px;height:10px;vertical-align:middle;margin-right:4px}
+.lbl-active{color:var(--active)}
+.list{margin:0;padding:0;list-style:none;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.list li{display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);color:var(--muted);align-items:baseline}
+.list li:last-child{border-bottom:0}
+.list .lv{width:44px;font-weight:700;flex:none}
+.PASS{color:var(--ok)} .WARN{color:var(--warn)} .FAIL{color:var(--bad)}
+.log .t{width:64px;flex:none} .log .cmd{flex:1;color:var(--text);word-break:break-all} .log .rc{width:40px;text-align:right;flex:none} .log .ms{width:56px;text-align:right;flex:none}
+details.card summary{cursor:pointer;font-size:13px;color:var(--muted)}
+.map{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.map th,.map td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.map th{color:var(--muted);font-weight:500}
+.map td:first-child{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:nowrap}
+@media (max-width:600px){.map td:first-child{white-space:normal}}
+.toggle{cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--bad);margin:0}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#232a36;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
+.toast.show{opacity:1}
+.spin{display:inline-block;width:10px;height:10px;border:2px solid var(--muted);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
+@keyframes sp{to{transform:rotate(360deg)}}
+footer{margin:24px 0 8px;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>cct dashboard <span class="tag">목업 · 샘플 데이터</span></h1>
+  <div class="chips">
+    <span class="chip" title="Mac 에서 서버 실행, tailscale serve 로 테일넷에만 노출">서버 <b>bkan-macbookpro</b> · tailscale serve :8444</span>
+    <span class="chip" id="chip-last">마지막 프로브 <b>-</b></span>
+    <span class="chip warn" id="chip-budget" title="usage 프로브는 실제 요청이라 사용량을 소비합니다">오늘 프로브 <b>-</b></span>
+    <label class="chip">자동갱신
+      <select id="sel-auto"><option value="0">끄기</option><option value="15">15분</option><option value="30" selected>30분</option><option value="60">60분</option></select>
+    </label>
+    <button class="primary" id="btn-refresh">전체 갱신 (usage --all)</button>
+    <button id="btn-off" title="cct off">활성 해제</button>
+    <label class="chip toggle"><input type="checkbox" id="chk-write"> 쓰기 모드 (add / rm / rename)</label>
+  </div>
+</header>
+
+<section class="section">
+  <h2>지갑 상태 <span class="help">cct status · cct doctor - 오프라인, 프로브 없음</span></h2>
+  <div class="chips" id="status-chips"></div>
+</section>
+
+<section class="section two">
+  <div class="banner" id="rec"></div>
+  <div class="card" id="live"></div>
+</section>
+
+<section class="section">
+  <h2>계정 사용량 <span class="help">cct usage --all · check · fp · 활성 전환 - 카드 색: 빨강 테두리 = 활성, 초록 = 추천</span></h2>
+  <div class="grid" id="cards"></div>
+</section>
+
+<section class="section two">
+  <div class="card">
+    <h2>리셋 타임라인 <span class="help">다음 24시간 · 점선 = 지금</span></h2>
+    <div id="timeline"></div>
+    <div class="legend" id="tl-legend"></div>
+  </div>
+  <div class="card">
+    <h2>doctor <span class="help">cct doctor - PASS / WARN / FAIL</span></h2>
+    <ul class="list" id="doctor"></ul>
+  </div>
+</section>
+
+<section class="section">
+  <div class="card">
+    <h2>실행 로그 <span class="help">서버가 실행한 cct 명령 · 토큰 값은 기록하지 않음</span></h2>
+    <ul class="list log" id="log"></ul>
+  </div>
+</section>
+
+<section class="section">
+  <details class="card" open>
+    <summary>cct 명령 → 화면 매핑 (전체 기능 커버리지)</summary>
+    <table class="map">
+      <tr><th>명령</th><th>화면</th><th>실행 방식</th></tr>
+      <tr><td>usage [라벨|--all]</td><td>계정 카드 게이지(5h/7d/7f) · 전체 갱신 · 자동갱신 · 리셋 타임라인</td><td>프로브(사용량 소비) - 라벨 병렬, 간격 하한 15분, 오늘 소비 카운터</td></tr>
+      <tr><td>ls / list · active</td><td>카드 목록 · 활성 카드 강조 · 상태 칩 active</td><td>읽기(오프라인)</td></tr>
+      <tr><td>status · doctor</td><td>지갑 상태 칩 · doctor 패널</td><td>읽기(오프라인)</td></tr>
+      <tr><td>check [라벨]</td><td>카드 '점검' · check 칩(유효/무효/없음)</td><td>프로브(표준 모델 1회)</td></tr>
+      <tr><td>fp / who [라벨]</td><td>카드 '지문' · org 칩 · 중복 배지(org·7d_reset 동일 = 같은 계정)</td><td>프로브(표준 모델 1토큰)</td></tr>
+      <tr><td>&lt;라벨&gt; · run</td><td>'cct 라벨 복사' - 실행은 터미널에서</td><td>터미널 전용(인터랙티브 Claude Code)</td></tr>
+      <tr><td>활성 전환(sticky) · off</td><td>카드 '활성화' · 추천 배너 · 헤더 '활성 해제'</td><td>쓰기(cct-active, 잠금 경로) - 새 셸 자동 적용, 열린 셸은 refresh</td></tr>
+      <tr><td>refresh</td><td>활성 전환 뒤 안내 문구</td><td>셸 로컬 - 서버가 대신 실행 불가</td></tr>
+      <tr><td>add · rm · rename</td><td>등록 카드 · 카드 '이름변경' / '삭제'</td><td>쓰기 모드 전용 - 지갑 트랜잭션(잠금·백업), 값은 화면·로그 미표시</td></tr>
+      <tr><td>help</td><td>이 표</td><td>-</td></tr>
+    </table>
+  </details>
+</section>
+
+<footer>
+  <span>목업 - 모든 수치는 샘플. 실제 구현: Mac 서버(uv 단일 파일) → cct usage --json → 이 화면 · bk-pc 는 tailscale serve URL 로 접속</span>
+  <span>빌드 없음 · 외부 리소스 없음 · 오프라인 렌더</span>
+</footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+'use strict';
+var NOW = Date.now(), M = 60e3, H = 3600e3, D = 86400e3;
+var RESERVED = ['help','ls','list','add','run','rm','rename','status','doctor','check','fp','who','usage','off','active','refresh'];
+
+var S = {
+  status: { wallet: '~/.claude/tokens.env', mode: '600', accounts: 0, active: 'gv', def: 'gv', sticky: 'enabled', claude: '2.1.270' },
+  budget: { today: 14, perProbeTok: 32, autoMin: 30 },
+  live: { at: NOW - 40e3, model: 'Opus 5', ctx: 62, cost: 4.18, fiveH: { used: 6, reset: NOW + 3*H + 51*M }, sevenD: { used: 36, reset: NOW + 2*D + 19*H } },
+  accounts: [
+    { label:'gv',    token:true, ok:true, probeAt: NOW-3*M, org:'org_9f2a', w5:{u:0.06, r:NOW+3*H+51*M, s:'allowed'}, w7:{u:0.36, r:NOW+2*D+19*H, s:'allowed'}, wf:{u:0.71, r:NOW+2*D+19*H, s:'allowed'}, check:{res:'valid', at:NOW-2*H} },
+    { label:'pro4',  token:true, ok:true, probeAt: NOW-3*M, org:'org_4c1e', w5:{u:0.82, r:NOW+1*H+12*M, s:'allowed_warning'}, w7:{u:0.61, r:NOW+4*D+2*H, s:'allowed'}, wf:null, denied:'429', check:{res:'valid', at:NOW-2*H} },
+    { label:'pro5',  token:true, ok:true, probeAt: NOW-3*M, org:'org_77b0', w5:{u:0.00, r:NOW+4*H+58*M, s:'allowed'}, w7:{u:0.12, r:NOW+5*D+6*H, s:'allowed'}, wf:{u:0.05, r:NOW+5*D+6*H, s:'allowed'}, check:{res:'valid', at:NOW-2*H} },
+    { label:'max1',  token:true, ok:true, probeAt: NOW-3*M, org:'org_e01d', w5:{u:0.45, r:NOW+2*H+5*M, s:'allowed'}, w7:{u:1.00, r:NOW+15*H+20*M, s:'rejected'}, wf:{u:0.98, r:NOW+15*H+20*M, s:'allowed_warning'}, check:{res:'valid', at:NOW-2*H} },
+    { label:'pro4b', token:true, ok:true, probeAt: NOW-3*M, org:'org_4c1e', w5:{u:0.82, r:NOW+1*H+12*M, s:'allowed_warning'}, w7:{u:0.61, r:NOW+4*D+2*H, s:'allowed'}, wf:{u:0.40, r:NOW+4*D+2*H, s:'allowed'}, check:{res:'valid', at:NOW-2*H} },
+    { label:'team',  token:true, ok:false, probeAt: NOW-3*M, check:{res:'invalid', at:NOW-2*H} },
+    { label:'spare', token:false, check:{res:'missing'} }
+  ],
+  doctor: [
+    {lv:'PASS', msg:'wallet: readable regular file, mode 600'},
+    {lv:'PASS', msg:'structure: 7 account(s), annotations valid'},
+    {lv:'PASS', msg:'active: label resolves'},
+    {lv:'PASS', msg:'default: label resolves'},
+    {lv:'PASS', msg:'backup: mode 600'},
+    {lv:'WARN', msg:'lock: live mutation in progress'},
+    {lv:'PASS', msg:'claude: executable found'},
+    {lv:'PASS', msg:'shell: Bash or Zsh sourced state detected'}
+  ],
+  log: [
+    {at: NOW-3*M, cmd:'cct usage --json --all (병렬 6계정)', rc:0, ms:4180},
+    {at: NOW-3*M-5e3, cmd:'statusline 캐시 읽기 ~/.claude/orca-usage-cache.json', rc:0, ms:2},
+    {at: NOW-2*H, cmd:'cct check (전체)', rc:1, ms:6820},
+    {at: NOW-2*H-60e3, cmd:'cct doctor', rc:0, ms:140},
+    {at: NOW-26*H, cmd:'server start 127.0.0.1:8787 · tailscale serve https :8444 → 8787', rc:0, ms:0}
+  ]
+};
+
+function el(id){ return document.getElementById(id); }
+function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function pad(n){ return (n<10?'0':'')+n; }
+function clock(ts, withDate){ var d=new Date(ts); var t=pad(d.getHours())+':'+pad(d.getMinutes()); return withDate ? pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+t : t; }
+function remaining(ts){ var diff=ts-Date.now(); if(diff<=0) return '지남'; var d=Math.floor(diff/D), h=Math.floor(diff%D/H), m=Math.floor(diff%H/M); if(d>0) return d+'d'+h+'h'; if(h>0) return h+'h'+m+'m'; return m+'m'; }
+function when(ts, withDate){ var r=remaining(ts); return r==='지남' ? '리셋 지남 ('+clock(ts,withDate)+')' : '리셋 '+r+' 후 ('+clock(ts,withDate)+')'; }
+function ago(ts){ if(!ts) return '-'; var s=Math.round((Date.now()-ts)/1000); if(s<60) return s+'초 전'; if(s<3600) return Math.round(s/60)+'분 전'; return Math.round(s/3600)+'시간 전'; }
+function pct(u){ return Math.round(u*100)+'%'; }
+function acc(l){ return S.accounts.filter(function(x){ return x.label===l; })[0]; }
+function fpKey(a){ return (a.org && a.w7) ? a.org+'|'+a.w7.r : null; }
+function dupMap(){ var m={}; S.accounts.forEach(function(a){ var k=fpKey(a); if(k){ (m[k]=m[k]||[]).push(a.label); } }); return m; }
+function checkText(a){ var c=a.check; if(!c) return '-'; var t = c.res==='valid' ? '✅ 유효' : c.res==='invalid' ? '❌ 무효' : '❓ 토큰 없음'; return t + (c.at ? ' <span class="help">('+ago(c.at)+')</span>' : ''); }
+function validLabel(l){ if(!l) return '라벨이 비어 있음'; if(!/^[a-z0-9_]+$/.test(l)) return '라벨은 소문자 영문/숫자/_ 만 허용'; if(RESERVED.indexOf(l)>=0) return l+' 는 예약어(서브커맨드)'; return ''; }
+
+function recommend(){
+  var active = acc(S.status.active), ak = active ? fpKey(active) : null;
+  var c = S.accounts.filter(function(a){ return a.token && a.ok && a.w5 && a.w7 && a.w5.s!=='rejected' && a.w7.s!=='rejected'; });
+  c = c.filter(function(a){ return !(ak && fpKey(a)===ak && a.label!==S.status.active); });
+  c.sort(function(x,y){ return (x.w5.u-y.w5.u) || (x.w7.u-y.w7.u); });
+  return c[0] || null;
+}
+
+function gauge(k, w, cls, withDate){
+  if(!w) return '';
+  var p = Math.min(100, Math.round(w.u*100));
+  var hot = p>=80 || w.s==='rejected';
+  var flag = (w.s && w.s!=='allowed') ? ' <span class="flag">['+k+'-status:'+esc(w.s)+']</span>' : '';
+  return '<div class="gauge '+cls+'"><span class="k">'+k+'</span><div class="bar"><i class="'+(hot?'hot':'')+'" style="width:'+p+'%"></i></div><span class="pct">'+pct(w.u)+'</span></div>'
+       + '<div class="sub"><span></span><span>'+when(w.r, withDate)+flag+'</span></div>';
+}
+
+function renderHeader(){
+  var probed = S.accounts.filter(function(a){ return a.probeAt; }).map(function(a){ return a.probeAt; });
+  var last = probed.length ? Math.max.apply(null, probed) : null;
+  el('chip-last').innerHTML = '마지막 프로브 <b>'+(last ? ago(last)+' ('+clock(last,false)+')' : '-')+'</b>';
+  var n = S.accounts.filter(function(a){ return a.token; }).length;
+  var perDay = S.budget.autoMin ? Math.round(n * (24*60/S.budget.autoMin)) : 0;
+  el('chip-budget').innerHTML = '오늘 프로브 <b>'+S.budget.today+'회 · ≈'+(S.budget.today*S.budget.perProbeTok)+' tok</b>' + (perDay ? '· 자동 '+S.budget.autoMin+'분 → 하루 ≈'+perDay+'회' : '· 자동 꺼짐');
+}
+
+function renderStatus(){
+  var st = S.status, d = S.doctor;
+  var nP = d.filter(function(x){ return x.lv==='PASS'; }).length, nW = d.filter(function(x){ return x.lv==='WARN'; }).length, nF = d.filter(function(x){ return x.lv==='FAIL'; }).length;
+  el('status-chips').innerHTML = [
+    ['wallet', st.wallet+' (mode '+st.mode+')'], ['accounts', S.accounts.length], ['active', st.active||'none'], ['default', st.def], ['sticky', st.sticky], ['claude', st.claude]
+  ].map(function(p){ return '<span class="chip">'+p[0]+' <b class="mono">'+esc(p[1])+'</b></span>'; }).join('')
+  + '<span class="chip '+(nF?'bad':nW?'warn':'ok')+'">doctor <b>'+nP+' PASS · '+nW+' WARN · '+nF+' FAIL</b></span>';
+}
+
+function renderRec(){
+  var r = recommend(), b = el('rec');
+  if(!r){ b.innerHTML = '<div><b>갈아탈 계정 없음</b><div class="help">모든 계정이 소진·무효·미등록 상태</div></div>'; return; }
+  if(r.label===S.status.active){ b.innerHTML = '<div><b>현재 계정('+esc(r.label)+')이 최적</b><div class="help">5h '+pct(r.w5.u)+' · 7d '+pct(r.w7.u)+' - 여유가 가장 큽니다</div></div>'; return; }
+  b.innerHTML = '<div><b>지금 갈아탈 계정: <span class="mono">'+esc(r.label)+'</span></b><div class="help">5h '+pct(r.w5.u)+' · 7d '+pct(r.w7.u)+' · '+when(r.w5.r,false)+'<br>정렬: 5h 여유 → 7d 여유 · 활성과 동일 계정(중복)·rejected 제외</div></div>'
+    + '<div class="actions"><code>cct '+esc(r.label)+'</code><button data-act="copy" data-l="'+esc(r.label)+'">복사</button><button class="primary" data-act="activate" data-l="'+esc(r.label)+'">활성화 (cct-active 기록)</button></div>';
+}
+
+function kv(k,v){ return '<div class="kv"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
+function renderLive(){
+  var L = S.live;
+  el('live').innerHTML = '<h2>활성 세션 라이브 <span class="help">statusline 캐시 · 프로브 0회 · '+ago(L.at)+'</span></h2>'
+   + '<div class="live">'
+   + kv('계정', esc(S.status.active||'-')) + kv('모델', esc(L.model)) + kv('컨텍스트', L.ctx+'%') + kv('세션 비용', '$'+L.cost.toFixed(2))
+   + kv('5h', L.fiveH.used+'% <small>'+remaining(L.fiveH.reset)+'</small>') + kv('7d', L.sevenD.used+'% <small>'+remaining(L.sevenD.reset)+'</small>')
+   + '</div><div class="help" style="margin-top:8px">Claude Code 가 statusline 에 넘기는 rate_limits 를 그대로 읽습니다. 세션이 없으면 마지막 관측값에서 정지(stale 표시).</div>';
+}
+
+function addCard(){
+  return '<div class="card add"><h3>계정 등록 <span class="badge">cct add</span></h3>'
+   + '<form id="form-add"><div class="row"><input id="add-label" placeholder="라벨 (a-z0-9_)" autocomplete="off" required></div>'
+   + '<div class="row"><input id="add-token" type="password" placeholder="setup-token (화면·로그 미표시)" autocomplete="off" required></div>'
+   + '<div class="row"><button class="primary" type="submit">등록</button><span class="help">Mac 서버로만 전송(테일넷 내부, WireGuard). 지갑 mode 600 유지, 기존 라벨은 교체.</span></div></form></div>';
+}
+
+function renderCards(){
+  var dups = dupMap(), rec = recommend();
+  var html = S.accounts.map(function(a){
+    var isActive = a.label===S.status.active, isRec = rec && rec.label===a.label && !isActive;
+    var cls = 'card' + (isActive?' active':'') + (isRec?' rec':'') + ((!a.token||!a.ok)?' dead':'');
+    var badges = '';
+    if(isActive) badges += '<span class="badge active">활성</span>';
+    if(a.label===S.status.def) badges += '<span class="badge def">기본</span>';
+    if(isRec) badges += '<span class="badge rec">추천</span>';
+    var k = fpKey(a);
+    if(k && dups[k].length>1){ var others = dups[k].filter(function(l){ return l!==a.label; }); badges += '<span class="badge warn" title="cct fp: org·7d_reset 동일 = 같은 계정">중복: '+esc(others.join(', '))+'</span>'; }
+    var body;
+    if(!a.token) body = '<div class="dead-msg">토큰없음 (비어있음) - 쓰기 모드에서 등록 카드로 추가하거나 터미널에서 cct add '+esc(a.label)+'</div>';
+    else if(!a.ok) body = '<div class="dead-msg bad">응답실패 - 토큰 무효·만료 가능성. 재발급 후 cct add '+esc(a.label)+' 로 교체</div>';
+    else if(!a.w5) body = '<div class="dead-msg">미프로브 - 갱신을 누르면 usage 프로브 실행</div>';
+    else {
+      body = gauge('5h', a.w5, 'w5', false) + gauge('7d', a.w7, 'w7', true);
+      if(a.denied) body += '<div class="sub"><span class="k">7f</span><span class="flag">프리미엄 프로브 거부('+esc(a.denied)+') - 창 소진 가능성</span></div>';
+      else if(a.wf) body += gauge('7f', a.wf, 'wf', true);
+    }
+    var probeTxt = a.probeAt ? ago(a.probeAt) : (a.token ? '미프로브' : '-');
+    var meta = '<div class="meta"><span>프로브 <b>'+probeTxt+'</b></span>' + (a.org ? '<span>org <b class="mono">'+esc(a.org)+'</b></span>' : '') + '<span>check <b>'+checkText(a)+'</b></span></div>';
+    var dis = a.token ? '' : ' disabled';
+    var act = '<div class="actions">'
+      + '<button data-act="usage" data-l="'+esc(a.label)+'"'+dis+'>갱신</button>'
+      + '<button data-act="check" data-l="'+esc(a.label)+'"'+dis+'>점검</button>'
+      + '<button data-act="fp" data-l="'+esc(a.label)+'"'+dis+'>지문</button>'
+      + '<button data-act="copy" data-l="'+esc(a.label)+'">cct '+esc(a.label)+' 복사</button>'
+      + (isActive ? '' : '<button data-act="activate" data-l="'+esc(a.label)+'"'+dis+'>활성화</button>')
+      + '<button class="write-only" data-act="rename" data-l="'+esc(a.label)+'">이름변경</button>'
+      + '<button class="write-only danger" data-act="rm" data-l="'+esc(a.label)+'">삭제</button>'
+      + '</div>';
+    return '<div class="'+cls+'"><h3><span class="lbl">'+esc(a.label)+'</span>'+badges+'</h3>'+body+meta+act+'</div>';
+  }).join('');
+  el('cards').innerHTML = html + addCard();
+}
+
+function renderTimeline(){
+  var win = 24*H, now = Date.now(), axis = '', rows = '', later = [];
+  for(var i=0;i<=24;i+=6){ axis += '<span style="left:'+(i/24*100)+'%">'+(i===0?'지금':(i===24?'+24h':'+'+i+'h'))+'</span>'; }
+  S.accounts.forEach(function(a){
+    if(!a.token||!a.ok||!a.w5) return;
+    var dots = '';
+    [['5h',a.w5,'d5',false],['7d',a.w7,'d7',true],['7f',a.wf,'df',true]].forEach(function(p){
+      var w=p[1]; if(!w) return;
+      var x=(w.r-now)/win;
+      if(x>=0 && x<=1) dots += '<span class="dot '+p[2]+'" style="left:'+(x*100)+'%" title="'+esc(a.label)+' '+p[0]+' '+when(w.r,p[3])+'"></span>';
+      else if(x>1 && p[0]==='7d') later.push(esc(a.label)+' 7d '+when(w.r,true));
+    });
+    rows += '<div class="tl-row"><span class="'+(a.label===S.status.active?'lbl-active':'')+'">'+esc(a.label)+'</span><div class="tl-track">'+dots+'</div></div>';
+  });
+  el('timeline').innerHTML = '<div class="tl-axis">'+axis+'</div>'+rows;
+  el('tl-legend').innerHTML = '<span><i class="dot d5"></i>5h</span><span><i class="dot d7"></i>7d</span><span><i class="dot df"></i>7f</span><span>· 24h 밖 7d 리셋: '+(later.length ? later.join(' · ') : '없음')+'</span>';
+}
+
+function renderDoctor(){ el('doctor').innerHTML = S.doctor.map(function(x){ return '<li><span class="lv '+x.lv+'">'+x.lv+'</span><span>'+esc(x.msg)+'</span></li>'; }).join(''); }
+function renderLog(){ el('log').innerHTML = S.log.slice(0,12).map(function(x){ var d=new Date(x.at); return '<li><span class="t">'+clock(x.at,false)+':'+pad(d.getSeconds())+'</span><span class="cmd">'+esc(x.cmd)+'</span><span class="rc '+(x.rc===0?'PASS':'FAIL')+'">rc='+x.rc+'</span><span class="ms">'+x.ms+'ms</span></li>'; }).join(''); }
+
+var tt;
+function toast(m){ var t=el('toast'); t.textContent=m; t.classList.add('show'); clearTimeout(tt); tt=setTimeout(function(){ t.classList.remove('show'); }, 2800); }
+function log(cmd,rc,ms){ S.log.unshift({at:Date.now(), cmd:cmd, rc:rc, ms:ms}); }
+function copy(s){ if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(s).then(function(){ toast('복사됨: '+s); }, function(){ toast(s); }); } else toast(s); }
+function simulate(btn, cmd, done){
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+  setTimeout(function(){ var ms = 900+Math.round(Math.random()*3000); log(cmd, 0, ms); if(done) done(); render(); toast(cmd+' 완료 ('+ms+'ms)'); }, 1200);
+}
+function sampleProbe(a){
+  var now = Date.now();
+  a.w5 = {u:Math.random()*0.5, r:now+(1+Math.random()*4)*H, s:'allowed'};
+  a.w7 = {u:Math.random()*0.8, r:now+(1+Math.random()*6)*D, s:'allowed'};
+  a.wf = {u:Math.random()*0.9, r:a.w7.r, s:'allowed'};
+  a.org = 'org_'+Math.random().toString(16).slice(2,6);
+}
+function render(){ renderHeader(); renderStatus(); renderRec(); renderLive(); renderCards(); renderTimeline(); renderDoctor(); renderLog(); }
+
+document.addEventListener('click', function(e){
+  var b = e.target.closest('button[data-act]'); if(!b) return;
+  var act = b.getAttribute('data-act'), l = b.getAttribute('data-l'), a = acc(l);
+  if(act==='copy'){ copy('cct '+l); return; }
+  if(!a) return;
+  if(act==='usage'){ simulate(b, 'cct usage --json '+l, function(){ a.probeAt=Date.now(); S.budget.today++; if(a.ok && !a.w5) sampleProbe(a); }); return; }
+  if(act==='check'){ simulate(b, 'cct check '+l, function(){ a.check={res:a.ok?'valid':'invalid', at:Date.now()}; }); return; }
+  if(act==='fp'){ simulate(b, 'cct fp '+l, function(){ toast(a.ok && a.w7 ? l+' 지문: org '+a.org+' · 7d_reset '+clock(a.w7.r,true) : l+' 응답실패'); }); return; }
+  if(act==='activate'){ if(!confirm(l+' 를 활성(sticky) 계정으로 기록할까요?  새 셸은 자동 적용, 열린 터미널은 cct refresh 가 필요합니다.')) return; S.status.active=l; log('cct-active ← '+l+' (locked write)',0,12); render(); toast('활성 = '+l+' · 열린 터미널에서는 cct refresh'); return; }
+  if(act==='rename'){ var n = prompt('새 라벨 (a-z0-9_)', l); if(n===null) return; n=n.trim().toLowerCase(); var err=validLabel(n); if(err){ toast(err); return; } if(acc(n)){ toast(n+' 계정이 이미 존재함'); return; } a.label=n; if(S.status.active===l) S.status.active=n; if(S.status.def===l) S.status.def=n; log('cct rename '+l+' '+n,0,15); render(); toast('이름 변경: '+l+' → '+n+' (토큰 값 유지)'); return; }
+  if(act==='rm'){ if(!confirm(l+' 계정을 삭제할까요? (지갑 .bak 백업 후 잠금 트랜잭션으로 삭제)')) return; S.accounts=S.accounts.filter(function(x){ return x.label!==l; }); if(S.status.active===l) S.status.active=''; log('cct rm '+l+' --force',0,18); render(); toast(l+' 삭제 완료'); return; }
+});
+
+document.addEventListener('submit', function(e){
+  if(e.target.id!=='form-add') return; e.preventDefault();
+  var l = el('add-label').value.trim().toLowerCase(), t = el('add-token').value; el('add-token').value='';
+  var err = validLabel(l); if(err){ toast(err); return; }
+  if(!t){ toast('토큰이 비어 있음'); return; }
+  var ex = acc(l);
+  if(ex){ ex.token=true; ex.ok=true; ex.probeAt=null; ex.check=null; ex.w5=null; ex.w7=null; ex.wf=null; ex.org=null; ex.denied=null; }
+  else S.accounts.push({label:l, token:true, ok:true, probeAt:null, check:null, w5:null, w7:null, wf:null});
+  log('cct add '+l+' (stdin 전달, 값 미기록)',0,22); render(); toast(l+' 등록됨 - 갱신을 눌러 첫 프로브');
+});
+
+el('btn-refresh').addEventListener('click', function(){
+  var n = S.accounts.filter(function(a){ return a.token; }).length;
+  simulate(this, 'cct usage --json --all (병렬 '+n+'계정)', function(){ S.accounts.forEach(function(a){ if(a.token){ a.probeAt=Date.now(); if(a.ok && !a.w5) sampleProbe(a); } }); S.budget.today += n; });
+});
+el('btn-off').addEventListener('click', function(){ if(!confirm('cct off - 활성(sticky) 라벨을 해제할까요? 라벨 없는 cct/claude 는 기본 라벨('+S.status.def+')로 실행됩니다.')) return; S.status.active=''; log('cct off',0,9); render(); toast('활성 해제됨'); });
+el('sel-auto').addEventListener('change', function(){ S.budget.autoMin = +this.value; renderHeader(); toast(this.value==='0' ? '자동갱신 끔 - 수동 갱신만' : '자동갱신 '+this.value+'분 (하한 15분: 프로브가 사용량을 소비)'); });
+el('chk-write').addEventListener('change', function(){ document.body.classList.toggle('write', this.checked); toast(this.checked ? '쓰기 모드 켬 - 이 브라우저 세션에서만. 토큰 값은 화면·로그에 표시되지 않음' : '쓰기 모드 끔 (읽기 전용)'); });
+
+render();
+if(/[?&]write=1/.test(location.search)){ el('chk-write').checked = true; document.body.classList.add('write'); }
+setInterval(function(){ renderHeader(); renderLive(); }, 30e3);
+})();
+</script>
+</body>
+</html>

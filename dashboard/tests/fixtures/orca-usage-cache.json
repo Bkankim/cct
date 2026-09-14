@@ -1,0 +1,39 @@
+{
+  "_fixture_now": 1789400000,
+  "cwd": "/fixture/not-a-real-path",
+  "workspace": {
+    "current_dir": "/fixture/not-a-real-path",
+    "project_dir": "/fixture"
+  },
+  "transcript_path": "/fixture/not-a-real-path/transcript.jsonl",
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "scratchpad_dir": "/fixture/scratchpad",
+  "session_name": "fixture-session",
+  "version": "2.1.270",
+  "model": {
+    "id": "claude-fable-5",
+    "display_name": "Opus 5"
+  },
+  "context_window": {
+    "used_percentage": 62,
+    "remaining_percentage": 38,
+    "context_window_size": 200000,
+    "current_usage": 124000
+  },
+  "cost": {
+    "total_cost_usd": 4.18,
+    "total_duration_ms": 1820000,
+    "total_lines_added": 412,
+    "total_lines_removed": 96
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 6,
+      "resets_at": 1789413860
+    },
+    "seven_day": {
+      "used_percentage": 36,
+      "resets_at": 1789641200
+    }
+  }
+}

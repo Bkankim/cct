@@ -1,0 +1,49 @@
+{
+  "fixture_now": 1789400000,
+  "status": {
+    "wallet": "~/.claude/tokens.env",
+    "mode": "600",
+    "sticky": "enabled",
+    "claude": "/Users/bkan/.local/bin/claude",
+    "claude_version": "2.1.270"
+  },
+  "active": "gv",
+  "default": "gv",
+  "accounts": [
+    {
+      "label": "gv",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "pro4",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "pro5",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "max1",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "pro4b",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "team",
+      "has_token": true,
+      "check_rc": 1
+    },
+    {
+      "label": "spare",
+      "has_token": false,
+      "check_rc": 2
+    }
+  ]
+}
