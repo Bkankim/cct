@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- cct 대시보드 목업 정적 서버 - 127.0.0.1:8790, tailscale serve :8444 가 프록시 -->
+  <key>Label</key><string>com.bkan.cct-dash-mockup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>-m</string><string>http.server</string><string>8790</string>
+    <string>--bind</string><string>127.0.0.1</string>
+    <string>--directory</string><string>/Users/bkan/cct/dashboard/mockup</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/cct-dash-mockup.log</string>
+  <key>StandardErrorPath</key><string>/tmp/cct-dash-mockup.log</string>
+</dict>
+</plist>
+
