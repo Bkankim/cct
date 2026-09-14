@@ -27,7 +27,8 @@ be reissued for that account and replaced with `cct add <label>`.
 | `cct doctor` | Report deterministic local `PASS/WARN/FAIL` health checks |
 | `cct check [label]` | Validate token(s) through a real Claude call |
 | `cct fp [label]` / `cct who [label]` | Compare account fingerprints through a real call |
-| `cct usage [label\|--all]` | Show subscription 5h/7d/7f(premium) utilization and reset from real-call rate-limit headers |
+| `cct usage [--json] [label\|--all]` | Show subscription 5h/7d/7f(premium) utilization and reset from real-call rate-limit headers; `--json` emits one JSON object per label |
+| `cct use <label>` | Switch the sticky active label without launching claude |
 | `cct active` | Show the sticky active label |
 | `cct refresh` | Re-apply the on-disk active label to the current shell environment |
 | `cct off` | Clear sticky state and current-shell cct auth variables |
@@ -108,10 +109,15 @@ Verified-bug remediation across `cct.sh` and `install.sh`.
   back to `CCT_DEFAULT_LABEL`). Set `CCT_STICKY=0` for the old per-process inline behavior.
 - **Strict label rules** — labels must match `[a-z0-9_][a-z0-9_]*`. Dashes, uppercase
   letters, spaces, `@`, and non-ASCII labels are rejected. Labels that collide with a
-  subcommand (`help ls list add run rm rename status doctor check fp who usage off active refresh`)
-  are rejected (`use` is still allowed).
+  subcommand (`help ls list add run rm rename status doctor check fp who usage use off active refresh`)
+  are rejected.
   `cct`, `cct check`, and `cct fp` now apply the same validation, so invalid labels cannot
   alias an existing normalized token key.
+- **`use` is now a subcommand, so it is a reserved label** - `cct use <label>` switches the
+  sticky active label without launching claude, which moves `use` into the reserved list:
+  `cct add use` is rejected and `cct use` no longer launches that account. A legacy wallet
+  that already holds a `use` label keeps its token and stays launchable through
+  `cct run use`; `cct rename use <new>` restores plain `cct <label>` access.
 
 ### Migration
 
@@ -157,6 +163,12 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
 - **`cct active` / `cct off`** — show or clear the sticky active profile.
 - **`cct refresh`** — re-apply the on-disk sticky active label to the current shell,
   so an already-open terminal follows a switch (or `cct off`) made in another terminal.
+- **`cct use <label>`** - switch the sticky active label without launching claude, for
+  dashboards, scripts, and any caller that only wants to change accounts. It reuses the
+  label-launch path exactly: wallet lock, "account changed during selection" guard, and
+  atomic mode-`600` replace of `cct-active`, then applies the token to the current shell.
+  Requires sticky; with `CCT_STICKY=0` it refuses with `1` because nothing would be stored.
+  Missing token or a held lock returns `1` and leaves the previous active state untouched.
 - **`cct usage`** — show subscription usage (5h/7d window utilization, reset time,
   time remaining) from `/v1/messages` rate-limit headers via a 1-token probe.
   Setup tokens lack the `user:profile` scope, so the official `/api/oauth/usage`
@@ -165,6 +177,15 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   `7d_oi` headers only appear on a premium-model probe with Claude Code
   emulation (system prompt + beta + UA), costing ≤32 premium tokens per check;
   on 429 the command falls back to the standard probe and marks `7f` as denied.
+- **`cct usage --json`** - machine-readable usage for scripts and dashboards: one JSON
+  object per label (NDJSON) on stdout, with no header line, no blank separators, and no
+  ANSI. Every value is whitelisted before it reaches the line (utilization as a bare
+  decimal, reset as an integer, status as `[a-z_]+`, org truncated to 8 characters, probe
+  model, HTTP code), and anything that fails validation becomes `null`, so a malformed
+  header can never inject a quote into the output. `probe` records the premium response
+  (`premium_http`, `denied`, `fallback`) even when the standard fallback probe supplied the
+  windows. Exit codes are unchanged: a missing token or failed response is reported as
+  `state` (`no_token` / `no_response`) with rc `0`, and only usage or label errors return `2`.
 - **Onboarding-flag guard** — before launching, cct sets `hasCompletedOnboarding` to
   true in the Claude config so an env-token launch does not trigger the interactive
   login wizard (the flag is reset by `/logout` or updates). Missing, symlinked, or
