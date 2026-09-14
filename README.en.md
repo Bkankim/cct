@@ -55,7 +55,8 @@ A `setup-token` is the current mechanism for long-lived use, but its lifetime an
 | `cct doctor` | Diagnose wallet structure, permissions, backup, lock, Claude, and shell as `PASS/WARN/FAIL`, offline | no FAIL `0`; health failure `1`; usage error `2` |
 | `cct check [label]` | Validate token(s) with a real Claude call | valid `0`; invalid/unavailable `1`; no token `2`; all-label mode returns `1` if any fail |
 | `cct fp [label]` / `cct who [label]` | Compare account fingerprints returned by a real call | A validly formed label returns `0` even when the token is missing or the probe response fails (output-only); invalid label `2` |
-| `cct usage [label\|--all]` | Show subscription 5h/7d/7f(premium) utilization and reset from real-call headers (defaults to the active label; premium probe costs ≤32 tokens) | Same as fp: output-only `0`; usage or label error `2` |
+| `cct usage [--json] [label\|--all]` | Show subscription 5h/7d/7f(premium) utilization and reset from real-call headers (defaults to the active label; premium probe costs ≤32 tokens). `--json` prints one JSON object per label (NDJSON) for scripts and dashboards | Same as fp: output-only `0`; usage or label error `2` |
+| `cct use <label>` | Switch the sticky active label without launching claude (other open shells still need `cct refresh`) | success `0`; missing token, storage failure, or `CCT_STICKY=0` `1`; usage or label error `2` |
 | `cct active` | Show the current sticky active label | success `0` |
 | `cct refresh` | Re-apply the on-disk active label to the current shell environment (sync after switching in another terminal) | success `0`; missing token `1`; usage error `2` |
 | `cct off` | Remove active state and cct auth variables from the current shell | success `0`; state deletion failure `1` |
@@ -65,7 +66,7 @@ Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z
 
 `cct <label>` launches claude with `--dangerously-skip-permissions` by default (disable with `CCT_SKIP_PERMS=0`). Pass extra claude flags through `CCT_CLAUDE_FLAGS` (space-separated).
 
-Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active` (override the path with `CCT_ACTIVE_FILE`), so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection. An already-open terminal does not follow a switch made in another terminal; run `cct refresh` in that shell to re-apply the on-disk active label.
+Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active` (override the path with `CCT_ACTIVE_FILE`), so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection. An already-open terminal does not follow a switch made in another terminal; run `cct refresh` in that shell to re-apply the on-disk active label. To switch accounts without launching claude, use `cct use <label>`: it takes the same lock and writes the same state as a label launch, minus the claude process.
 
 Before launching, `cct <label>` fixes the `hasCompletedOnboarding` flag in the Claude config so an env-token launch does not trigger the interactive login wizard (the flag is reset by `/logout` or updates). Missing, symlinked, or malformed configs are left untouched, and the file mode is preserved. Disable with `CCT_FIX_ONBOARDING=0`.
 

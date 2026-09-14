@@ -476,23 +476,24 @@ test_cct(){
   chk "ls has no cctlabel phantom" "0" "$(printf '%s' "$cap" | grep -c 'cctlabel')"
   chk_has "ls lists work" "cct work" "$cap"
 
-  echo "-- M3: reserved-subcommand labels rejected; 'use' allowed"
+  echo "-- M3: reserved-subcommand labels rejected; 비예약어 라벨은 허용"
   cct add check >/dev/null 2>&1; chk "add check -> 2" "2" "$?"
   cct add who >/dev/null 2>&1; chk "add who -> 2" "2" "$?"
   cct add help >/dev/null 2>&1; chk "add help -> 2" "2" "$?"
-  add_tok use "sk-use" >/dev/null 2>&1; chk "add use -> 0" "0" "$?"
-  cap="$(cct use 2>&1 >/dev/null)"; chk_has "cct use injects sk-use" "tok=[sk-use]" "$cap"
+  cct add use >/dev/null 2>&1; chk "add use -> 2 (use 는 서브커맨드 예약어)" "2" "$?"
+  add_tok pick "sk-pick" >/dev/null 2>&1; chk "add pick -> 0" "0" "$?"
+  cap="$(cct pick 2>&1 >/dev/null)"; chk_has "cct pick injects sk-pick" "tok=[sk-pick]" "$cap"
 
   echo "-- N3: CRLF token still triggers duplicate warning"
   cap="$(printf '%s\r\n' "sk-good" | cct add dupacct 2>&1)"
   chk_has "CRLF dup warning fires" "동일" "$cap"
 
   echo "-- C#3: bare cct injects the default-label setup-token; never the ambient token or keychain"
-  export CCT_DEFAULT_LABEL=use
+  export CCT_DEFAULT_LABEL=pick
   export CLAUDE_CODE_OAUTH_TOKEN="SENTINEL-AMBIENT"
   cap="$(cct 2>&1 >/dev/null)"
   case "$cap" in *SENTINEL-AMBIENT*) chk "ambient token did NOT reach claude" "y" "n" ;; *) chk "ambient token did NOT reach claude" "y" "y" ;; esac
-  chk_has "bare cct injected default-label token" "tok=[sk-use]" "$cap"
+  chk_has "bare cct injected default-label token" "tok=[sk-pick]" "$cap"
   chk "parent shell still has sentinel" "SENTINEL-AMBIENT" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
   unset CLAUDE_CODE_OAUTH_TOKEN
   cap="$(CCT_DEFAULT_LABEL=nosuchdefault cct 2>&1 >/dev/null)"; rc=$?
@@ -513,11 +514,11 @@ test_cct(){
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
   # shellcheck disable=SC2031
   export CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
-  cap="$(cct use 2>&1 >/dev/null)"
+  cap="$(cct pick 2>&1 >/dev/null)"
   # 7번째 필드(NONESSENTIAL)=<unset> 는 마이그레이션 회귀 검증: 부모 셸이 구버전 잔재로
   # NONESSENTIAL=1 을 export(L512)했어도 기본 라벨 실행은 자식으로 상속시키지 않고 unset 한다.
   chk_has "labeled run disables web-only feature calls" "web=[1,1,1,1,1,1,<unset>]" "$cap"
-  cap="$(CCT_DISABLE_WEB_FEATURES=0 cct use 2>&1 >/dev/null)"
+  cap="$(CCT_DISABLE_WEB_FEATURES=0 cct pick 2>&1 >/dev/null)"
   chk_has "CCT_DISABLE_WEB_FEATURES=0 opt-out" "web=[<unset>,<unset>,<unset>,<unset>,<unset>,<unset>,<unset>]" "$cap"
   chk "opt-out preserves parent web disables" "1,1,1" \
     "${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>}"
@@ -769,6 +770,45 @@ INSERT INTO auth_credentials VALUES ('openai', NULL);"
   chk_has "CCT_STICKY=0: 셸에 토큰 안 남음" "tok=[<unset>]" "$cap"
   chk_has "CCT_STICKY=0: 셸에 ANTHROPIC 미러 안 남음" "anth=[<unset>]" "$cap"
   chk_has "CCT_STICKY=0: active 파일 안 생김" "FILE-NO" "$cap"
+
+  echo "-- cct use: claude 실행 없이 활성(sticky) 라벨만 전환"
+  rm -f "$sb/active"
+  cap="$(CCT_SHIM_LOG="$sb/use-shim.log" cct use good 2>&1)"; rc=$?
+  chk "use rc=0" "0" "$rc"
+  chk "use 가 활성 파일을 기록" "good" "$(cat "$sb/active" 2>/dev/null)"
+  chk "use 활성 파일 mode 600" "600" "$(wallet_mode "$sb/active")"
+  chk "use 는 claude 를 실행하지 않는다" "" "$(cat "$sb/use-shim.log" 2>/dev/null)"
+  chk_has "use 성공 메시지" "✓ 활성 = good" "$cap"
+  chk_has "use 가 열린 셸 동기화를 안내" "cct refresh" "$cap"
+  chk_not_has "use 출력에 토큰 없음" "sk-good" "$cap"
+  # 위는 명령치환(서브셸)이라 export 가 harness 셸에 못 온다. env 검증은 현재 셸 실행으로.
+  cct use good >/dev/null 2>&1
+  chk "use 가 현재 셸에 토큰 export" "sk-good" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "use 가 ANTHROPIC 미러도 export" "sk-good" "${ANTHROPIC_OAUTH_TOKEN:-}"
+  chk_has "use 전환 후 그냥 claude 가 새 토큰 사용" "tok=[sk-good]" "$(claude 2>&1)"
+  cct use other >/dev/null 2>&1
+  chk "use 재전환이 활성 파일을 교체" "other" "$(cat "$sb/active" 2>/dev/null)"
+  chk "use 재전환이 셸 토큰도 교체" "sk-other" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  chk "use 토큰없음 rc=1" "1" "$(cct use nosuchlabel >/dev/null 2>&1; echo $?)"
+  chk_has "use 토큰없음 안내" "토큰 없음" "$(cct use nosuchlabel 2>&1 >/dev/null)"
+  chk "use 예약어 rc=2" "2" "$(cct use off >/dev/null 2>&1; echo $?)"
+  chk "use 인자 없음 rc=2" "2" "$(cct use >/dev/null 2>&1; echo $?)"
+  chk "use 인자 2개 rc=2" "2" "$(cct use good extra >/dev/null 2>&1; echo $?)"
+  chk "use 라벨 형식 오류 rc=2" "2" "$(cct use 'BAD!' >/dev/null 2>&1; echo $?)"
+  chk "use 실패는 활성 상태를 보존" "other" "$(cat "$sb/active" 2>/dev/null)"
+  chk "CCT_STICKY=0 이면 use rc=1" "1" "$(CCT_STICKY=0 cct use good >/dev/null 2>&1; echo $?)"
+  chk_has "CCT_STICKY=0 use 안내" "sticky" "$(CCT_STICKY=0 cct use good 2>&1 >/dev/null)"
+  chk "CCT_STICKY=0 use 는 활성 파일을 건드리지 않음" "other" "$(cat "$sb/active" 2>/dev/null)"
+
+  echo "-- 잠금 점유 중 use 는 실패하고 활성 상태를 보존한다"
+  mkdir "$sb/tokens.env.lock"
+  printf '%s %s\n' "$$" "$(date +%s)" > "$sb/tokens.env.lock/owner"
+  cap="$(cct use good 2>&1)"; rc=$?
+  chk "잠금 점유 use rc=1" "1" "$rc"
+  chk "잠금 점유 use 는 활성 보존" "other" "$(cat "$sb/active" 2>/dev/null)"
+  chk_not_has "잠금 점유 use 는 성공 메시지 없음" "✓ 활성" "$cap"
+  rm -rf "$sb/tokens.env.lock"
+  cct off >/dev/null 2>&1   # 이후 테스트를 위해 활성·셸 env 원복
 }
 
 # -------------------------------------------------------------------------
@@ -1012,6 +1052,120 @@ SHIM
   chk "라벨 형식 오류 rc=2" "2" "$(bash -c ". '$REPO/cct.sh'; cct usage 'BAD!'" >/dev/null 2>&1; echo $?)"
   chk "잉여 인자 rc=2" "2" "$(bash -c ". '$REPO/cct.sh'; cct usage a b" >/dev/null 2>&1; echo $?)"
   chk "usage 는 예약어 (add 거부)" "2" "$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" bash -c ". '$REPO/cct.sh'; printf 'x\n' | cct add usage" >/dev/null 2>&1; echo $?)"
+
+  echo "-- --json: 기계 판독 출력 (대시보드·서버 계약)"
+  # 픽스처 curl·고정 now·절대경로 우회 심을 동일 조건으로 묶는다. 실호출은 0회.
+  usage_json(){
+    PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" TZ=UTC CCT_USAGE_NOW=1000000000 \
+      bash -c '. "$1"; _cct_system(){ command "$@"; }; shift; cct usage --json "$@"' \
+        cct-json "$REPO/cct.sh" "$@" 2>/dev/null
+  }
+  printf 'CCT_TOKEN_EMPTYJSON=\n' >> "$sb/tokens.env"
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+printf '%s\n' \
+  'HTTP/1.1 200 OK' \
+  'anthropic-organization-id: org123456789' \
+  'anthropic-ratelimit-unified-5h-utilization: 0.25' \
+  'anthropic-ratelimit-unified-5h-reset: 1000005000' \
+  'anthropic-ratelimit-unified-5h-status: allowed' \
+  'anthropic-ratelimit-unified-7d-utilization: 0.505' \
+  'anthropic-ratelimit-unified-7d-reset: 1000135000' \
+  'anthropic-ratelimit-unified-7d-status: allowed' \
+  'anthropic-ratelimit-unified-7d_oi-utilization: 0.69' \
+  'anthropic-ratelimit-unified-7d_oi-reset: 1000135000' \
+  'anthropic-ratelimit-unified-7d_oi-status: allowed'
+SHIM
+  chmod 700 "$sb/bin/curl"
+  out="$(usage_json alpha)"; rc=$?
+  chk "--json alpha rc=0" "0" "$rc"
+  chk "--json alpha: 스키마 정확 일치" \
+    '{"label":"alpha","state":"ok","org":"org12345","now":1000000000,"probe":{"premium_model":"claude-fable-5","premium_http":200,"denied":null,"fallback":false},"windows":{"5h":{"utilization":0.25,"reset":1000005000,"status":"allowed"},"7d":{"utilization":0.505,"reset":1000135000,"status":"allowed"},"7d_oi":{"utilization":0.69,"reset":1000135000,"status":"allowed"}}}' \
+    "$out"
+  chk "--json: 라벨당 한 줄" "1" "$(printf '%s\n' "$out" | grep -c .)"
+  chk_not_has "--json: 헤더 문구 없음" "구독 사용량" "$out"
+  chk_not_has "--json: 게이지 렌더 없음" "█" "$out"
+  chk_not_has "--json: 토큰이 출력에 없다" "$tok_secret" "$out"
+  chk "--json empty: 토큰없음도 JSON 으로 rc=0" \
+    '{"label":"emptyjson","state":"no_token","org":null,"now":1000000000,"probe":null,"windows":null}' \
+    "$(usage_json emptyjson)"
+  out="$(usage_json --all)"; rc=$?
+  chk "--json --all rc=0" "0" "$rc"
+  chk "--json --all: 줄 수 = 라벨 수" "$(grep -c '^CCT_TOKEN_' "$sb/tokens.env")" "$(printf '%s\n' "$out" | grep -c .)"
+  chk_not_has "--json --all: 헤더 문구 없음" "구독 사용량" "$out"
+  chk "--json --all: 라벨 사이 빈 줄 없음" "0" "$(printf '%s' "$out" | grep -c '^$')"
+  if command -v python3 >/dev/null 2>&1; then
+    chk "--json --all: 줄마다 JSON 파서 통과" "OK" \
+      "$(printf '%s\n' "$out" | python3 -c 'import json,sys;[json.loads(l) for l in sys.stdin if l.strip()];print("OK")' 2>/dev/null)"
+  else
+    echo "  (python3 없음 → JSON 파서 검증 생략)"
+  fi
+
+  # 프리미엄 429 → 폴백 프로브. denied 는 코드 문자열, 프리미엄 전용 창은 null.
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+case "$*" in
+  *claude-fable-5*|*"You are Claude Code"*)
+    printf '%s\n' 'HTTP/1.1 429 ' 'x-should-retry: true'
+    ;;
+  *)
+    printf '%s\n' \
+      'HTTP/1.1 200 OK' \
+      'anthropic-organization-id: org123456789' \
+      'anthropic-ratelimit-unified-5h-utilization: 0.25' \
+      'anthropic-ratelimit-unified-5h-reset: 1000005000' \
+      'anthropic-ratelimit-unified-7d-utilization: 0.505' \
+      'anthropic-ratelimit-unified-7d-reset: 1000135000'
+    ;;
+esac
+SHIM
+  chmod 700 "$sb/bin/curl"
+  chk "--json: 프리미엄 429 → denied/fallback/7d_oi null" \
+    '{"label":"alpha","state":"ok","org":"org12345","now":1000000000,"probe":{"premium_model":"claude-fable-5","premium_http":429,"denied":"429","fallback":true},"windows":{"5h":{"utilization":0.25,"reset":1000005000,"status":null},"7d":{"utilization":0.505,"reset":1000135000,"status":null},"7d_oi":null}}' \
+    "$(usage_json alpha)"
+
+  # 손상 값은 전부 null 로 떨어져야 한다 (따옴표 삽입·JSON 문법 위반 차단).
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+printf '%s\n' \
+  'HTTP/1.1 200 OK' \
+  'anthropic-organization-id: org123456789' \
+  'anthropic-ratelimit-unified-5h-utilization: abc' \
+  'anthropic-ratelimit-unified-5h-reset: 0900005000' \
+  'anthropic-ratelimit-unified-5h-status: ALLOWED' \
+  'anthropic-ratelimit-unified-7d-utilization: 1.2.3' \
+  'anthropic-ratelimit-unified-7d-reset: 1000135000' \
+  'anthropic-ratelimit-unified-7d-status: allowed_warning'
+SHIM
+  chmod 700 "$sb/bin/curl"
+  out="$(usage_json alpha)"
+  chk "--json: 비숫자·다중점·선행0·대문자 status 는 null" \
+    '{"label":"alpha","state":"ok","org":"org12345","now":1000000000,"probe":{"premium_model":"claude-fable-5","premium_http":200,"denied":null,"fallback":false},"windows":{"5h":{"utilization":null,"reset":null,"status":null},"7d":{"utilization":null,"reset":1000135000,"status":"allowed_warning"},"7d_oi":null}}' \
+    "$out"
+  if command -v python3 >/dev/null 2>&1; then
+    chk "--json: 손상 헤더에도 파서 통과" "OK" \
+      "$(printf '%s\n' "$out" | python3 -c 'import json,sys;[json.loads(l) for l in sys.stdin if l.strip()];print("OK")' 2>/dev/null)"
+  fi
+
+  # 무응답(curl 실패) → state no_response, probe 는 프리미엄 기준으로 남는다.
+  cat > "$sb/bin/curl" <<'SHIM'
+#!/bin/sh
+cat > /dev/null
+exit 7
+SHIM
+  chmod 700 "$sb/bin/curl"
+  chk "--json: 응답실패는 state no_response rc=0" \
+    '{"label":"alpha","state":"no_response","org":null,"now":1000000000,"probe":{"premium_model":"claude-fable-5","premium_http":null,"denied":"no_response","fallback":true},"windows":null}' \
+    "$(usage_json alpha)"
+  chk "--json 응답실패 rc=0" "0" "$(usage_json alpha >/dev/null 2>&1; echo $?)"
+
+  chk "--json 라벨 2개 rc=2" "2" "$(usage_json a b >/dev/null 2>&1; echo $?)"
+  chk "--json 중복 rc=2" "2" "$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" bash -c ". '$REPO/cct.sh'; cct usage --json --json alpha" >/dev/null 2>&1; echo $?)"
+  chk "--json 라벨 형식 오류 rc=2" "2" "$(usage_json 'BAD!' >/dev/null 2>&1; echo $?)"
+  chk "--all --json 순서 무관 rc=0" "0" "$(PATH="$sb/bin:/usr/bin:/bin" CCT_ENV_FILE="$sb/tokens.env" CCT_USAGE_NOW=1000000000 bash -c ". '$REPO/cct.sh'; _cct_system(){ command \"\$@\"; }; cct usage --all --json" >/dev/null 2>&1; echo $?)"
   rm -rf "$sb"
 }
 
@@ -1497,8 +1651,12 @@ SHIM
   chk "run and direct output are identical" "$direct" "$explicit"
   cap="$(cct run rm --version 2>&1)"
   chk_has "run escapes reserved legacy label" "tok=[fixture-legacy-rm]" "$cap"
-  cap="$(cct use --version 2>&1)"
-  chk_has "use remains an allowed direct label" "tok=[fixture-use]" "$cap"
+  # use 는 이제 서브커맨드 예약어다. 레거시 지갑에 남은 use 라벨은 run 으로만 실행된다.
+  cap="$(cct run use --version 2>&1)"
+  chk_has "run escapes newly reserved label use" "tok=[fixture-use]" "$cap"
+  cct use --version >/dev/null 2>&1
+  chk "cct use 는 라벨 실행이 아니라 전환 서브커맨드 -> 2" "2" "$?"
+  cct add use >/dev/null 2>&1; chk "add use is reserved -> 2" "2" "$?"
   cct add run >/dev/null 2>&1; chk "add run is reserved -> 2" "2" "$?"
   cct add rm >/dev/null 2>&1; chk "add rm is reserved -> 2" "2" "$?"
   cct add rename >/dev/null 2>&1; chk "add rename is reserved -> 2" "2" "$?"

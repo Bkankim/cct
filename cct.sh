@@ -14,7 +14,8 @@
 #   cct doctor                  → 지갑 구조/권한/잠금 진단 (오프라인)
 #   cct check [라벨]            → 토큰 유효성 점검 (실제 호출)
 #   cct fp|who [라벨]           → 계정 지문 (실제 호출)
-#   cct usage [라벨|--all]      → 구독 사용량 5h/7d/7f(프리미엄) 사용률·리셋 (실제 호출, 기본 활성 라벨)
+#   cct usage [라벨|--all]      → 구독 사용량 5h/7d/7f(프리미엄) 사용률·리셋 (실제 호출, 기본 활성 라벨, --json 은 라벨당 JSON 한 줄)
+#   cct use <라벨>              → claude 실행 없이 활성(sticky) 라벨만 전환 (대시보드·스크립트용)
 #   cct active                  → 현재 활성(sticky) 라벨 표시
 #   cct refresh                 → 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)
 #   cct off                     → 활성 라벨과 현재 셸 인증 환경 해제
@@ -174,7 +175,7 @@ _cct_validate_label() {  # $1 = label
 
 # 예약어(서브커맨드)와 충돌하는 라벨 거부.  rc 0 = 예약됨.
 _cct_reserved_label() {  # $1 = label
-  case "${1-}" in help|ls|list|add|run|rm|rename|status|doctor|check|fp|who|usage|off|active|refresh) return 0 ;; *) return 1 ;; esac
+  case "${1-}" in help|ls|list|add|run|rm|rename|status|doctor|check|fp|who|usage|use|off|active|refresh) return 0 ;; *) return 1 ;; esac
 }
 
 _cct_list() {
@@ -1003,19 +1004,105 @@ _cct_usage_remaining() {  # $1=reset epoch, $2=now epoch → "1d13h"/"1h23m"/"45
   else printf '%dm' "$m"; fi
 }
 
+# ── usage --json 값 헬퍼 ──────────────────────────────────────────────
+# 대시보드·스크립트가 파싱할 NDJSON(라벨당 한 줄) 조립용. 화이트리스트를 통과한
+# 값만 그대로 쓰고 검증 실패는 전부 null 로 떨어뜨린다. 따옴표·역슬래시가 JSON 에
+# 섞이는 경로 자체를 없애 이스케이프를 불필요하게 만든다.
+
+_cct_usage_now() {  # CCT_USAGE_NOW 가 숫자면 그 값, 아니면 현재 epoch (실패 시 0)
+  case "${CCT_USAGE_NOW-}" in
+    ''|*[!0-9]*) _cct_system date +%s 2>/dev/null || echo 0 ;;
+    *) printf '%s' "$CCT_USAGE_NOW" ;;
+  esac
+}
+
+_cct_usage_json_num() {  # 사용률(0~1 소수) → 원문 숫자 / 검증 실패 → null
+  # JSON 숫자 문법을 만족하는 형태만 통과시킨다. 선행 점(.25)·후행 점(1.)·선행 0
+  # 중복(0900.5)은 손상 헤더일 뿐 아니라 파서가 거부하는 값이라 전부 null 로 떨군다.
+  case "${1-}" in
+    ''|.|*[!0-9.]*|*.*.*) printf '%s' 'null'; return 0 ;;
+    .*|*.) printf '%s' 'null'; return 0 ;;
+    0|0.*) printf '%s' "$1"; return 0 ;;
+    0*) printf '%s' 'null'; return 0 ;;
+  esac
+  printf '%s' "$1"
+}
+
+_cct_usage_json_int() {  # epoch·정수 → 원문 정수 / 검증 실패 → null
+  # 선행 0(0900005000)은 JSON 정수가 아니다. 0 자체만 통과시키고 나머지는 null.
+  case "${1-}" in
+    ''|*[!0-9]*) printf '%s' 'null'; return 0 ;;
+    0) printf '%s' '0'; return 0 ;;
+    0*) printf '%s' 'null'; return 0 ;;
+  esac
+  printf '%s' "$1"
+}
+
+_cct_usage_json_word() {  # status([a-z_]+) → "값" / 검증 실패 → null
+  local LC_ALL=C   # 로케일 콜레이션이 a-z 범위에 대문자를 끌어들이는 것 방지
+  case "${1-}" in ''|*[!a-z_]*) printf '%s' 'null'; return 0 ;; esac
+  builtin printf '"%s"' "$1"
+}
+
+_cct_usage_json_id() {  # org·모델명([A-Za-z0-9._-]+) → "값" / 검증 실패 → null
+  local LC_ALL=C
+  case "${1-}" in ''|*[!A-Za-z0-9._-]*) printf '%s' 'null'; return 0 ;; esac
+  builtin printf '"%s"' "$1"
+}
+
+_cct_usage_json_window() {  # $1=사용률 $2=reset $3=status → 창 객체 / 헤더 부재 → null
+  [ -n "${1-}${2-}${3-}" ] || { printf '%s' 'null'; return 0; }
+  builtin printf '{"utilization":%s,"reset":%s,"status":%s}' \
+    "$(_cct_usage_json_num "${1-}")" "$(_cct_usage_json_int "${2-}")" "$(_cct_usage_json_word "${3-}")"
+}
+
+_cct_usage_json_probe() {  # $1=프리미엄 모델 $2=프리미엄 응답코드 → probe 객체
+  # denied 는 프리미엄 비 200 일 때만 채운다. 코드가 3자리 숫자가 아니면(무응답·손상된
+  # 상태줄) "no_response" 로 고정해 임의 문자열이 JSON 에 실리는 경로를 막는다.
+  local http denied fallback
+  case "${2-}" in
+    [1-9][0-9][0-9]) http="$2" ;;
+    *) http='null' ;;
+  esac
+  if [ "${2-}" = "200" ]; then
+    denied='null'
+    fallback='false'
+  else
+    fallback='true'
+    case "${2-}" in
+      [1-9][0-9][0-9]) denied="\"$2\"" ;;
+      *) denied='"no_response"' ;;
+    esac
+  fi
+  builtin printf '{"premium_model":%s,"premium_http":%s,"denied":%s,"fallback":%s}' \
+    "$(_cct_usage_json_id "${1-}")" "$http" "$denied" "$fallback"
+}
+
 _cct_usage_one() (
-  local tok H org u5 r5 s5 u7 r7 s7 uo ro so now denied pm
+  local tok H org u5 r5 s5 u7 r7 s7 uo ro so now denied pm mode phttp jprobe
   unset -f read printf tr awk curl date timeout gtimeout perl mktemp chmod cp mv command builtin 2>/dev/null || true
   _cct_validate_label "${1-}" || return 2
+  # $2 = json 이면 기계 판독(NDJSON) 출력. 서브셸이라 전역 변수로는 못 받고 인자로 받는다.
+  mode="${2-}"
   # 활성 라벨은 TTY 에서 붉은색 강조 — %-6s 패딩을 먼저 하고 ANSI 로 감싸야
   # 이스케이프 바이트가 폭 계산에 끼어 게이지 정렬이 틀어지지 않는다.
-  local lbl
-  lbl="$(printf '%-6s' "$1")"
-  if [ -t 1 ] && [ "$1" = "$(_cct_active_label)" ]; then
-    lbl="$(printf '\033[31m%s\033[0m' "$lbl")"
+  local lbl=""
+  if [ "$mode" != json ]; then
+    lbl="$(printf '%-6s' "$1")"
+    if [ -t 1 ] && [ "$1" = "$(_cct_active_label)" ]; then
+      lbl="$(printf '\033[31m%s\033[0m' "$lbl")"
+    fi
   fi
   tok="$(_cct_envtok "$(_cct_key "$1")")"
-  [ -n "$tok" ] || { printf '  %s 토큰없음\n' "$lbl"; return 0; }
+  if [ -z "$tok" ]; then
+    if [ "$mode" = json ]; then
+      builtin printf '{"label":"%s","state":"no_token","org":null,"now":%s,"probe":null,"windows":null}\n' \
+        "$1" "$(_cct_usage_json_int "$(_cct_usage_now)")"
+      return 0
+    fi
+    printf '  %s 토큰없음\n' "$lbl"
+    return 0
+  fi
   # 1차: 프리미엄 모델 프로브 (Claude Code 에뮬레이션 — 시스템 프롬프트+beta+UA 필수).
   # 성공 응답에만 프리미엄 7d_oi(=7f) 창 헤더가 실려 오고, 에뮬레이션 없이는
   # 프리미엄 모델이 헤더 없는 429 로 게이트된다. 프로브 비용: 프리미엄 ≤32토큰.
@@ -1032,10 +1119,11 @@ _cct_usage_one() (
         2>/dev/null || true
   )"
   denied=""
-  case "$(printf '%s\n' "$H" | _cct_system awk 'NR==1{print $2}')" in
+  phttp="$(printf '%s\n' "$H" | _cct_system awk 'NR==1{print $2}')"
+  case "$phttp" in
     200) ;;
     *)
-      denied="$(printf '%s\n' "$H" | _cct_system awk 'NR==1{print $2}')"
+      denied="$phttp"
       [ -n "$denied" ] || denied="무응답"
       # 폴백: 표준 모델 프로브로 일반(5h/7d) 창만이라도 확보
       H="$(
@@ -1048,8 +1136,19 @@ _cct_usage_one() (
       )"
       ;;
   esac
+  # JSON probe 객체는 폴백 여부와 무관하게 프리미엄 프로브 결과 기준으로 고정한다.
+  jprobe=""
+  [ "$mode" != json ] || jprobe="$(_cct_usage_json_probe "$pm" "$phttp")"
   org="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-organization-id"{print $2}' | _cct_system tr -d '\r' || true)"
-  [ -n "$org" ] || { printf '  %s 응답실패\n' "$lbl"; return 0; }
+  if [ -z "$org" ]; then
+    if [ "$mode" = json ]; then
+      builtin printf '{"label":"%s","state":"no_response","org":null,"now":%s,"probe":%s,"windows":null}\n' \
+        "$1" "$(_cct_usage_json_int "$(_cct_usage_now)")" "$jprobe"
+      return 0
+    fi
+    printf '  %s 응답실패\n' "$lbl"
+    return 0
+  fi
   u5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-utilization"{print $2}' | _cct_system tr -d '\r' || true)"
   r5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-reset"{print $2}' | _cct_system tr -d '\r' || true)"
   s5="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-5h-status"{print $2}' | _cct_system tr -d '\r' || true)"
@@ -1060,10 +1159,19 @@ _cct_usage_one() (
   ro="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d_oi-reset"{print $2}' | _cct_system tr -d '\r' || true)"
   so="$(printf '%s' "$H" | _cct_system awk -F': ' 'tolower($1)=="anthropic-ratelimit-unified-7d_oi-status"{print $2}' | _cct_system tr -d '\r' || true)"
   # CCT_USAGE_NOW: 결정적 테스트용 now 고정 (숫자가 아니면 무시)
-  case "${CCT_USAGE_NOW-}" in
-    ''|*[!0-9]*) now="$(_cct_system date +%s 2>/dev/null || echo 0)" ;;
-    *) now="$CCT_USAGE_NOW" ;;
-  esac
+  now="$(_cct_usage_now)"
+  # JSON 모드는 여기서 라벨당 한 줄을 조립하고 끝낸다(게이지·ANSI 렌더 생략).
+  if [ "$mode" = json ]; then
+    builtin printf '{"label":"%s","state":"ok","org":%s,"now":%s,"probe":%s,"windows":{"5h":%s,"7d":%s,"7d_oi":%s}}\n' \
+      "$1" \
+      "$(_cct_usage_json_id "$(builtin printf '%.8s' "$org")")" \
+      "$(_cct_usage_json_int "$now")" \
+      "$jprobe" \
+      "$(_cct_usage_json_window "$u5" "$r5" "$s5")" \
+      "$(_cct_usage_json_window "$u7" "$r7" "$s7")" \
+      "$(_cct_usage_json_window "$uo" "$ro" "$so")"
+    return 0
+  fi
   local flag5="" flag7="" pct5 pct7
   [ -n "$s5" ] && [ "$s5" != "allowed" ] && flag5="  [5h-status:$s5]"
   [ -n "$s7" ] && [ "$s7" != "allowed" ] && flag7="  [7d-status:$s7]"
@@ -1089,31 +1197,52 @@ _cct_usage_one() (
 )
 
 _cct_usage() {
-  [ "$#" -le 1 ] || { echo "사용법: cct usage [라벨|--all]" >&2; return 2; }
-  local label=""
-  if [ "${1-}" = "--all" ]; then
-    label="--all"
-  elif [ -n "${1-}" ]; then
-    _cct_validate_label "$1" || return 2
-    label="$1"
-  else
-    label="$(_cct_active_label)"
-    [ -n "$label" ] || { echo "활성 프로필 없음 — 사용법: cct usage <라벨> | --all" >&2; return 2; }
+  local label="" json=0 pos=0 arg mode=""
+  # --json 은 위치 무관·중복 금지, 라벨(또는 --all)은 최대 1개.
+  for arg in "$@"; do
+    case "$arg" in
+      --json)
+        [ "$json" -eq 0 ] || { echo "사용법: cct usage [--json] [라벨|--all]" >&2; return 2; }
+        json=1
+        ;;
+      *)
+        pos=$(( pos + 1 ))
+        [ "$pos" -le 1 ] || { echo "사용법: cct usage [--json] [라벨|--all]" >&2; return 2; }
+        label="$arg"
+        ;;
+    esac
+  done
+  [ "$json" -eq 0 ] || mode=json
+  if [ "$label" != "--all" ]; then
+    if [ -n "$label" ]; then
+      _cct_validate_label "$label" || return 2
+    else
+      label="$(_cct_active_label)"
+      [ -n "$label" ] || { echo "활성 프로필 없음 — 사용법: cct usage [--json] <라벨> | --all" >&2; return 2; }
+    fi
   fi
-  echo "구독 사용량 (실호출 1토큰 프로브)"
+  # JSON 모드 stdout 은 라벨당 JSON 한 줄뿐이다. 헤더 문구·구분 빈 줄·ANSI 를 내지 않는다.
+  [ "$json" -eq 1 ] || echo "구독 사용량 (실호출 1토큰 프로브)"
   if [ "$label" = "--all" ]; then
     local labels lc first=1
     labels="$(_cct_labels)"
-    [ -n "$labels" ] || { echo "  (등록된 계정 없음)"; return 0; }
+    if [ -z "$labels" ]; then
+      [ "$json" -eq 1 ] || echo "  (등록된 계정 없음)"
+      return 0
+    fi
     # 라벨마다 2~3줄 게이지가 붙어 보이지 않게 라벨 사이 빈 줄로 구분
     printf '%s\n' "$labels" | while IFS= read -r lc; do
       [ -n "$lc" ] || continue
+      if [ "$json" -eq 1 ]; then
+        _cct_usage_one "$lc" json
+        continue
+      fi
       if [ "$first" = 1 ]; then first=0; else echo ""; fi
       _cct_usage_one "$lc"
     done
     return 0
   fi
-  _cct_usage_one "$label"
+  _cct_usage_one "$label" "$mode"
 }
 
 _cct_help() {
@@ -1133,7 +1262,9 @@ _cct_help() {
     "  cct doctor                  지갑 구조·권한·백업·잠금 진단 (오프라인)" \
     "  cct check [라벨]            토큰 유효성 점검 (실제 호출)" \
     "  cct fp [라벨] | cct who [라벨]  계정 지문·중복 점검 (실제 호출)" \
-    "  cct usage [라벨|--all]      구독 사용량 5h/7d/7f(프리미엄) 사용률·리셋 (실제 호출, 기본 활성 라벨)" \
+    "  cct usage [--json] [라벨|--all]  구독 사용량 5h/7d/7f(프리미엄) 사용률·리셋 (실제 호출, 기본 활성 라벨)" \
+    "                                 --json 은 라벨당 JSON 한 줄(NDJSON) 출력 (대시보드·스크립트용)" \
+    "  cct use <라벨>              claude 실행 없이 활성(sticky) 라벨만 전환 (열린 다른 셸은 cct refresh)" \
     "  cct active                  현재 sticky 활성 라벨 표시" \
     "  cct refresh                 디스크의 활성 라벨을 현재 셸 env 에 재적용 (다른 터미널 전환 동기화)" \
     "  cct off                     활성 라벨과 현재 셸 cct 인증 환경 해제" \
@@ -1327,6 +1458,36 @@ _cct_active_change_locked() (
   rc=$?
   exit "$rc"
 )
+
+# ── 활성(sticky) 라벨만 전환 (claude 실행 없음) ───────────────────────
+# cct <라벨> 는 항상 claude 를 띄운다. 대시보드·스크립트처럼 계정만 바꾸고 싶은
+# 호출자를 위해 launch 없이 활성 프로필만 기록하는 경로를 둔다. 잠금·선택 중 변경
+# 가드·원자적 교체는 라벨 실행과 동일한 _cct_active_change_locked 를 그대로 쓴다.
+_cct_use() {
+  local label="${1-}" key tok
+  if [ "$#" -ne 1 ] || [ -z "$label" ]; then
+    echo "사용법: cct use <라벨>" >&2
+    return 2
+  fi
+  _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음." >&2; return 2; }
+  _cct_validate_label "$label" || return 2
+  if [ "${CCT_STICKY:-1}" = "0" ]; then
+    # sticky 가 꺼져 있으면 활성 파일 자체를 쓰지 않는 계약이라 use 는 무의미하다.
+    echo "❌ sticky 가 꺼져 있어 use 는 의미 없음 (CCT_STICKY=0)" >&2
+    return 1
+  fi
+  _cct_wallet_require_safe || return 1
+  key="$(_cct_key "$label")"
+  tok="$(_cct_envtok "$key")"
+  [ -n "$tok" ] || { echo "❌ '$label' 토큰 없음 (등록: cct add $label)" >&2; return 1; }
+  _cct_active_change_locked write "$label" "$tok" || {
+    echo "❌ 활성 프로필 저장 실패: $(_cct_active_file)" >&2
+    return 1
+  }
+  _cct_apply_env "$tok"
+  _cct_gjc_guard
+  echo "✓ 활성 = $label (열린 다른 셸은 cct refresh)"
+}
 
 _cct_off() {  # sticky 해제: 저장 파일 삭제 + 현재 셸 env 해제
   _cct_active_change_locked delete || {
@@ -1882,6 +2043,7 @@ cct() {
     check)    shift; _cct_check "$@"; return ;;
     fp|who)   shift; _cct_fp "$@"; return ;;
     usage)    shift; _cct_usage "$@"; return ;;
+    use)      shift; _cct_use "$@"; return ;;
     off)      shift; [ "$#" -eq 0 ] || { echo "사용법: cct off" >&2; return 2; }; _cct_off; return ;;
     active)   shift; [ "$#" -eq 0 ] || { echo "사용법: cct active" >&2; return 2; }; _cct_active_show; return ;;
     refresh)  shift; [ "$#" -eq 0 ] || { echo "사용법: cct refresh" >&2; return 2; }; _cct_refresh; return ;;
