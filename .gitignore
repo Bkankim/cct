@@ -13,3 +13,10 @@ tokens.env.lock/
 *.pem
 cct-active
 .DS_Store
+
+# 대시보드 로컬 산출물 - 상태 파일은 ~/.claude/ 아래에만 둔다
+__pycache__/
+*.pyc
+cct-dash-state.json
+cct-dash-state.fake.json
+dashboard/.web-backup-*

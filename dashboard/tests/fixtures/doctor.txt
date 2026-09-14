@@ -1,0 +1,8 @@
+PASS wallet: readable regular file, mode 600
+PASS structure: {accounts} account(s), annotations valid
+PASS active: label resolves
+PASS default: label resolves
+PASS backup: mode 600
+WARN lock: live mutation in progress
+PASS claude: executable found
+PASS shell: Bash or Zsh sourced state detected

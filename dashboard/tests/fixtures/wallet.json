@@ -1,0 +1,49 @@
+{
+  "fixture_now": 1789400000,
+  "status": {
+    "wallet": "~/.claude/tokens.env",
+    "mode": "600",
+    "sticky": "enabled",
+    "claude": "/Users/you/.local/bin/claude",
+    "claude_version": "2.1.270"
+  },
+  "active": "acct1",
+  "default": "acct1",
+  "accounts": [
+    {
+      "label": "acct1",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "acct4",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "acct5",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "acct2",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "acct4b",
+      "has_token": true,
+      "check_rc": 0
+    },
+    {
+      "label": "team",
+      "has_token": true,
+      "check_rc": 1
+    },
+    {
+      "label": "spare",
+      "has_token": false,
+      "check_rc": 2
+    }
+  ]
+}
