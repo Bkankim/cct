@@ -2,6 +2,10 @@
 
 [한국어](README.md) · **English**
 
+[![cct dashboard](dashboard/screenshots/desktop-1400.png)](#dashboard-optional)
+
+<sub>The optional [local dashboard](#dashboard-optional) — a fixture-mode demo with account labels blurred. cct itself is a shell tool.</sub>
+
 Authenticate each Claude account once with `claude setup-token`, register the long-lived token in a local wallet, and explicitly select an account with `cct <label>` whenever you need it. Move the wallet securely to use Claude Code in a new environment without repeating browser OAuth login for every account.
 
 **Works on macOS, Linux, and WSL2.** It is not a proxy, orchestrator, automatic router, or load balancer. The user always chooses which account to use.
@@ -84,8 +88,6 @@ uv run --script dashboard/server.py --fake --port 8799   # fixture mode (zero re
 ```
 
 It binds to `127.0.0.1` and is read-first by default. Adding, renaming, and deleting accounts only appear once you enable write mode from the `···` menu, and token values never show up on screen, in responses, or in the execution log. For always-on use, see the plist templates in `dashboard/launchd/`.
-
-![Dashboard, desktop](dashboard/screenshots/desktop-1400.png)
 
 | Area | Content | Probe |
 |---|---|---|

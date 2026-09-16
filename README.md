@@ -2,6 +2,10 @@
 
 **한국어** · [English](README.en.md)
 
+[![cct 대시보드](dashboard/screenshots/desktop-1400.png)](#대시보드-선택)
+
+<sub>선택 기능인 [로컬 대시보드](#대시보드-선택) — 픽스처 데모이며 계정 라벨은 블러 처리했다. cct 자체는 셸 도구다.</sub>
+
 여러 Claude 계정을 한 번씩 `claude setup-token`으로 인증해 장기 토큰을 로컬 지갑에 등록하고, 필요할 때 `cct <라벨>`로 직접 선택하는 셸 도구다. 지갑을 안전하게 옮기면 새 환경에서 계정마다 브라우저 OAuth 로그인을 반복하지 않고 Claude Code를 사용할 수 있다.
 
 **macOS / Linux / WSL2에서 동작한다.** 프록시, 오케스트레이터, 자동 라우터, 로드밸런서가 아니다. 어떤 계정을 쓸지는 항상 사용자가 명시적으로 고른다.
@@ -84,8 +88,6 @@ uv run --script dashboard/server.py --fake --port 8799   # 픽스처 모드(실�
 ```
 
 기본은 `127.0.0.1` 바인드이고 읽기 우선이다. 계정 등록·이름변경·삭제는 `···` 메뉴의 쓰기 모드를 켜야 보이며, 토큰 값은 화면·응답·실행 로그 어디에도 나타나지 않는다. 상시 실행은 `dashboard/launchd/` 의 plist 템플릿을 쓴다.
-
-![대시보드 데스크톱](dashboard/screenshots/desktop-1400.png)
 
 | 영역 | 내용 | 프로브 |
 |---|---|---|
