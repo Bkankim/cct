@@ -74,6 +74,40 @@ Sticky는 기본으로 켜져 있다. `cct <라벨>`이 선택한 계정을 현�
 
 env 상속이 아니라 명령값 시크릿을 지원하는 도구에는 설치기가 함께 놓는 `~/.claude/cct-token.sh` 브릿지(mode `700`)를 쓴다. 활성 프로필의 setup-token을 stdout으로만 출력하고, 활성 프로필·토큰이 없으면 아무것도 출력하지 않고 비제로 종료한다. 예: aside의 `models.json`에 `"apiKey": "!<홈경로>/.claude/cct-token.sh"` — 호출 시점의 활성 계정을 실시간으로 따라간다.
 
+## 대시보드 (선택)
+
+`dashboard/` 에 지갑 상태를 한 화면에서 보는 로컬 웹 대시보드가 있다. 터미널에서 `cct status` · `cct doctor` · `cct usage --all` 을 따로 치는 대신, 어느 계정이 얼마나 남았고 지금 어디로 갈아타야 하는지를 한눈에 본다. 빌드 도구·외부 리소스·CDN 이 없는 바닐라 HTML/CSS/JS 와 표준 라이브러리 파이썬 서버뿐이다.
+
+```sh
+uv run --script dashboard/server.py --port 8790          # 실지갑
+uv run --script dashboard/server.py --fake --port 8799   # 픽스처 모드(실프로브 0회)
+```
+
+기본은 `127.0.0.1` 바인드이고 읽기 우선이다. 계정 등록·이름변경·삭제는 `···` 메뉴의 쓰기 모드를 켜야 보이며, 토큰 값은 화면·응답·실행 로그 어디에도 나타나지 않는다. 상시 실행은 `dashboard/launchd/` 의 plist 템플릿을 쓴다.
+
+![대시보드 데스크톱](dashboard/screenshots/desktop-1400.png)
+
+| 영역 | 내용 | 프로브 |
+|---|---|---|
+| 상단 바 | 연결 상태·마지막 갱신·오늘 프로브 예산·자동갱신 주기·전체 갱신 | 갱신 시 소비 |
+| 활성 계정 바 | 활성 라벨, statusline 캐시의 5h/7d·모델·컨텍스트·세션 비용, 갈아탈 계정 1개와 전환 버튼 | 없음 |
+| 계정 카드 | 라벨별 5h/7d/7f 한 줄 미터·리셋 시각·상태 배지·org·check | 갱신·점검 시 소비 |
+| 리셋 타임라인 | 다음 24시간의 창 리셋 시점 | 없음 |
+| 진단 | `cct doctor` 를 PASS/WARN/FAIL 로, 정상은 접고 경고·실패만 펼침 | 없음 |
+
+사용률 바는 65% 미만 여유, 65~89% 주의, 90% 이상 또는 `rejected` 를 위험으로 칠한다. 값이 없는 창은 숫자를 만들지 않고 `미확인` · `미지원` · `응답 실패` 처럼 사유를 적는다. `cct usage` 는 실제 API 호출이라 사용량을 소비하므로(프리미엄 프로브 ≤32토큰), 상단 바가 오늘 쓴 프로브 횟수와 추정 토큰을 항상 보여준다.
+
+<details>
+<summary>400px 모바일 · 쓰기 모드 화면</summary>
+
+![400px 모바일](dashboard/screenshots/mobile-400.png)
+
+![쓰기 모드](dashboard/screenshots/write-mode-1400.png)
+
+</details>
+
+스크린샷은 모두 픽스처 모드(`--fake`)로 찍은 데모이며 계정 라벨은 블러 처리했다. 자세한 내용은 [dashboard/README.md](dashboard/README.md) 에 있다.
+
 ## 휴대성과 OSS 경계
 
 실제 자격 증명은 저장소 밖의 `~/.claude/tokens.env`(또는 `CCT_ENV_FILE`)에만 있다. 공개 저장소에는 실제 지갑이 없고, clone만으로는 어떤 계정에도 접근할 수 없다. `.gitignore`와 installer의 전역 ignore는 실수 방지 장치일 뿐 보안 경계가 아니므로, 자격 증명 파일을 Git에 추가하지 않는 책임은 사용자에게 있다.

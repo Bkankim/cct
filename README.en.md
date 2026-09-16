@@ -74,6 +74,40 @@ When applying or clearing an account, cct exports and unsets `ANTHROPIC_OAUTH_TO
 
 For tools that support command-valued secrets instead of env inheritance, the installer also ships the `~/.claude/cct-token.sh` bridge (mode `700`). It prints the active profile's setup-token to stdout and exits non-zero with no output when there is no active profile or token. Example: aside's `models.json` with `"apiKey": "!<home>/.claude/cct-token.sh"` — the tool follows the active account at call time.
 
+## Dashboard (optional)
+
+`dashboard/` holds a local web dashboard that shows wallet state on one screen. Instead of typing `cct status`, `cct doctor`, and `cct usage --all` separately, you see at a glance how much each account has left and which one to switch to. It is vanilla HTML/CSS/JS plus a standard-library Python server — no build step, no external resources, no CDN.
+
+```sh
+uv run --script dashboard/server.py --port 8790          # real wallet
+uv run --script dashboard/server.py --fake --port 8799   # fixture mode (zero real probes)
+```
+
+It binds to `127.0.0.1` and is read-first by default. Adding, renaming, and deleting accounts only appear once you enable write mode from the `···` menu, and token values never show up on screen, in responses, or in the execution log. For always-on use, see the plist templates in `dashboard/launchd/`.
+
+![Dashboard, desktop](dashboard/screenshots/desktop-1400.png)
+
+| Area | Content | Probe |
+|---|---|---|
+| Top bar | Connection, last refresh, today's probe budget, auto-refresh interval, refresh all | Spent on refresh |
+| Active account bar | Active label, 5h/7d + model + context + session cost from the statusline cache, one switch suggestion | None |
+| Account cards | Per-label 5h/7d/7f single-line meters, reset time, status badge, org, check | Spent on refresh/check |
+| Reset timeline | Window resets over the next 24 hours | None |
+| Diagnostics | `cct doctor` as PASS/WARN/FAIL; passes collapse, warnings and failures expand | None |
+
+Utilization bars read under 65% as headroom, 65-89% as caution, and 90% or higher (or `rejected`) as danger. A window with no data is never filled with a made-up number - it says `unknown`, `unsupported`, or `no response` instead. `cct usage` is a real API call that consumes quota (premium probe ≤32 tokens), so the top bar always shows today's probe count and estimated tokens.
+
+<details>
+<summary>400px mobile and write mode</summary>
+
+![400px mobile](dashboard/screenshots/mobile-400.png)
+
+![Write mode](dashboard/screenshots/write-mode-1400.png)
+
+</details>
+
+Every screenshot is a fixture-mode (`--fake`) demo with account labels blurred. See [dashboard/README.md](dashboard/README.md) for details.
+
 ## Portability and the OSS boundary
 
 Real credentials live only outside the repository in `~/.claude/tokens.env` (or `CCT_ENV_FILE`). The public repository contains no real wallet, and cloning it grants access to no account. `.gitignore` and the installer's global ignore entries reduce accidents; they are not a security boundary, and users remain responsible for never adding credential files to Git.
