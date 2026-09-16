@@ -4,71 +4,87 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0C0D0E">
 <title>cct dashboard</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<!-- insane-design: linear (2026-09-15) - Cool Productivity. 헤더는 앱 크롬, 나머지는 hairline 패널 -->
-<div class="wrap">
-<header>
-  <div class="top">
-    <h1>cct dashboard <span class="tag" id="tag-mode">연결 중</span></h1>
-    <div class="chips">
-      <label class="chip">자동갱신
-        <select id="sel-auto"><option value="0">끄기</option><option value="15">15분</option><option value="30">30분</option><option value="60">60분</option></select>
-      </label>
-      <button class="primary" id="btn-refresh">전체 갱신 (usage --all)</button>
-      <button id="btn-off" title="cct off">활성 해제</button>
-      <label class="chip toggle"><input type="checkbox" id="chk-write"> 쓰기 모드 (add / rm / rename)</label>
+<!-- Beszel 계열 리팩터링 (2026-09-16)
+     상단 바 → 활성 계정 바 → 계정 카드 그리드 → 리셋/진단 → 실행 로그(접힘).
+     데이터 계약(/api/state)과 액션 엔드포인트는 그대로다. -->
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="wordmark">cct</span>
+      <span class="conn" id="conn"><i class="dot idle"></i><span>연결 중</span></span>
     </div>
-  </div>
-  <div class="chips strip">
-    <span class="chip" id="chip-server">서버 <b>-</b></span>
-    <span class="chip" id="chip-last">마지막 프로브 <b>-</b></span>
-    <span class="chip warn" id="chip-budget" title="usage 프로브는 실제 요청이라 사용량을 소비합니다">오늘 프로브 <b>-</b></span>
-  </div>
-</header>
+    <div class="tmeta" id="tmeta"></div>
+    <div class="tctl">
+      <label class="selwrap" for="sel-auto">자동
+        <select id="sel-auto" title="자동 갱신 주기 - 프로브는 실제 사용량을 소비합니다">
+          <option value="0">끔</option><option value="15">15분</option><option value="30">30분</option><option value="60">60분</option>
+        </select>
+      </label>
+      <button class="btn" id="btn-refresh" title="cct usage --all - 등록된 모든 계정을 실프로브">전체 갱신</button>
+      <details class="menu" id="menu-settings">
+        <summary class="btn icon" title="설정" aria-label="설정" role="button">&#8943;</summary>
+        <div class="pop">
+          <button class="mi" id="btn-off" type="button">활성 해제 <span class="mono">cct off</span></button>
+          <div class="sep"></div>
+          <label class="mi swlabel"><input type="checkbox" id="chk-write"><span>쓰기 모드</span></label>
+          <p class="note">켜면 계정 등록·이름변경·삭제가 보입니다. 토큰 값은 어떤 화면·로그에도 표시하지 않습니다.</p>
+        </div>
+      </details>
+    </div>
+  </header>
 
-<div class="err" id="err" hidden></div>
+  <div class="alert" id="err" hidden></div>
 
-<section class="section">
-  <h2>지갑 상태 <span class="help">cct status · cct doctor - 오프라인, 프로브 없음</span></h2>
-  <div class="chips" id="status-chips"></div>
-</section>
+  <section class="activebar none" id="activebar">
+    <div class="ab-main">
+      <span class="ab-eyebrow">활성 계정</span>
+      <span class="ab-label">불러오는 중</span>
+    </div>
+  </section>
 
-<section class="section two">
-  <div class="banner" id="rec"></div>
-  <div class="card" id="live"></div>
-</section>
+  <section class="block">
+    <div class="block-head">
+      <h2>계정</h2>
+      <span class="hint" id="cards-hint"><code>cct usage --all</code> · 사용률 65% 이상 주의, 90% 이상 위험</span>
+    </div>
+    <div class="grid" id="cards">
+      <div class="sk"><i></i><i></i><i></i><i></i></div>
+      <div class="sk"><i></i><i></i><i></i><i></i></div>
+      <div class="sk"><i></i><i></i><i></i><i></i></div>
+    </div>
+  </section>
 
-<section class="section">
-  <h2>계정 사용량 <span class="help">cct usage --all · check · use - 카드 링: 보라 = 활성, 초록 = 추천</span></h2>
-  <div class="grid" id="cards"></div>
-</section>
+  <section class="block cols">
+    <div class="panel">
+      <div class="p-head"><h3>리셋 타임라인</h3><span class="hint">다음 24시간 · 점선 = 지금</span></div>
+      <div class="p-body">
+        <div id="timeline"><p class="hint">불러오는 중…</p></div>
+        <div class="legend" id="tl-legend"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="p-head"><h3>진단</h3><span class="hint" id="diag-sum">-</span></div>
+      <div class="p-body"><div class="diag" id="doctor"><p class="hint">불러오는 중…</p></div></div>
+      <div class="kvline" id="wallet-meta"></div>
+    </div>
+  </section>
 
-<section class="section two">
-  <div class="card">
-    <h2>리셋 타임라인 <span class="help">다음 24시간 · 점선 = 지금</span></h2>
-    <div id="timeline"></div>
-    <div class="legend" id="tl-legend"></div>
-  </div>
-  <div class="card">
-    <h2>doctor <span class="help">cct doctor - PASS / WARN / FAIL</span></h2>
-    <ul class="list" id="doctor"></ul>
-  </div>
-</section>
+  <details class="logblock" id="logblock">
+    <summary>실행 로그 <span class="hint">서버가 실행한 cct 명령 · 토큰 값은 기록하지 않음</span></summary>
+    <ul class="loglist" id="log"></ul>
+  </details>
 
-<section class="section">
-  <div class="card">
-    <h2>실행 로그 <span class="help">서버가 실행한 cct 명령 · 토큰 값은 기록하지 않음</span></h2>
-    <ul class="list log" id="log"></ul>
-  </div>
-</section>
-
-<footer>
-  <span id="foot-left">cct 지갑을 읽는 로컬 대시보드 · 프로브는 실제 사용량을 소비합니다</span>
-  <span>빌드 없음 · 외부 리소스 없음</span>
-</footer>
+  <footer>
+    <span>로컬 지갑을 읽는 읽기 우선 대시보드 · usage 프로브는 실제 사용량을 소비합니다</span>
+    <span>빌드 없음 · 외부 리소스 없음</span>
+  </footer>
 </div>
 <div class="toast" id="toast"></div>
 <script src="app.js"></script>
