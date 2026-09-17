@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -196,8 +197,14 @@ def test_state_rejects_below_floor_auto_min_on_load(tmp_path):
 def test_api_state_schema(client, app):
     code, body = client.get("/api/state")
     assert code == 200
-    assert sorted(body) == ["accounts", "budget", "doctor", "live", "log",
-                            "refreshing", "server", "status"]
+    assert sorted(body) == ["accounts", "alerts", "budget", "doctor", "live", "log",
+                            "refreshing", "server", "settings", "status"]
+    assert sorted(body["settings"]) == ["alert_crit", "alert_warn", "auto_min", "notify"]
+    assert body["settings"]["alert_warn"] == 65
+    assert body["settings"]["alert_crit"] == 90
+    assert body["settings"]["notify"] == "crit"
+    assert sorted(body["alerts"]) == ["active", "events"]
+    assert body["alerts"]["active"] == [] and body["alerts"]["events"] == []
     assert sorted(body["server"]) == ["bind", "cct_path", "fake", "started_at", "version"]
     assert body["server"]["fake"] is True
     assert sorted(body["status"]) == ["accounts", "active", "claude", "claude_version",
@@ -558,3 +565,335 @@ def test_real_timeout_is_rc_124(monkeypatch):
     result = cct.run(["status"])
     assert result.rc == 124 and "시간 초과" in result.err
 
+
+# ---------------------------------------------------------------- 히스토리 (0.2.0)
+
+def test_history_recorded_on_refresh_and_served(client):
+    code, _ = client.post("/api/refresh", {"all": True})
+    assert code == 200
+    code, body = client.get("/api/history?hours=24")
+    assert code == 200 and body["ok"] is True and body["hours"] == 24
+    series = body["series"]
+    assert set(series) == {"gv", "pro4", "pro5", "max1", "pro4b", "team"}
+    assert "spare" not in series                     # no_token 은 프로브 대상이 아니다
+    last = series["gv"][-1]
+    assert last[2] == pytest.approx(0.36)            # 픽스처 gv 7d utilization
+    assert last[1] == pytest.approx(0.06)
+    assert series["team"][-1][1] is None             # no_response 는 값 없이 공백
+
+
+def test_history_downsampled_to_max_points(app):
+    now = srv.now_i()
+    for i in range(1000):
+        app.db.record_usage("gv", {"state": "ok", "windows": {
+            "5h": {"utilization": 0.5}, "7d": {"utilization": 0.5},
+            "7d_oi": {"utilization": 0.5}}}, at=now - i * 60)
+    series = app.db.history_series(24)
+    assert 0 < len(series["gv"]) <= srv.HIST_MAX_POINTS
+
+
+def test_history_prunes_old_rows(app):
+    old = srv.now_i() - (srv.HIST_RETAIN_DAYS + 5) * 86400
+    app.db.record_usage("gv", {"state": "ok", "windows": {
+        "5h": {"utilization": 0.5}}}, at=old)
+    app.db.record_usage("gv", {"state": "ok", "windows": {
+        "5h": {"utilization": 0.5}}})
+    assert app.db.history_count() == 1
+
+
+def test_history_bad_hours_is_400(client):
+    code, body = client.get("/api/history?hours=abc")
+    assert code == 400 and body["error"]["code"] == "bad_request"
+
+
+# ---------------------------------------------------------------- 임계치 알림 (0.2.0)
+
+def test_alerts_fire_on_refresh(client):
+    client.post("/api/refresh", {"all": True})
+    code, body = client.get("/api/state")
+    assert code == 200
+    active = {(a["label"], a["win"]): a for a in body["alerts"]["active"]}
+    assert active[("max1", "7d")]["level"] == "crit"     # status rejected
+    assert active[("max1", "7f")]["level"] == "crit"     # 0.98 >= 90
+    assert active[("team", "probe")]["level"] == "crit"  # no_response
+    assert active[("pro4", "5h")]["level"] == "warn"     # 0.82 >= 65
+    assert active[("gv", "7f")]["level"] == "warn"       # 0.71 >= 65
+    assert ("gv", "5h") not in active                    # 0.06
+    assert ("spare", "probe") not in active              # no_token 은 알림 아님
+    events = body["alerts"]["events"]
+    assert any(e["label"] == "max1" and e["level"] == "crit" for e in events)
+    # 정렬: crit 가 warn 보다 앞
+    levels = [a["level"] for a in body["alerts"]["active"]]
+    assert levels == sorted(levels, key=lambda l: -srv.ALERT_RANK[l])
+
+
+def test_alerts_no_refire_then_clear(client, app):
+    client.post("/api/refresh", {"label": "pro4"})
+    n_events = len(app.state.alerts_view(50)["events"])
+    assert n_events >= 1
+    app._last_probe.clear()
+    client.post("/api/refresh", {"label": "pro4"})       # 같은 수준 유지 - 재발화 없음
+    assert len(app.state.alerts_view(50)["events"]) == n_events
+    app.fake_cct.usage_lines["pro4"]["windows"]["5h"]["utilization"] = 0.1
+    app._last_probe.clear()
+    client.post("/api/refresh", {"label": "pro4"})       # 임계 아래로 - 해소 이벤트
+    view = app.state.alerts_view(50)
+    assert not any(a["label"] == "pro4" for a in view["active"])
+    assert view["events"][0]["level"] == "ok" and view["events"][0]["label"] == "pro4"
+
+
+def test_alerts_escalation_refires(client, app):
+    client.post("/api/refresh", {"label": "pro4"})       # warn 발화
+    n_events = len(app.state.alerts_view(50)["events"])
+    app.fake_cct.usage_lines["pro4"]["windows"]["5h"]["utilization"] = 0.95
+    app._last_probe.clear()
+    client.post("/api/refresh", {"label": "pro4"})       # warn -> crit 승격 재발화
+    view = app.state.alerts_view(50)
+    assert len(view["events"]) == n_events + 1
+    active = {(a["label"], a["win"]): a for a in view["active"]}
+    assert active[("pro4", "5h")]["level"] == "crit"
+
+
+def test_alert_notify_levels_and_no_secret(client, app):
+    sent = []
+    app.notifier = lambda title, msg: sent.append((title, msg))
+    client.post("/api/refresh", {"label": "pro4"})       # warn - 기본 notify=crit 는 침묵
+    assert sent == []
+    client.post("/api/refresh", {"label": "max1"})       # crit 2건(7d, 7f) 발송
+    assert len(sent) == 2
+    assert all("max1" in msg for _, msg in sent)
+    assert not any("sk-ant" in title + msg for title, msg in sent)
+    code, _ = client.post("/api/settings", {"notify": "warn"})
+    assert code == 200
+    client.post("/api/refresh", {"label": "pro4b"})      # warn 도 발송
+    assert len(sent) == 3
+    client.post("/api/settings", {"notify": "off"})
+    app.fake_cct.usage_lines["pro5"]["windows"]["5h"]["utilization"] = 0.99
+    client.post("/api/refresh", {"label": "pro5"})
+    assert len(sent) == 3                                # off 면 침묵
+
+
+def test_alerts_persist_across_restart(client, app):
+    client.post("/api/refresh", {"label": "max1"})
+    reloaded = srv.State(app.state.path)
+    assert any(k.startswith("max1|") for k in reloaded.data["alerts"]["active"])
+
+
+def test_settings_alert_thresholds(client, app):
+    code, out = client.post("/api/settings", {"alert_warn": 90, "alert_crit": 70})
+    assert code == 400 and out["error"]["code"] == "bad_threshold"
+    code, out = client.post("/api/settings", {"alert_warn": 50, "alert_crit": 95})
+    assert code == 200
+    assert out["state"]["settings"]["alert_warn"] == 50
+    assert out["state"]["settings"]["alert_crit"] == 95
+    code, out = client.post("/api/settings", {"notify": "bogus"})
+    assert code == 400 and out["error"]["code"] == "bad_request"
+    code, out = client.post("/api/settings", {})
+    assert code == 400
+    code, out = client.post("/api/settings", {"alert_warn": True, "alert_crit": 95})
+    assert code == 400
+    reloaded = srv.State(app.state.path)
+    assert reloaded.alert_conf()[:2] == (50, 95)
+
+
+def test_custom_threshold_changes_alerts(client, app):
+    code, _ = client.post("/api/settings", {"alert_warn": 30, "alert_crit": 60})
+    assert code == 200
+    client.post("/api/refresh", {"label": "gv"})         # 7d 0.36 -> warn, 7f 0.71 -> crit
+    active = {(a["label"], a["win"]): a for a in app.state.alerts_view()["active"]}
+    assert active[("gv", "7d")]["level"] == "warn"
+    assert active[("gv", "7f")]["level"] == "crit"
+
+
+# ---------------------------------------------------------------- 토큰 집계 (0.2.0)
+
+def make_jsonl(path: Path, lines: list) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+
+
+def entry(ts, model, i=100, o=50, cc=0, cr=0, mid="m1", rid="r1", **extra):
+    """실로그와 같은 모양의 assistant 라인. cc 는 (5m, 1h) 튜플 또는 int(=구버전 총량)."""
+    if isinstance(cc, tuple):
+        cache = {"cache_creation_input_tokens": sum(cc),
+                 "cache_creation": {"ephemeral_5m_input_tokens": cc[0],
+                                    "ephemeral_1h_input_tokens": cc[1]}}
+    else:
+        cache = {"cache_creation_input_tokens": cc}
+    e = {"type": "assistant", "timestamp": ts, "requestId": rid,
+         "message": {"id": mid, "model": model,
+                     "usage": {"input_tokens": i, "output_tokens": o,
+                               "cache_read_input_tokens": cr, **cache}}}
+    e.update(extra)
+    return e
+
+
+@pytest.fixture()
+def pricing(monkeypatch):
+    monkeypatch.setattr(srv, "PRICING", {
+        "claude-known": {"input": 3.0, "output": 15.0,
+                         "cache_write_5m": 3.75, "cache_write_1h": 6.0,
+                         "cache_read": 0.3}})
+    return srv.PRICING
+
+
+def test_parse_jsonl_rules_and_db_dedup(tmp_path, pricing):
+    f = tmp_path / "p" / "s1.jsonl"
+    make_jsonl(f, [
+        {"type": "user", "message": {"role": "user"}},
+        entry("2026-09-16T01:00:00Z", "claude-known-20260101", mid="a", rid="r1"),
+        entry("2026-09-16T02:00:00Z", "claude-known-20260101", mid="a", rid="r1"),
+        entry("2026-09-16T03:00:00Z", "<synthetic>", mid="b", rid="r2"),
+        entry("2026-09-16T04:00:00Z", "claude-known-20260101", mid="c", rid="r3",
+              isApiErrorMessage=True),
+        entry("2026-09-16T05:00:00Z", "claude-unknown-1", mid="d", rid="r4"),
+        entry("2026-09-16T06:00:00Z", "claude-known-20260101", mid="", rid=""),
+        entry("2026-09-16T07:00:00Z", "claude-known-20260101", i=0, o=0, cc=0, cr=0,
+              mid="e", rid="r5"),
+    ])
+    rows = srv.parse_claude_jsonl(f)
+    assert len(rows) == 4                              # user/synthetic/에러/0토큰 제외, 중복은 남음
+    db = srv.DashDB()
+    db.add_entries(rows)
+    assert db.tokens_count() == 3                      # uniq(id:requestId) 로 dedup
+    known = [r for r in rows if r[0] == "a:r1"][0]
+    assert known[8] == pytest.approx((100 * 3.0 + 50 * 15.0) / 1e6)
+    unknown = [r for r in rows if r[2] == "claude-unknown-1"][0]
+    assert unknown[8] is None                          # 단가 미상 - 비용 없음
+    fallback = [r for r in rows if r[0].startswith("f:")]
+    assert len(fallback) == 1                          # id 없는 엔트리는 파일 해시 키
+
+
+def test_parse_jsonl_prefers_cost_usd(tmp_path, pricing):
+    f = tmp_path / "s.jsonl"
+    make_jsonl(f, [entry("2026-09-16T01:00:00Z", "claude-known-1", mid="a", rid="r1",
+                         costUSD=1.23)])
+    rows = srv.parse_claude_jsonl(f)
+    assert rows[0][8] == pytest.approx(1.23)
+
+
+def test_parse_jsonl_cache_split_pricing(tmp_path, pricing):
+    f = tmp_path / "s.jsonl"
+    make_jsonl(f, [
+        entry("2026-09-16T01:00:00Z", "claude-known-1", i=0, o=0,
+              cc=(1000, 2000), mid="a", rid="r1"),
+        entry("2026-09-16T02:00:00Z", "claude-known-1", i=0, o=0,
+              cc=3000, mid="b", rid="r2"),               # 분해 없음 - 5m 으로 간주
+    ])
+    rows = srv.parse_claude_jsonl(f)
+    assert rows[0][5] == 1000 and rows[0][6] == 2000     # cache_5m / cache_1h
+    assert rows[0][8] == pytest.approx((1000 * 3.75 + 2000 * 6.0) / 1e6)
+    assert rows[1][5] == 3000 and rows[1][6] == 0
+    assert rows[1][8] == pytest.approx(3000 * 3.75 / 1e6)
+
+
+def test_local_date_is_local_tz():
+    assert srv.local_date("2026-09-16T20:00:00.123Z") == time.strftime(
+        "%Y-%m-%d", time.localtime(1789588800))
+    assert srv.local_date(None) is None
+    assert srv.local_date("nope") is None
+
+
+def wait_scan(scanner, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while scanner.scanning and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not scanner.scanning
+
+
+def test_scanner_incremental_and_global_dedup(tmp_path, pricing):
+    root = tmp_path / "projects"
+    f1 = root / "a" / "s1.jsonl"
+    make_jsonl(f1, [entry("2026-09-16T01:00:00Z", "claude-known-1", mid="a", rid="r1")])
+    db = srv.DashDB(tmp_path / "db.sqlite3")
+    scanner = srv.TokenScanner(db, root)
+    assert scanner.stale() is True
+    assert scanner.kick(force=True) is True
+    wait_scan(scanner)
+    assert db.tokens_count() == 1 and scanner.scanned_at is not None
+    assert scanner.progress == {"done": 1, "total": 1}
+    scanner.kick(force=True)                           # 변경 없음 - 스킵돼도 결과 불변
+    wait_scan(scanner)
+    assert db.tokens_count() == 1
+    with open(f1, "a", encoding="utf-8") as fh:        # append -> size 변화로 재파싱
+        fh.write(json.dumps(entry("2026-09-16T02:00:00Z", "claude-known-1",
+                                  mid="b", rid="r2")) + "\n")
+    f2 = root / "b" / "s2.jsonl"                       # 다른 파일에 같은 엔트리(복제 세션)
+    make_jsonl(f2, [entry("2026-09-16T01:00:00Z", "claude-known-1", mid="a", rid="r1")])
+    scanner.kick(force=True)
+    wait_scan(scanner)
+    assert db.tokens_count() == 2                      # 전역 dedup
+
+
+def test_pricing_change_resets_tokens(tmp_path, pricing):
+    db = srv.DashDB(tmp_path / "db.sqlite3")
+    db.add_entries([("x", "2026-09-16", "m", 1, 1, 0, 0, 0, None)])
+    db.meta_set("pricing_version", "old")
+    srv.TokenScanner(db, tmp_path / "none")
+    assert db.tokens_count() == 0                      # 단가표 변경 - 전체 재집계 예약
+
+
+def test_tokens_payload_shape(app, pricing):
+    app.db.add_entries([
+        ("1", "2026-09-16", "claude-known-1", 100, 50, 10, 40, 1000, 0.5),
+        ("2", "2026-09-16", "claude-known-1", 100, 50, 0, 0, 0, 0.25),
+        ("3", "2026-09-16", "claude-unknown", 10, 5, 0, 0, 0, None),
+        ("4", "2026-09-15", "claude-known-1", 1, 1, 0, 0, 0, 0.1),
+    ])
+    payload = app._tokens_payload(30)
+    assert payload["ok"] is True and payload["scanning"] is False
+    assert [d["date"] for d in payload["days"]] == ["2026-09-16", "2026-09-15"]
+    day = payload["days"][0]
+    assert day["entries"] == 3 and day["cost"] == pytest.approx(0.75)
+    assert day["unknown"] == 1
+    assert day["models"][0]["cache_create"] == 50      # 5m+1h 합산 표시
+    models = {m["model"]: m for m in payload["models"]}
+    assert models["claude-known-1"]["cost"] == pytest.approx(0.85)
+    assert models["claude-known-1"]["input"] == 201
+    assert payload["total"]["entries"] == 4
+    assert payload["total"]["unknown"] == 1
+
+
+def test_tokens_endpoints(client, app, tmp_path):
+    code, body = client.get("/api/tokens")
+    assert code == 200 and body["ok"] is True
+    assert body["scanning"] is False and body["days"] == []
+    code, out = client.post("/api/tokens/scan")
+    assert code == 409 and out["error"]["code"] == "scan_disabled"
+    code, out = client.get("/api/tokens?days=abc")
+    assert code == 400
+    root = tmp_path / "projects"
+    make_jsonl(root / "s.jsonl",
+               [entry("2026-09-16T01:00:00Z", "claude-known-1", mid="a", rid="r1")])
+    app.scanner = srv.TokenScanner(app.db, root)
+    code, out = client.post("/api/tokens/scan")
+    assert code == 200 and out["ok"] is True
+    wait_scan(app.scanner)
+    code, body = client.get("/api/tokens?days=7")
+    assert code == 200 and body["days_window"] == 7
+    assert body["total"]["entries"] == 1
+    assert body["scanned_at"] is not None
+
+
+def test_tokens_get_kicks_stale_scan(client, app, tmp_path):
+    root = tmp_path / "projects"
+    make_jsonl(root / "s.jsonl",
+               [entry("2026-09-16T01:00:00Z", "claude-known-1", mid="a", rid="r1")])
+    app.scanner = srv.TokenScanner(app.db, root)
+    code, body = client.get("/api/tokens")               # scanned_at 없음 - 자동 kick
+    assert code == 200
+    wait_scan(app.scanner)
+    assert app.db.tokens_count() == 1
+
+
+def test_seed_fake_db_deterministic(app):
+    srv.seed_fake_db(app.db, app.fake_cct)
+    assert app.db.history_count() > 0
+    payload = app._tokens_payload(30)
+    assert payload["total"]["entries"] == 60             # 30일 x 2모델
+    assert payload["enabled"] is False                   # 픽스처 - 재스캔 버튼 숨김
+    assert payload["scanned_at"] is not None             # 시드 시각은 meta 폴백으로 노출
+    series = app.db.history_series(48)
+    assert "gv" in series and len(series["gv"]) > 10
+    srv.seed_fake_db(app.db, app.fake_cct)               # 재기동 - 토큰은 리셋 후 재시드
+    assert app._tokens_payload(30)["total"]["entries"] == 60

@@ -35,10 +35,19 @@
           <div class="sep"></div>
           <label class="mi swlabel"><input type="checkbox" id="chk-write"><span>쓰기 모드</span></label>
           <p class="note">켜면 계정 등록·이름변경·삭제가 보입니다. 토큰 값은 어떤 화면·로그에도 표시하지 않습니다.</p>
+          <div class="sep"></div>
+          <div class="mi setrow"><span>주의 임계</span><span class="setin"><input type="number" id="in-warn" min="1" max="98" step="1" title="1-98 - 위험 임계보다 작아야 합니다"><i>%</i></span></div>
+          <div class="mi setrow"><span>위험 임계</span><span class="setin"><input type="number" id="in-crit" min="2" max="99" step="1" title="2-99 - 주의 임계보다 커야 합니다"><i>%</i></span></div>
+          <div class="mi setrow"><span>macOS 알림</span><select id="sel-notify" title="임계 교차·프로브 실패 시 macOS 알림">
+            <option value="off">끔</option><option value="crit">위험만</option><option value="warn">주의부터</option>
+          </select></div>
+          <p class="note">임계는 카드 색·배지·알림 스트립·macOS 알림이 함께 씁니다. 입력을 벗어나면 저장됩니다.</p>
         </div>
       </details>
     </div>
   </header>
+
+  <section class="alertstrip" id="alertstrip" hidden></section>
 
   <div class="alert" id="err" hidden></div>
 
@@ -51,7 +60,14 @@
 
   <section class="block">
     <div class="block-head">
-      <h2>계정</h2>
+      <div class="bh-left">
+        <h2>계정</h2>
+        <label class="selwrap" for="sel-hist">범위
+          <select id="sel-hist" title="스파크라인 기간 - 저장된 히스토리만 읽습니다 (프로브 0회)">
+            <option value="24" selected>24h</option><option value="48">48h</option><option value="168">7d</option>
+          </select>
+        </label>
+      </div>
       <span class="hint" id="cards-hint"><code>cct usage --all</code> · 사용률 65% 이상 주의, 90% 이상 위험</span>
     </div>
     <div class="grid" id="cards">
@@ -73,6 +89,25 @@
       <div class="p-head"><h3>진단</h3><span class="hint" id="diag-sum">-</span></div>
       <div class="p-body"><div class="diag" id="doctor"><p class="hint">불러오는 중…</p></div></div>
       <div class="kvline" id="wallet-meta"></div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="panel tok">
+      <div class="p-head">
+        <h3>토큰 · 비용</h3>
+        <span class="hint">~/.claude/projects JSONL 로컬 집계 · 프로브 0회</span>
+        <div class="tok-ctl">
+          <span class="hint" id="tok-scanned"></span>
+          <label class="selwrap" for="sel-tok-days">기간
+            <select id="sel-tok-days">
+              <option value="7">7일</option><option value="30" selected>30일</option><option value="60">60일</option>
+            </select>
+          </label>
+          <button class="btn sm" id="btn-tok-scan" title="~/.claude/projects JSONL 을 다시 읽어 집계합니다 - 디스크 읽기만">재스캔</button>
+        </div>
+      </div>
+      <div class="p-body tok-body" id="tok-body"><p class="hint">불러오는 중…</p></div>
     </div>
   </section>
 
