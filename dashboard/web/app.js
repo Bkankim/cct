@@ -199,9 +199,9 @@ function liveBits(){
   if(!L) return '<span class="lk">statusline 캐시 없음 <b>-</b></span>';
   var five = L.fiveH||{}, seven = L.sevenD||{};
   var out = [];
-  out.push('<span class="lk">5h <b>'+(five.used_percentage===undefined?'-':five.used_percentage+'%')+'</b>'
+  out.push('<span class="lk">5h <b>'+(five.used_percentage===undefined?'-':Math.round(five.used_percentage)+'%')+'</b>'
     + (five.resets_at?' <span>'+remaining(ms(five.resets_at))+'</span>':'')+'</span>');
-  out.push('<span class="lk">7d <b>'+(seven.used_percentage===undefined?'-':seven.used_percentage+'%')+'</b>'
+  out.push('<span class="lk">7d <b>'+(seven.used_percentage===undefined?'-':Math.round(seven.used_percentage)+'%')+'</b>'
     + (seven.resets_at?' <span>'+remaining(ms(seven.resets_at))+'</span>':'')+'</span>');
   out.push('<span class="lk">모델 <b>'+esc(L.model)+'</b></span>');
   out.push('<span class="lk">컨텍스트 <b>'+(L.ctx===null||L.ctx===undefined?'-':L.ctx+'%')+'</b></span>');
