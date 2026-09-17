@@ -17,7 +17,9 @@ cct 지갑의 계정별 구독 사용량을 한 화면에서 보는 로컬 대�
                                                               ├─▶ cct usage --json (라벨 병렬, 실프로브)
                                                               ├─▶ cct status / doctor / ls / check / use / off / add / rm / rename
                                                               ├─▶ ~/.claude/orca-usage-cache.json (읽기 전용)
-                                                              └─▶ ~/.claude/cct-dash-state.json (캐시·설정·로그, mode 600)
+                                                              ├─▶ ~/.claude/cct-dash-state.json (캐시·설정·알림, mode 600)
+                                                              ├─▶ ~/.claude/cct-dash-data.sqlite3 (히스토리·토큰 집계, mode 600)
+                                                              └─▶ ~/.claude/projects/**/*.jsonl (읽기 전용 스캔 - 토큰·비용)
 ```
 
 서버는 프로브 로직을 재구현하지 않고 cct 를 호출한다. rate-limit 헤더 계약과 폴백, 지갑 잠금 트랜잭션이 cct 한 곳에만 남는다.
@@ -34,7 +36,7 @@ uv run --script server.py --bind 127.0.0.1 --port 8790
 
 의존성은 없다. Python 3.12 이상이면 표준 라이브러리만으로 돈다.
 
-주요 옵션: `--bind`(기본 127.0.0.1) `--port`(기본 8790) `--web-dir` `--state-file` `--cct` `--live-file` `--fake` `--fixtures` `--fake-delay` `--log-level`.
+주요 옵션: `--bind`(기본 127.0.0.1) `--port`(기본 8790) `--web-dir` `--state-file` `--db-file` `--projects-dir` `--no-tokens` `--cct` `--live-file` `--fake` `--fixtures` `--fake-delay` `--log-level`.
 
 ## 상시 실행과 테일넷 공개
 
@@ -60,9 +62,11 @@ launchctl bootout gui/$(id -u)/com.bkan.cct-dash
 |---|---|---|
 | 상단 바 | 연결 상태·마지막 갱신·오늘 프로브 예산·자동갱신 주기·전체 갱신, `···` 에 활성 해제와 쓰기 모드 | 갱신 시 프로브 |
 | 활성 계정 바 | 활성 라벨과 sticky·기본 여부, statusline 캐시의 rate_limits·모델·컨텍스트·세션 비용, 갈아탈 계정 1개(가장 빡빡한 창 기준)와 전환 버튼 | 프로브 없음 |
-| 계정 카드 | 라벨별 5h/7d/7f 한 줄 미터(사용률 바 + 남은 시간 · 리셋 시각)·상태 배지·org·check, `···` 에 점검/복사/이름변경/삭제 | 갱신·점검 시 프로브 |
+| 알림 스트립 | 임계 초과·프로브 실패 활성 알림과 최근 기록. 임계값과 macOS 알림 수준은 `···` 설정에서 조정 | 프로브 없음 |
+| 계정 카드 | 라벨별 5h/7d/7f 한 줄 미터(사용률 바 + 남은 시간 · 리셋 시각)·사용률 히스토리 스파크라인·상태 배지·org·check, `···` 에 점검/복사/이름변경/삭제 | 갱신·점검 시 프로브 |
 | 리셋 타임라인 | 다음 24시간의 창 리셋 시점 | 프로브 없음 |
 | 진단 | `cct doctor` 를 PASS / WARN / FAIL 로. 정상은 접고 경고·실패만 펼친다. 하단에 `cct status` 요약 | 프로브 없음 |
+| 토큰·비용 | `~/.claude/projects` JSONL 로컬 집계 - 일별 비용 차트, 모델별 토큰·비용 표, 재스캔 | 프로브 없음 (디스크 읽기만) |
 | 실행 로그 | 서버가 실행한 cct 명령과 rc, 소요 시간 (기본 접힘) | 프로브 없음 |
 
 사용률 바는 65% 미만 여유, 65~89% 주의, 90% 이상 또는 `rejected` 를 위험으로 칠한다. 모든 카드가 같은 자리에 같은 항목을 놓고, 값이 없는 창은 숫자를 만들지 않고 `미확인` · `미지원` · `응답 실패` 처럼 사유를 적는다.
@@ -80,6 +84,32 @@ launchctl bootout gui/$(id -u)/com.bkan.cct-dash
 
 6계정을 30분마다 갱신하면 하루 약 288회다. 기본값은 자동갱신 끔이며, 필요할 때 헤더에서 켠다.
 
+## 사용률 히스토리와 스파크라인
+
+프로브가 돌 때마다 라벨별 5h/7d/7f 사용률을 sqlite(`~/.claude/cct-dash-data.sqlite3`, mode 600)에 한 줄씩 적재한다. 90일이 지난 행은 자동 삭제한다. 카드의 스파크라인은 `GET /api/history?hours=24|48|168` 로 그리며, 라벨당 최대 240점이 되도록 서버가 버킷 평균으로 줄인다.
+
+히스토리도 프로브가 만든 데이터다. 자동갱신이 꺼져 있으면 수동 갱신 시점만 점으로 남고, 조회 자체는 프로브를 유발하지 않는다.
+
+## 임계치 알림
+
+사용률 바 색과 같은 임계(기본 주의 65% / 위험 90%, `···` 설정에서 1~99 조정)를 서버가 프로브 결과마다 평가한다.
+
+- 창 사용률이 임계를 처음 넘으면 발화하고, 같은 수준으로 계속 넘어 있으면 재발화하지 않는다(도배 방지). warn 에서 crit 로 오르면 다시 발화하고, 임계 아래로 내려오면 해소로 기록한다.
+- 창 상태 `rejected` 와 프로브 실패(`no_response`/`parse_error`)는 사용률과 무관하게 위험이다.
+- macOS 알림 센터 발송은 osascript 를 쓴다. 수준은 끔 / 위험만(기본) / 주의부터. 메시지에는 라벨·창·퍼센트만 담는다. 픽스처 모드는 화면 기록만 하고 발송하지 않는다.
+- 알림 평가도 프로브가 있어야 일어난다. 자동갱신이 꺼져 있으면 수동 갱신 시점에만 평가된다.
+
+## 토큰·비용 분석 (로컬 JSONL)
+
+ccusage 처럼 Claude Code 세션 로그(`~/.claude/projects/**/*.jsonl`)를 읽어 날짜 x 모델로 토큰과 비용을 집계한다. 네트워크·프로브와 무관한 로컬 디스크 읽기다.
+
+- 집계 대상은 `type=="assistant"` 의 `message.usage` 뿐이다. `<synthetic>` 과 `isApiErrorMessage` 는 제외하고, sidechain(서브에이전트)은 실사용이라 포함한다.
+- 중복 제거는 `message.id + requestId` 전역 keep-first 다. 같은 응답이 content 블록 단위로 여러 줄 기록되고 세션 이어쓰기로 파일 간 복제도 있어, dedup 없이는 2배 이상 과대집계된다(실측).
+- 캐시 쓰기는 `usage.cache_creation` 의 5m/1h 분해값으로 나눠 과금한다. 실측상 캐시 쓰기의 85~100% 가 1h(2x 단가)라, 총량에 5m 단가를 일괄 적용하는 방식(ccusage/LiteLLM)은 크게 과소평가된다.
+- 단가표는 server.py 의 `PRICING` 상수(출처 주석 포함, USD/MTok)다. 미등록 모델은 비용 합계에서 빼고 화면에 "단가 미상 N건" 으로 알린다. 단가표가 바뀌면 다음 기동에서 전체를 재집계한다.
+- 스캔은 mtime+size 증분이다. 초회 전수는 약 3초(847MB · 1,100파일 실측), 이후에는 바뀐 파일만 다시 읽는다. `GET /api/tokens` 가 10분 넘게 낡은 스캔을 보면 백그라운드로 다시 돌고, 재스캔 버튼은 즉시 돈다.
+- Claude Code 로그 보존창은 약 30일이라 원본은 사라진다. DB 적재분은 파일이 지워져도 남아 그 너머의 이력 저장소가 된다.
+
 ## 보안
 
 - 서버는 127.0.0.1 에만 바인드한다. 외부 노출은 tailscale serve 가 맡는다.
@@ -87,6 +117,7 @@ launchctl bootout gui/$(id -u)/com.bkan.cct-dash
 - 토큰은 stdin 으로만 cct 에 전달한다. argv·로그·응답·예외 메시지에 남지 않는다. 저장과 로깅 전에 `sk-ant-` 패턴을 마스킹한다.
 - statusline 캐시에서는 화이트리스트한 필드만 읽는다. 경로와 세션 식별자는 내보내지 않는다.
 - 상태 파일은 `~/.claude/cct-dash-state.json` (mode 600). 공개 리포 안에는 상태를 두지 않는다.
+- 히스토리·토큰 DB 는 `~/.claude/cct-dash-data.sqlite3` (mode 600). JSONL 에서는 날짜·모델·토큰 수만 뽑고 메시지 본문·경로·세션 ID 는 저장도 노출도 하지 않는다.
 
 ## 테스트
 
@@ -94,7 +125,7 @@ launchctl bootout gui/$(id -u)/com.bkan.cct-dash
 uv run --with pytest pytest tests -q
 ```
 
-전부 `--fake` 경로이고 실계정 호출은 0회다. 파서, 마스킹, 경로 탈출 차단, 쓰기 게이트, 갱신 하한, 상태 파일 권한과 복원, 실행 argv·stdin 계약을 덮는다.
+전부 `--fake` 경로이고 실계정 호출은 0회다. 파서, 마스킹, 경로 탈출 차단, 쓰기 게이트, 갱신 하한, 상태 파일 권한과 복원, 실행 argv·stdin 계약에 더해 히스토리 적재·다운샘플·보존, 알림 발화·해소·승격·수준별 발송, 설정 검증, JSONL 파싱 규칙(전역 dedup·synthetic 제외·캐시 5m/1h 분리 과금·costUSD 우선), 증분 스캔을 덮는다.
 
 ## 문서
 

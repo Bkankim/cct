@@ -24,21 +24,27 @@ HTTP 응답 형태(프론트 WP3 계약):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
+import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # 정책 상수
 FLOOR_MIN = 15          # 자동갱신 하한(분). 서버가 강제한다.
@@ -59,6 +65,19 @@ TIMEOUT_DEFAULT = 15
 TOK_PER_USAGE = 32
 TOK_PER_FALLBACK = 1
 TOK_PER_CHECK = 1
+
+# 히스토리·알림·토큰 분석 (0.2.0)
+HIST_RETAIN_DAYS = 90        # 사용률 히스토리 보관 일수
+HIST_MAX_POINTS = 240        # /api/history 라벨당 최대 점 수(초과 시 버킷 평균)
+ALERT_WARN_DEFAULT = 65      # 주의 임계(%) - 프론트 색 임계와 같은 기본값
+ALERT_CRIT_DEFAULT = 90      # 위험 임계(%)
+ALERT_EVENTS_MAX = 50        # 알림 이력 보관 수
+NOTIFY_DEFAULT = "crit"      # macOS 알림 수준: off | crit | warn
+NOTIFY_LEVELS = ("off", "crit", "warn")
+ALERT_RANK = {"warn": 1, "crit": 2}
+TOKENS_RESCAN_SEC = 600      # JSONL 재스캔 최소 간격(초)
+TOKENS_DAYS_MAX = 120        # /api/tokens 조회 상한(일)
+TOKENS_DAYS_DEFAULT = 30
 
 TOKEN_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -99,6 +118,19 @@ def today_str() -> str:
 
 def valid_label(label: Any) -> bool:
     return isinstance(label, str) and bool(LABEL_RE.match(label)) and label not in RESERVED
+
+
+def alert_text(item: dict) -> str:
+    """알림 센터·이력용 한 줄. 라벨·창·퍼센트만 담는다(토큰·경로 없음)."""
+    label, win, level = item.get("label"), item.get("win"), item.get("level")
+    if win == "probe":
+        return "%s 프로브 실패 - 토큰 무효·만료 가능성" % label
+    util = item.get("util")
+    pct = ("%d%%" % round(util * 100)) if isinstance(util, (int, float)) else "-"
+    if item.get("status") == "rejected":
+        return "%s %s 창 차단(rejected) - 리셋까지 대기" % (label, win)
+    kind = "위험" if level == "crit" else "주의"
+    return "%s %s %s - %s 임계 초과" % (label, win, pct, kind)
 
 
 # ---------------------------------------------------------------- 파서
@@ -229,6 +261,386 @@ def read_live(path: str | Path, fake: bool = False) -> dict:
         "seven_day": window("seven_day"),
     }
 
+
+# ---------------------------------------------------------------- 히스토리·토큰 저장소
+
+# 모델 단가 (USD / MTok). 최장 프리픽스 매칭이라 파생 ID 를 포괄한다
+# (claude-fable-5-1 -> claude-fable-5, claude-haiku-4-5-20251001 -> claude-haiku-4-5).
+# 캐시 쓰기는 5m(1.25x input)/1h(2x input)를 분리 과금한다 - 실측상 cache write 의
+# 85~100% 가 1h 라서 5m 단가 일괄 적용(ccusage/LiteLLM 방식)은 큰 과소평가가 된다.
+# 단가표가 바뀌면 pricing_version 이 달라져 다음 스캔에서 전체 재집계된다.
+# 출처: platform.claude.com pricing/models overview (2026-09-17 확인),
+#       fable 5 는 anthropic.com 발표 페이지. opus-4-8 은 공시 미확인 - Opus 4 계열 추정.
+PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-5": {"input": 5.0, "output": 25.0, "cache_write_5m": 6.25,
+                      "cache_write_1h": 10.0, "cache_read": 0.5},
+    "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_write_5m": 12.5,
+                       "cache_write_1h": 20.0, "cache_read": 1.0},
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_write_5m": 2.5,
+                        "cache_write_1h": 4.0, "cache_read": 0.2},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_write_5m": 1.25,
+                         "cache_write_1h": 2.0, "cache_read": 0.1},
+    "claude-opus-4-8": {"input": 15.0, "output": 75.0, "cache_write_5m": 18.75,
+                        "cache_write_1h": 30.0, "cache_read": 1.5},
+}
+
+
+def pricing_version() -> str:
+    """단가표 지문. 값이 바뀌면 토큰 집계를 처음부터 다시 만든다."""
+    payload = json.dumps(PRICING, sort_keys=True)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def price_for(model: str) -> dict[str, float] | None:
+    """모델 ID 에 맞는 단가를 찾는다(가장 긴 프리픽스 우선)."""
+    best = None
+    for prefix, price in PRICING.items():
+        if model.startswith(prefix) and (best is None or len(prefix) > len(best[0])):
+            best = (prefix, price)
+    return best[1] if best else None
+
+
+def entry_cost(model: str, tokens: dict[str, int], cost_usd: Any) -> float | None:
+    """엔트리 1건의 비용(USD). 로그의 costUSD 를 우선하고, 없으면 단가표로 계산한다."""
+    if isinstance(cost_usd, (int, float)) and not isinstance(cost_usd, bool):
+        return float(cost_usd)
+    price = price_for(model)
+    if price is None:
+        return None
+    return (
+        tokens.get("input", 0) * price.get("input", 0.0)
+        + tokens.get("output", 0) * price.get("output", 0.0)
+        + tokens.get("cache_5m", 0) * price.get("cache_write_5m", 0.0)
+        + tokens.get("cache_1h", 0) * price.get("cache_write_1h", 0.0)
+        + tokens.get("cache_read", 0) * price.get("cache_read", 0.0)
+    ) / 1e6
+
+
+class DashDB:
+    """사용률 히스토리와 JSONL 토큰 집계 저장소(sqlite, 표준 라이브러리만).
+
+    ":memory:" 는 연결마다 다른 DB 가 되므로 연결 1개를 락으로 감싸 공유한다.
+    파일 DB 는 상태 파일과 같은 규칙으로 ~/.claude/ 아래(mode 600)에만 둔다.
+    """
+
+    def __init__(self, path: str | Path = ":memory:"):
+        self.is_file = str(path) != ":memory:"
+        self.path = str(Path(path).expanduser()) if self.is_file else ":memory:"
+        self._lock = threading.RLock()
+        if self.is_file:
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        with self._lock, self.conn:
+            if self.is_file:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS history ("
+                " at INTEGER NOT NULL, label TEXT NOT NULL, state TEXT,"
+                " u5 REAL, u7 REAL, uf REAL, r5 INTEGER, r7 INTEGER, rf INTEGER,"
+                " PRIMARY KEY (at, label))")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_at ON history(at)")
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS tokens_files ("
+                " path TEXT PRIMARY KEY, mtime INTEGER, size INTEGER)")
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS tokens_entries ("
+                " uniq TEXT PRIMARY KEY, date TEXT NOT NULL, model TEXT NOT NULL,"
+                " input INTEGER, output INTEGER, cache_5m INTEGER, cache_1h INTEGER,"
+                " cache_read INTEGER, cost REAL)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tokens_date ON tokens_entries(date)")
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        if self.is_file:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.chmod(self.path + suffix, 0o600)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self.conn.close()
+            except sqlite3.Error:
+                pass
+
+    # -- meta
+    def meta_get(self, key: str) -> str | None:
+        with self._lock:
+            row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def meta_set(self, key: str, value: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    # -- 사용률 히스토리
+    def record_usage(self, label: str, usage: dict, at: int | None = None) -> None:
+        """프로브 1회의 창 사용률을 한 줄로 남긴다. 실패 프로브는 NULL 로 남아 공백이 된다."""
+        at = at or now_i()
+        windows = usage.get("windows") or {}
+
+        def pick(key: str) -> tuple[float | None, int | None]:
+            w = windows.get(key)
+            if not isinstance(w, dict):
+                return None, None
+            util = w.get("utilization")
+            reset = w.get("reset")
+            return (
+                float(util) if isinstance(util, (int, float)) else None,
+                int(reset) if isinstance(reset, int) else None,
+            )
+
+        u5, r5 = pick("5h")
+        u7, r7 = pick("7d")
+        uf, rf = pick("7d_oi")
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO history"
+                " (at, label, state, u5, u7, uf, r5, r7, rf)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (at, label, usage.get("state"), u5, u7, uf, r5, r7, rf))
+            self.conn.execute(
+                "DELETE FROM history WHERE at < ?",
+                (now_i() - HIST_RETAIN_DAYS * 86400,))
+
+    def history_series(self, hours: int, max_points: int = HIST_MAX_POINTS) -> dict:
+        """라벨별 [at, u5, u7, uf] 목록. 점이 많으면 버킷 평균으로 줄인다."""
+        since = now_i() - hours * 3600
+        bucket = max(1, (hours * 3600) // max_points)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT label, (at/?)*? AS b, AVG(u5), AVG(u7), AVG(uf)"
+                " FROM history WHERE at >= ? GROUP BY label, b ORDER BY b",
+                (bucket, bucket, since)).fetchall()
+        series: dict[str, list] = {}
+        for label, at, u5, u7, uf in rows:
+            series.setdefault(label, []).append([int(at), u5, u7, uf])
+        return series
+
+    def history_count(self) -> int:
+        with self._lock:
+            return int(self.conn.execute("SELECT COUNT(*) FROM history").fetchone()[0])
+
+    # -- 토큰 집계
+    def file_meta(self, path: str) -> tuple[int, int] | None:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT mtime, size FROM tokens_files WHERE path=?", (path,)).fetchone()
+        return (int(row[0]), int(row[1])) if row else None
+
+    def set_file_meta(self, path: str, mtime: int, size: int) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO tokens_files (path, mtime, size) VALUES (?, ?, ?)"
+                " ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size",
+                (path, mtime, size))
+
+    def add_entries(self, rows: list[tuple]) -> None:
+        """(uniq, date, model, input, output, cache_5m, cache_1h, cache_read, cost) 벌크 삽입.
+
+        uniq PRIMARY KEY 라 재파싱·중복 라인은 INSERT OR IGNORE 로 자연히 걸러진다.
+        """
+        if not rows:
+            return
+        with self._lock, self.conn:
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO tokens_entries"
+                " (uniq, date, model, input, output, cache_5m, cache_1h,"
+                "  cache_read, cost)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+    def tokens_reset(self) -> None:
+        """단가표가 바뀌었을 때 집계를 처음부터 다시 만들기 위해 비운다."""
+        with self._lock, self.conn:
+            self.conn.execute("DELETE FROM tokens_entries")
+            self.conn.execute("DELETE FROM tokens_files")
+
+    def tokens_count(self) -> int:
+        with self._lock:
+            return int(self.conn.execute("SELECT COUNT(*) FROM tokens_entries").fetchone()[0])
+
+    def tokens_report(self, days: int) -> list[tuple]:
+        """날짜 x 모델 집계 행. cost 합계와 '비용 미상' 엔트리 수를 함께 돌려준다."""
+        since = time.strftime(
+            "%Y-%m-%d", time.localtime(now_i() - (days - 1) * 86400))
+        with self._lock:
+            return self.conn.execute(
+                "SELECT date, model, COUNT(*), SUM(input), SUM(output),"
+                " SUM(cache_5m), SUM(cache_1h), SUM(cache_read), SUM(cost),"
+                " SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END)"
+                " FROM tokens_entries WHERE date >= ?"
+                " GROUP BY date, model ORDER BY date DESC, model", (since,)).fetchall()
+
+
+def local_date(ts: Any) -> str | None:
+    """ISO 타임스탬프를 로컬 타임존 날짜(YYYY-MM-DD)로. 해석 불가면 None."""
+    if not isinstance(ts, str) or len(ts) < 10:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return time.strftime("%Y-%m-%d", time.localtime(dt.timestamp()))
+
+
+def parse_claude_jsonl(path: Path) -> list[tuple]:
+    """Claude Code 세션 로그 한 파일에서 토큰 사용 엔트리만 뽑는다.
+
+    메시지 본문은 읽는 즉시 버린다 - 반환 값에는 날짜·모델·토큰 수·비용만 담는다.
+    중복 키는 message.id + requestId (ccusage 와 같은 규칙), 둘 다 없으면
+    파일명+행번호+타임스탬프 해시로 대체한다(append-only 라 행번호가 안정적).
+    """
+    rows: list[tuple] = []
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return rows
+    with fh:
+        for lineno, line in enumerate(fh):
+            # json.loads 전에 싼 문자열 검사로 사용량 없는 줄(user 등)을 걸러낸다.
+            if '"usage"' not in line and '"costUSD"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict) or obj.get("isApiErrorMessage"):
+                continue
+            msg = obj.get("message")
+            if not isinstance(msg, dict):
+                continue
+            usage = msg.get("usage")
+            if not isinstance(usage, dict) or not usage:
+                continue
+            model = msg.get("model") or obj.get("model")
+            if not isinstance(model, str) or not model or model == "<synthetic>":
+                continue
+            date = local_date(obj.get("timestamp"))
+            if date is None:
+                continue
+
+            def tok(src: dict, key: str) -> int:
+                value = src.get(key)
+                return int(value) if isinstance(value, int) and value > 0 else 0
+
+            # 캐시 쓰기는 5m/1h 단가가 달라 분해값을 쓴다. 분해가 없는(구버전) 로그는
+            # ccusage 와 같은 방식으로 총량을 5m 으로 간주한다.
+            breakdown = usage.get("cache_creation")
+            if isinstance(breakdown, dict):
+                cache_5m = tok(breakdown, "ephemeral_5m_input_tokens")
+                cache_1h = tok(breakdown, "ephemeral_1h_input_tokens")
+            else:
+                cache_5m = tok(usage, "cache_creation_input_tokens")
+                cache_1h = 0
+            tokens = {
+                "input": tok(usage, "input_tokens"),
+                "output": tok(usage, "output_tokens"),
+                "cache_5m": cache_5m,
+                "cache_1h": cache_1h,
+                "cache_read": tok(usage, "cache_read_input_tokens"),
+            }
+            if not any(tokens.values()):
+                continue
+            mid, rid = msg.get("id"), obj.get("requestId")
+            if isinstance(mid, str) and mid and isinstance(rid, str) and rid:
+                uniq = mid + ":" + rid
+            else:
+                seed = "%s:%d:%s" % (path.name, lineno, obj.get("timestamp"))
+                uniq = "f:" + hashlib.sha1(seed.encode("utf-8")).hexdigest()
+            cost = entry_cost(model, tokens, obj.get("costUSD"))
+            rows.append((uniq, date, model, tokens["input"], tokens["output"],
+                         tokens["cache_5m"], tokens["cache_1h"],
+                         tokens["cache_read"], cost))
+    return rows
+
+
+class TokenScanner:
+    """~/.claude/projects JSONL 증분 스캐너. 백그라운드 스레드 1개로만 돈다.
+
+    mtime+size 가 같은 파일은 건너뛰고, 바뀐 파일만 다시 파싱한다(uniq 로 dedup).
+    실프로브·네트워크와 무관한 로컬 디스크 읽기라 프로브 예산을 쓰지 않는다.
+    """
+
+    def __init__(self, db: DashDB, root: str | Path, enabled: bool = True):
+        self.db = db
+        self.root = Path(root).expanduser()
+        self.enabled = enabled
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self.scanning = False
+        self.progress = {"done": 0, "total": 0}
+        self.error: str | None = None
+        raw = db.meta_get("tokens_scanned_at")
+        self.scanned_at: int | None = int(raw) if raw and raw.isdigit() else None
+        if db.meta_get("pricing_version") != pricing_version():
+            # 단가표가 바뀌면 저장된 cost 가 낡으므로 전체 재집계한다.
+            db.tokens_reset()
+            db.meta_set("pricing_version", pricing_version())
+            self.scanned_at = None
+
+    def stale(self) -> bool:
+        return self.scanned_at is None or (now_i() - self.scanned_at) > TOKENS_RESCAN_SEC
+
+    def kick(self, force: bool = False) -> bool:
+        """스캔 스레드를 시작한다. 이미 도는 중이거나 최신이면 False."""
+        if not self.enabled:
+            return False
+        with self._lock:
+            if self.scanning or (not force and not self.stale()):
+                return False
+            self.scanning = True
+            self.error = None
+            self._thread = threading.Thread(
+                target=self._scan, name="tokens-scan", daemon=True)
+            self._thread.start()
+            return True
+
+    def _scan(self) -> None:
+        try:
+            try:
+                files = sorted(self.root.rglob("*.jsonl"))
+            except OSError:
+                files = []
+            self.progress = {"done": 0, "total": len(files)}
+            for path in files:
+                try:
+                    st = path.stat()
+                except OSError:
+                    self.progress["done"] += 1
+                    continue
+                meta = (int(st.st_mtime), int(st.st_size))
+                if self.db.file_meta(str(path)) != meta:
+                    self.db.add_entries(parse_claude_jsonl(path))
+                    self.db.set_file_meta(str(path), *meta)
+                self.progress["done"] += 1
+            self.scanned_at = now_i()
+            self.db.meta_set("tokens_scanned_at", str(self.scanned_at))
+        except Exception as exc:                          # 스캐너는 죽지 않는다
+            self.error = type(exc).__name__
+            log.warning("토큰 스캔 실패: %s", type(exc).__name__)
+        finally:
+            self.scanning = False
+
+
+def notify_macos(title: str, message: str) -> bool:
+    """macOS 알림 센터로 보낸다. osascript 가 없거나 실패해도 동작에는 영향 없다."""
+    exe = shutil.which("osascript")
+    if not exe:
+        return False
+    script = "display notification %s with title %s" % (
+        json.dumps(message, ensure_ascii=False), json.dumps(title, ensure_ascii=False))
+    try:
+        proc = subprocess.run([exe, "-e", script], capture_output=True, timeout=5)
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 # ---------------------------------------------------------------- cct 어댑터
@@ -594,7 +1006,9 @@ class State:
         self._lock = threading.RLock()
         self.data: dict[str, Any] = {
             "accounts": {},
-            "settings": {"auto_min": auto_min},
+            "settings": {"auto_min": auto_min, "alert_warn": ALERT_WARN_DEFAULT,
+                         "alert_crit": ALERT_CRIT_DEFAULT, "notify": NOTIFY_DEFAULT},
+            "alerts": {"active": {}, "events": []},
             "budget": {"day": today_str(), "usage_probes": 0, "fallback_probes": 0,
                        "check_probes": 0},
             "log": [],
@@ -616,6 +1030,22 @@ class State:
                 auto = raw["settings"].get("auto_min")
                 if isinstance(auto, int) and (auto == 0 or auto >= FLOOR_MIN):
                     self.data["settings"]["auto_min"] = auto
+                warn = raw["settings"].get("alert_warn")
+                crit = raw["settings"].get("alert_crit")
+                if (isinstance(warn, int) and isinstance(crit, int)
+                        and 1 <= warn < crit <= 99):
+                    self.data["settings"]["alert_warn"] = warn
+                    self.data["settings"]["alert_crit"] = crit
+                notify = raw["settings"].get("notify")
+                if notify in NOTIFY_LEVELS:
+                    self.data["settings"]["notify"] = notify
+            if isinstance(raw.get("alerts"), dict):
+                active = raw["alerts"].get("active")
+                events = raw["alerts"].get("events")
+                self.data["alerts"] = {
+                    "active": active if isinstance(active, dict) else {},
+                    "events": (events if isinstance(events, list) else [])[:ALERT_EVENTS_MAX],
+                }
             if isinstance(raw.get("budget"), dict):
                 budget = dict(self.data["budget"])
                 budget.update({k: v for k, v in raw["budget"].items() if k in budget})
@@ -684,6 +1114,64 @@ class State:
         with self._lock:
             self.data["settings"]["auto_min"] = value
 
+    def settings_view(self) -> dict:
+        with self._lock:
+            return dict(self.data["settings"])
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self._lock:
+            self.data["settings"][key] = value
+
+    def alert_conf(self) -> tuple[int, int, str]:
+        with self._lock:
+            s = self.data["settings"]
+            return (s.get("alert_warn", ALERT_WARN_DEFAULT),
+                    s.get("alert_crit", ALERT_CRIT_DEFAULT),
+                    s.get("notify", NOTIFY_DEFAULT))
+
+    # -- 알림
+    def update_alerts(self, label: str, new: dict[str, dict]) -> tuple[list, list]:
+        """라벨 하나의 활성 알림을 교체하고 (새로 발화, 해소) 목록을 돌려준다.
+
+        같은 키가 같은 수준으로 계속 걸려 있으면 재발화하지 않는다(도배 방지).
+        수준이 올라가면(warn -> crit) 다시 발화하고 since 는 유지한다.
+        """
+        now = now_i()
+        fired: list[dict] = []
+        cleared: list[dict] = []
+        with self._lock:
+            active = self.data["alerts"]["active"]
+            old = {k: v for k, v in active.items()
+                   if isinstance(v, dict) and v.get("label") == label}
+            for key, item in new.items():
+                prev = old.get(key)
+                item = dict(item)
+                item["since"] = prev.get("since", now) if isinstance(prev, dict) else now
+                rank_new = ALERT_RANK.get(item.get("level"), 0)
+                rank_old = ALERT_RANK.get(prev.get("level"), 0) if isinstance(prev, dict) else 0
+                if rank_new > rank_old:
+                    fired.append(dict(item))
+                active[key] = item
+            for key, prev in old.items():
+                if key not in new:
+                    active.pop(key, None)
+                    cleared.append(dict(prev))
+        return fired, cleared
+
+    def add_alert_event(self, event: dict) -> None:
+        with self._lock:
+            self.data["alerts"]["events"].insert(0, event)
+            del self.data["alerts"]["events"][ALERT_EVENTS_MAX:]
+
+    def alerts_view(self, events_limit: int = 20) -> dict:
+        with self._lock:
+            active = [dict(v) for v in self.data["alerts"]["active"].values()
+                      if isinstance(v, dict)]
+            events = [dict(e) for e in self.data["alerts"]["events"][:events_limit]]
+        active.sort(key=lambda x: (-ALERT_RANK.get(x.get("level"), 0),
+                                   x.get("label") or "", x.get("win") or ""))
+        return {"active": active, "events": events}
+
     # -- 예산
     def _roll_budget(self) -> None:
         budget = self.data["budget"]
@@ -737,9 +1225,13 @@ class App:
 
     def __init__(self, cct: Cct, state: State, web_dir: str | Path,
                  live_file: str | Path, bind: str = "127.0.0.1", port: int = 8790,
-                 auto_tick: float = 5.0):
+                 auto_tick: float = 5.0, db: DashDB | None = None,
+                 scanner: TokenScanner | None = None, notifier=None):
         self.cct = cct
         self.state = state
+        self.db = db or DashDB()          # 기본은 프로세스 내 메모리 DB(테스트 친화)
+        self.scanner = scanner
+        self.notifier = notifier          # callable(title, message) - 실서버는 notify_macos
         self.web_dir = Path(web_dir).expanduser()
         self.live_file = Path(live_file).expanduser()
         self.bind = bind
@@ -769,6 +1261,7 @@ class App:
     def close(self) -> None:
         self._stop.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self.db.close()
 
     def _compute_next(self, base: int) -> int | None:
         auto = self.state.auto_min()
@@ -849,6 +1342,8 @@ class App:
             "live": live,
             "budget": self.state.budget_view(auto, self.next_auto_at),
             "refreshing": self.refreshing,
+            "settings": self.state.settings_view(),
+            "alerts": self.state.alerts_view(),
             "log": self.state.log_view(),
         }
 
@@ -884,12 +1379,68 @@ class App:
     def _probe_one(self, label: str) -> dict:
         usage, result = self.cct.usage(label)
         self.state.set_usage(label, usage)
+        self.db.record_usage(label, usage)
+        self._update_alerts(label, usage)
         probe = usage.get("probe") or {}
         fallback = 1 if isinstance(probe, dict) and probe.get("fallback") else 0
         self.state.bump_usage(1, fallback)
         self.state.log_add(result.cmd, result.rc, result.ms)
         self._last_probe[label] = time.time()
         return usage
+
+    # -- 임계치 알림
+    @staticmethod
+    def _notify_wanted(level: str | None, notify_lv: str) -> bool:
+        if notify_lv == "off":
+            return False
+        if notify_lv == "crit":
+            return level == "crit"
+        return level in ("warn", "crit")   # notify_lv == "warn"
+
+    def _update_alerts(self, label: str, usage: dict) -> None:
+        """프로브 결과 하나로 그 라벨의 활성 알림을 다시 계산하고 교차 이벤트를 발화한다."""
+        warn_at, crit_at, notify_lv = self.state.alert_conf()
+        new: dict[str, dict] = {}
+        if usage.get("state") in ("no_response", "parse_error"):
+            new[label + "|probe"] = {"label": label, "win": "probe", "level": "crit",
+                                     "util": None, "status": usage.get("state")}
+        windows = usage.get("windows") or {}
+        for win, key in (("5h", "5h"), ("7d", "7d"), ("7f", "7d_oi")):
+            w = windows.get(key)
+            if not isinstance(w, dict):
+                continue
+            util = w.get("utilization")
+            status = w.get("status")
+            level = None
+            if status == "rejected":
+                level = "crit"
+            elif isinstance(util, (int, float)):
+                if util * 100 >= crit_at:
+                    level = "crit"
+                elif util * 100 >= warn_at:
+                    level = "warn"
+            if level:
+                new["%s|%s" % (label, win)] = {
+                    "label": label, "win": win, "level": level,
+                    "util": util if isinstance(util, (int, float)) else None,
+                    "status": status,
+                }
+        fired, cleared = self.state.update_alerts(label, new)
+        now = now_i()
+        for item in cleared:
+            self.state.add_alert_event({"at": now, "label": label,
+                                        "win": item.get("win"), "level": "ok",
+                                        "util": item.get("util")})
+        for item in fired:
+            self.state.add_alert_event({"at": now, "label": label,
+                                        "win": item.get("win"),
+                                        "level": item.get("level"),
+                                        "util": item.get("util")})
+            if self.notifier and self._notify_wanted(item.get("level"), notify_lv):
+                try:
+                    self.notifier("cct 대시보드", alert_text(item))
+                except Exception:                     # 알림 실패는 기능에 영향 없다
+                    log.warning("알림 발송 실패")
 
     def _run_refresh(self, labels: list[str]) -> tuple[int, dict]:
         if not self._refresh_lock.acquire(blocking=False):
@@ -1062,19 +1613,124 @@ class App:
         return self._ok({"old": old, "new": new, "message": r.message})
 
     def api_settings(self, body: dict) -> tuple[int, dict]:
-        value = body.get("auto_min")
-        if isinstance(value, bool) or not isinstance(value, int):
-            return self._err(400, "bad_request", "auto_min 은 정수여야 합니다")
-        if value < 0:
-            return self._err(400, "bad_request", "auto_min 은 0 이상이어야 합니다")
-        if 0 < value < FLOOR_MIN:
-            # 하한은 서버가 강제한다(클라이언트 값 불신).
-            return self._err(400, "below_floor",
-                             "자동갱신 하한은 %d분입니다 (프로브가 사용량을 소비)" % FLOOR_MIN)
-        self.state.set_auto_min(value)
-        self.next_auto_at = self._compute_next(now_i())
+        """부분 갱신: auto_min / alert_warn / alert_crit / notify 중 온 것만 검증해 반영한다."""
+        touched = False
+        if "auto_min" in body:
+            value = body.get("auto_min")
+            if isinstance(value, bool) or not isinstance(value, int):
+                return self._err(400, "bad_request", "auto_min 은 정수여야 합니다")
+            if value < 0:
+                return self._err(400, "bad_request", "auto_min 은 0 이상이어야 합니다")
+            if 0 < value < FLOOR_MIN:
+                # 하한은 서버가 강제한다(클라이언트 값 불신).
+                return self._err(400, "below_floor",
+                                 "자동갱신 하한은 %d분입니다 (프로브가 사용량을 소비)" % FLOOR_MIN)
+            self.state.set_auto_min(value)
+            self.next_auto_at = self._compute_next(now_i())
+            touched = True
+        if "alert_warn" in body or "alert_crit" in body:
+            cur_warn, cur_crit, _ = self.state.alert_conf()
+            warn = body.get("alert_warn", cur_warn)
+            crit = body.get("alert_crit", cur_crit)
+            for name, v in (("alert_warn", warn), ("alert_crit", crit)):
+                if isinstance(v, bool) or not isinstance(v, int):
+                    return self._err(400, "bad_request", "%s 은 정수여야 합니다" % name)
+            if not 1 <= warn < crit <= 99:
+                return self._err(400, "bad_threshold",
+                                 "임계는 1 <= 주의 < 위험 <= 99 여야 합니다")
+            self.state.set_setting("alert_warn", warn)
+            self.state.set_setting("alert_crit", crit)
+            touched = True
+        if "notify" in body:
+            notify = body.get("notify")
+            if notify not in NOTIFY_LEVELS:
+                return self._err(400, "bad_request", "notify 는 off/crit/warn 중 하나입니다")
+            self.state.set_setting("notify", notify)
+            touched = True
+        if not touched:
+            return self._err(400, "bad_request", "변경할 설정이 없습니다")
         self.state.save()
-        return self._ok({"auto_min": value, "next_auto_at": self.next_auto_at})
+        settings = self.state.settings_view()
+        return self._ok({"settings": settings, "auto_min": settings.get("auto_min"),
+                         "next_auto_at": self.next_auto_at})
+
+    # -- 히스토리·토큰 분석 (프로브 0회 - 로컬 저장소만 읽는다)
+    def api_history(self, query: dict) -> tuple[int, dict]:
+        try:
+            hours = int((query.get("hours") or ["24"])[0])
+        except (TypeError, ValueError):
+            return self._err(400, "bad_request", "hours 는 정수여야 합니다")
+        hours = max(1, min(hours, HIST_RETAIN_DAYS * 24))
+        return 200, {"ok": True, "hours": hours,
+                     "series": self.db.history_series(hours)}
+
+    def api_tokens(self, query: dict) -> tuple[int, dict]:
+        try:
+            days = int((query.get("days") or [str(TOKENS_DAYS_DEFAULT)])[0])
+        except (TypeError, ValueError):
+            return self._err(400, "bad_request", "days 는 정수여야 합니다")
+        days = max(1, min(days, TOKENS_DAYS_MAX))
+        if self.scanner is not None:
+            self.scanner.kick()      # 낡았으면 백그라운드 재스캔(디스크 읽기만)
+        return 200, self._tokens_payload(days)
+
+    def api_tokens_scan(self) -> tuple[int, dict]:
+        if self.scanner is None or not self.scanner.enabled:
+            return self._err(409, "scan_disabled", "이 모드에서는 JSONL 스캔을 하지 않습니다")
+        if self.scanner.scanning:
+            return self._err(409, "busy", "이미 스캔이 진행 중입니다")
+        started = self.scanner.kick(force=True)
+        return 200, {"ok": True, "started": started,
+                     "scanning": self.scanner.scanning}
+
+    def _tokens_payload(self, days: int) -> dict:
+        rows = self.db.tokens_report(days)
+        days_map: dict[str, dict] = {}
+        models: dict[str, dict] = {}
+        total = {"entries": 0, "input": 0, "output": 0, "cache_create": 0,
+                 "cache_read": 0, "cost": 0.0, "unknown": 0}
+
+        def bump(dst: dict, row: dict) -> None:
+            for key in ("entries", "input", "output", "cache_create", "cache_read",
+                        "cost", "unknown"):
+                dst[key] = dst.get(key, 0) + row[key]
+
+        for date, model, entries, i, o, c5m, c1h, cr, cost, unknown in rows:
+            # 표시 계약은 cache_create(쓰기 총량) 하나 - 5m/1h 는 과금에서만 갈린다.
+            row = {"model": model, "entries": int(entries or 0), "input": int(i or 0),
+                   "output": int(o or 0), "cache_create": int(c5m or 0) + int(c1h or 0),
+                   "cache_read": int(cr or 0), "cost": float(cost or 0.0),
+                   "unknown": int(unknown or 0)}
+            day = days_map.setdefault(date, {"date": date, "entries": 0, "input": 0,
+                                             "output": 0, "cache_create": 0,
+                                             "cache_read": 0, "cost": 0.0, "unknown": 0,
+                                             "models": []})
+            bump(day, row)
+            day["models"].append(row)
+            m = models.setdefault(model, {"model": model, "entries": 0, "input": 0,
+                                          "output": 0, "cache_create": 0,
+                                          "cache_read": 0, "cost": 0.0, "unknown": 0})
+            bump(m, row)
+            bump(total, row)
+        scanner = self.scanner
+        # 픽스처 모드는 스캐너가 없다 - 재스캔 불가(enabled=False)로 알리되,
+        # 시드가 meta 에 남긴 스캔 시각은 그대로 보여준다.
+        scanned_at = scanner.scanned_at if scanner else None
+        if scanned_at is None:
+            raw = self.db.meta_get("tokens_scanned_at")
+            scanned_at = int(raw) if raw and raw.isdigit() else None
+        return {
+            "ok": True,
+            "days_window": days,
+            "enabled": bool(scanner and scanner.enabled),
+            "scanning": bool(scanner.scanning) if scanner else False,
+            "scanned_at": scanned_at,
+            "progress": dict(scanner.progress) if scanner else {"done": 0, "total": 0},
+            "error": scanner.error if scanner else None,
+            "days": sorted(days_map.values(), key=lambda d: d["date"], reverse=True),
+            "models": sorted(models.values(), key=lambda m: -m["cost"]),
+            "total": total,
+        }
 
 
 
@@ -1193,13 +1849,22 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body=body, ctype=ctype)
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0]
+        url = urlsplit(self.path)
+        path = url.path
         if path == "/api/state":
             code, payload = self.app.api_state()
             self._send(code, payload)
             return
         if path == "/api/live":
             code, payload = self.app.api_live()
+            self._send(code, payload)
+            return
+        if path == "/api/history":
+            code, payload = self.app.api_history(parse_qs(url.query))
+            self._send(code, payload)
+            return
+        if path == "/api/tokens":
+            code, payload = self.app.api_tokens(parse_qs(url.query))
             self._send(code, payload)
             return
         if path.startswith("/api/"):
@@ -1242,6 +1907,8 @@ class Handler(BaseHTTPRequestHandler):
                 code, payload = app.api_rename(body)
             elif path == "/api/settings":
                 code, payload = app.api_settings(body)
+            elif path == "/api/tokens/scan":
+                code, payload = app.api_tokens_scan()
             else:
                 self._error(404, "not_found", "없는 엔드포인트입니다")
                 return
@@ -1271,6 +1938,55 @@ def make_server(bind: str, port: int, app: App) -> DashServer:
 
 # ---------------------------------------------------------------- 진입점
 
+def seed_fake_db(db: DashDB, cct: "FakeCct") -> None:
+    """픽스처 모드 렌더 검증용 합성 데이터(결정적 수식만, 실측 아님).
+
+    히스토리는 비어 있을 때만 48시간치를 만들고, 토큰 집계는 매 기동마다
+    다시 만들어 단가표 변경이 픽스처 화면에도 반영되게 한다.
+    """
+    now = now_i()
+    if db.history_count() == 0:
+        step, points = 1800, 96                      # 30분 간격 x 48시간
+        for label in cct.order:
+            obj = cct.usage_lines.get(label) or {}
+            windows = obj.get("windows") or {}
+            w5 = (windows.get("5h") or {}).get("utilization")
+            w7 = (windows.get("7d") or {}).get("utilization")
+            wf = (windows.get("7d_oi") or {}).get("utilization")
+            if w5 is None and w7 is None:
+                continue
+            salt = (sum(ord(c) for c in label) % 7) / 10.0
+            for i in range(points):
+                at = now - (points - 1 - i) * step
+                frac = i / (points - 1)
+                u7 = None if w7 is None else max(0.0, min(1.0, (
+                    w7 - (1 - frac) * 0.3 + 0.02 * math.sin(i / 4 + salt))))
+                uf = None if wf is None else max(0.0, min(1.0, (
+                    wf - (1 - frac) * 0.2 + 0.015 * math.sin(i / 5 + salt))))
+                u5 = None if w5 is None else max(0.0, min(1.0, (
+                    abs(math.sin(i / 9 + salt * 6)) * max(w5, 0.35))))
+                db.record_usage(label, {"state": "ok", "windows": {
+                    "5h": {"utilization": u5}, "7d": {"utilization": u7},
+                    "7d_oi": {"utilization": uf}}}, at=at)
+    db.tokens_reset()
+    fake_models = [("claude-fable-5-20260301", 1.0), ("claude-haiku-4-5-20251001", 0.35)]
+    rows = []
+    for d in range(30):
+        date = time.strftime("%Y-%m-%d", time.localtime(now - d * 86400))
+        wave = 0.5 + 0.5 * abs(math.sin(d / 3.7))
+        for model, scale in fake_models:
+            base = int(2.2e6 * wave * scale)
+            tokens = {"input": int(base * 0.04), "output": int(base * 0.02),
+                      "cache_5m": int(base * 0.03), "cache_1h": int(base * 0.27),
+                      "cache_read": base}
+            rows.append(("fake:%s:%s" % (date, model), date, model,
+                         tokens["input"], tokens["output"], tokens["cache_5m"],
+                         tokens["cache_1h"], tokens["cache_read"],
+                         entry_cost(model, tokens, None)))
+    db.add_entries(rows)
+    db.meta_set("tokens_scanned_at", str(now))
+
+
 def build_parser() -> argparse.ArgumentParser:
     here = Path(__file__).resolve().parent
     p = argparse.ArgumentParser(description="cct 대시보드 서버")
@@ -1279,6 +1995,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--web-dir", default=str(here / "web"), help="정적 파일 디렉터리")
     p.add_argument("--state-file", default=None,
                    help="상태 파일 (기본 ~/.claude/cct-dash-state.json, --fake 는 .fake.json)")
+    p.add_argument("--db-file", default=None,
+                   help="히스토리·토큰 DB (기본 ~/.claude/cct-dash-data.sqlite3,"
+                        " --fake 는 .fake.sqlite3)")
+    p.add_argument("--projects-dir", default=str(Path("~/.claude/projects").expanduser()),
+                   help="Claude Code 세션 로그(JSONL) 루트")
+    p.add_argument("--no-tokens", action="store_true",
+                   help="JSONL 토큰 스캔 비활성화")
     p.add_argument("--cct", default=str(Path("~/.claude/cct.sh").expanduser()),
                    help="cct.sh 경로 (기본 ~/.claude/cct.sh)")
     p.add_argument("--live-file", default=None,
@@ -1313,14 +2036,24 @@ def main(argv: list[str] | None = None) -> int:
         cct: Cct = FakeCct(fixtures, delay=args.fake_delay)
         default_state = Path("~/.claude/cct-dash-state.fake.json").expanduser()
         default_live = fixtures / "orca-usage-cache.json"
+        default_db = Path("~/.claude/cct-dash-data.fake.sqlite3").expanduser()
     else:
         cct = Cct(args.cct)
         default_state = Path("~/.claude/cct-dash-state.json").expanduser()
         default_live = Path("~/.claude/orca-usage-cache.json").expanduser()
+        default_db = Path("~/.claude/cct-dash-data.sqlite3").expanduser()
         if not Path(args.cct).is_file():
             print("경고: cct.sh 가 없다 - %s" % args.cct, file=sys.stderr)
 
     state = State(args.state_file or default_state)
+    db = DashDB(args.db_file or default_db)
+    if args.fake:
+        seed_fake_db(db, cct)            # type: ignore[arg-type]
+        scanner = None                   # 픽스처 모드는 실로그를 읽지 않는다
+        notifier = None                  # 알림도 이력에만 남긴다
+    else:
+        scanner = None if args.no_tokens else TokenScanner(db, args.projects_dir)
+        notifier = notify_macos
     app = App(
         cct=cct,
         state=state,
@@ -1328,6 +2061,9 @@ def main(argv: list[str] | None = None) -> int:
         live_file=args.live_file or default_live,
         bind=args.bind,
         port=args.port,
+        db=db,
+        scanner=scanner,
+        notifier=notifier,
     )
     httpd = make_server(args.bind, args.port, app)
     state.log_add("server start %s:%d%s" % (args.bind, app.port,
