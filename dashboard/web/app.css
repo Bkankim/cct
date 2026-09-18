@@ -340,6 +340,7 @@ footer{display:flex;flex-wrap:wrap;gap:5px 16px;justify-content:space-between;pa
 /* ── 프로바이더(GPT·Grok) 카드 - 계정 카드와 같은 골격, 온보딩만 전용 레이아웃 ── */
 .plogo{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;color:var(--fg-2);flex:none}
 .plogo svg{width:16px;height:16px}
+.plogo.p-claude{color:var(--accent)}
 .prov .ac-head .lbl{max-width:16ch}
 .prov-join{display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;padding:24px 18px 16px}
 .prov-join .plogo{width:44px;height:44px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);color:var(--fg)}
