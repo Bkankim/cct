@@ -198,7 +198,7 @@ def test_api_state_schema(client, app):
     code, body = client.get("/api/state")
     assert code == 200
     assert sorted(body) == ["accounts", "alerts", "budget", "doctor", "live", "log",
-                            "refreshing", "server", "settings", "status"]
+                            "providers", "refreshing", "server", "settings", "status"]
     assert sorted(body["settings"]) == ["alert_crit", "alert_warn", "auto_min", "notify"]
     assert body["settings"]["alert_warn"] == 65
     assert body["settings"]["alert_crit"] == 90
@@ -897,3 +897,94 @@ def test_seed_fake_db_deterministic(app):
     assert "gv" in series and len(series["gv"]) > 10
     srv.seed_fake_db(app.db, app.fake_cct)               # 재기동 - 토큰은 리셋 후 재시드
     assert app._tokens_payload(30)["total"]["entries"] == 60
+
+
+# ---------------------------------------------------------------- 프로바이더(GPT·Grok)
+
+def test_state_providers_empty_when_off(client):
+    code, body = client.get("/api/state")
+    assert code == 200
+    assert body["providers"] == []
+
+
+def test_providers_routes_503_when_off(client):
+    for path in ("/api/providers/login", "/api/providers/logout",
+                 "/api/providers/refresh"):
+        code, body = client.post(path, {"provider": "openai"})
+        assert code == 503
+        assert body["error"]["code"] == "providers_off"
+
+
+def test_providers_fake_login_logout(client, app):
+    app.providers = srv.pv.FakeProviderManager(FIXTURES)
+    code, body = client.get("/api/state")
+    provs = {x["id"]: x for x in body["providers"]}
+    assert provs["openai"]["connected"] is True
+    assert provs["openai"]["usage"]["windows"]["5h"]["used_pct"] == 43
+    assert provs["openai"]["usage"]["windows"]["5h"]["reset_at"] > time.time()
+    assert provs["xai"]["connected"] is False
+    # 응답 어디에도 자격증명 키가 없다
+    raw = json.dumps(body)
+    assert '"access"' not in raw and '"refresh_token"' not in raw
+
+    code, body = client.post("/api/providers/login", {"provider": "xai"})
+    assert code == 200 and body["login"]["fake"] is True
+    provs = {x["id"]: x for x in body["state"]["providers"]}
+    assert provs["xai"]["connected"] is True
+
+    code, body = client.post("/api/providers/logout", {"provider": "xai"})
+    assert code == 200
+    provs = {x["id"]: x for x in body["state"]["providers"]}
+    assert provs["xai"]["connected"] is False
+
+
+def test_providers_bad_provider_400(client, app):
+    app.providers = srv.pv.FakeProviderManager(FIXTURES)
+    for path in ("/api/providers/login", "/api/providers/logout"):
+        code, body = client.post(path, {"provider": "nope"})
+        assert code == 400 and body["error"]["code"] == "bad_provider"
+    code, body = client.post("/api/providers/refresh", {"provider": 3})
+    assert code == 400
+
+
+def test_providers_real_manager_refresh_route(client, app, tmp_path):
+    calls = []
+
+    def fetch_ok(cred):
+        calls.append(cred["access"])
+        return {"windows": {"weekly": {"used_pct": 2.0, "reset_at": srv.now_i() + 3600}}}
+
+    store = srv.pv.ProviderStore(tmp_path / "prov.json")
+    store.update("xai", access="tok-x", refresh="ref-x", expires=srv.now_i() + 3600)
+    app.providers = srv.pv.ProviderManager(
+        store=store, fetchers={"openai": fetch_ok, "xai": fetch_ok})
+
+    code, body = client.post("/api/providers/refresh", {"provider": "xai"})
+    assert code == 200 and calls == ["tok-x"]
+    provs = {x["id"]: x for x in body["state"]["providers"]}
+    assert provs["xai"]["usage"]["windows"]["weekly"]["used_pct"] == 2.0
+    assert provs["xai"]["usage_error"] is None
+    raw = json.dumps(body)
+    assert "tok-x" not in raw and "ref-x" not in raw    # 토큰 값 미노출
+
+    # 미연결 프로바이더 명시 갱신은 400
+    code, body = client.post("/api/providers/refresh", {"provider": "openai"})
+    assert code == 400 and body["error"]["code"] == "provider_not_connected"
+
+    # provider 생략 - 연결된 것만 전부 갱신(쿨다운 무시는 force)
+    code, body = client.post("/api/providers/refresh", {"force": True})
+    assert code == 200 and len(calls) == 2
+
+    # 실행 로그에 기록되지만 토큰은 없다
+    log_cmds = [x["cmd"] for x in body["state"]["log"]]
+    assert any(c.startswith("provider usage") for c in log_cmds)
+
+
+def test_providers_code_route(client, app):
+    app.providers = srv.pv.FakeProviderManager(FIXTURES)
+    code, body = client.post("/api/providers/code", {"provider": "xai", "code": ""})
+    assert code == 400 and body["error"]["code"] == "bad_code"
+    code, body = client.post("/api/providers/code", {"provider": "xai", "code": "abc"})
+    assert code == 200
+    provs = {x["id"]: x for x in body["state"]["providers"]}
+    assert provs["xai"]["connected"] is True

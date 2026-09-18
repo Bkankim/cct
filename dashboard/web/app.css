@@ -337,6 +337,22 @@ footer{display:flex;flex-wrap:wrap;gap:5px 16px;justify-content:space-between;pa
 @media (max-width:860px){
   .tmeta{order:3;flex-basis:100%;padding-top:7px;border-top:1px solid var(--line-soft)}
 }
+/* ── 프로바이더(GPT·Grok) 카드 - 계정 카드와 같은 골격, 온보딩만 전용 레이아웃 ── */
+.plogo{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;color:var(--fg-2);flex:none}
+.plogo svg{width:16px;height:16px}
+.prov .ac-head .lbl{max-width:16ch}
+.prov-join{display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;padding:24px 18px 16px}
+.prov-join .plogo{width:44px;height:44px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);color:var(--fg)}
+.prov-join .plogo svg{width:24px;height:24px}
+.prov-join .pname{font:600 15px/1.2 var(--font);color:var(--fg)}
+.prov-join .pvendor{font-size:11.5px;color:var(--fg-dim);margin-top:-4px}
+.prov-join .btn{margin-top:6px}
+.prov-join .perr{font-size:11.5px;color:var(--bad);line-height:1.45}
+.prov-code{display:flex;gap:6px;width:100%;max-width:300px}
+.prov-code input{flex:1;min-width:0;height:26px;padding:0 8px;background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-ctl);color:var(--fg);font:400 11.5px/1 var(--mono)}
+.prov-code input:focus{border-color:var(--line-strong);outline:none}
+.prov-join .pnote{font-size:10.5px;color:var(--fg-dim);line-height:1.5;max-width:36ch}
+
 @media (max-width:640px){
   .app{padding:10px 10px 30px;gap:10px}
   .topbar{padding:8px 8px 8px 12px;gap:8px}

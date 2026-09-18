@@ -94,10 +94,13 @@ It binds to `127.0.0.1` and is read-first by default. Adding, renaming, and dele
 | Top bar | Connection, last refresh, today's probe budget, auto-refresh interval, refresh all | Spent on refresh |
 | Active account bar | Active label, 5h/7d + model + context + session cost from the statusline cache, one switch suggestion | None |
 | Account cards | Per-label 5h/7d/7f single-line meters, reset time, status badge, org, check | Spent on refresh/check |
+| Providers | GPT (ChatGPT/Codex) and Grok (xAI) subscription usage - connect via OAuth to see 5h/7d and weekly meters | None (metadata read) |
 | Reset timeline | Window resets over the next 24 hours | None |
 | Diagnostics | `cct doctor` as PASS/WARN/FAIL; passes collapse, warnings and failures expand | None |
 
 Utilization bars read under 65% as headroom, 65-89% as caution, and 90% or higher (or `rejected`) as danger. A window with no data is never filled with a made-up number - it says `unknown`, `unsupported`, or `no response` instead. `cct usage` is a real API call that consumes quota (premium probe ≤32 tokens), so the top bar always shows today's probe count and estimated tokens.
+
+Beyond Claude, the dashboard can also track **GPT and Grok subscription usage**. Click a provider card's logo to sign in with browser OAuth (reusing each official CLI's public PKCE client), and the card turns into 5h/7d (GPT) or weekly-credit (Grok) meters. Tokens are stored only in `~/.claude/cct-dash-providers.json` (mode 600), and the usage reads rely on unofficial internal endpoints that may break if provider policy changes. See [dashboard/README.md](dashboard/README.md) for details and caveats.
 
 <details>
 <summary>400px mobile and write mode</summary>

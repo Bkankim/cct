@@ -20,3 +20,4 @@ __pycache__/
 cct-dash-state.json
 cct-dash-state.fake.json
 dashboard/.web-backup-*
+.playwright-mcp/

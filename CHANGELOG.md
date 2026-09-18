@@ -156,6 +156,15 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
 
 ### Added
 
+- **Dashboard provider tracking (GPT·Grok, dashboard v0.3.0)** - the local dashboard can now
+  track ChatGPT/Codex (OpenAI) and SuperGrok (xAI) subscription usage next to the Claude
+  wallet. Unconnected providers show an OAuth onboarding card (logo + connect button);
+  signing in runs the same public PKCE browser flow the official Codex/Grok CLIs use
+  (one-shot loopback callback on `localhost:1455` / `127.0.0.1:56121`), stores tokens only
+  in `~/.claude/cct-dash-providers.json` (mode 600, rotating refresh persisted immediately),
+  and renders 5h/7d (GPT) and weekly-credit (Grok) meters. Usage reads are metadata GETs
+  (zero quota consumed) against unofficial internal endpoints and may break if provider
+  policy changes; disable with `--no-providers`.
 - **Environment knobs** — `CCT_SKIP_PERMS=0` disables `--dangerously-skip-permissions`;
   `CCT_CLAUDE_FLAGS` passes extra flags to `claude`; `CCT_DEFAULT_LABEL` (default `gv`) is the
   fallback label for a bare `cct`; `CCT_STICKY=0` disables the sticky active profile;

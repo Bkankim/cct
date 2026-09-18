@@ -64,6 +64,7 @@ function toView(st){
     alerts: st.alerts ? {active: st.alerts.active || [], events: st.alerts.events || []}
                       : {active: [], events: []},
     live: null,
+    providers: st.providers || [],
     doctor: (st.doctor && st.doctor.items) || [],
     log: (st.log||[]).map(function(x){ return {at:ms(x.at), cmd:x.cmd, rc:x.rc, ms:x.ms}; }),
     accounts: (st.accounts||[]).map(function(a){
@@ -332,6 +333,97 @@ function renderCards(){
   host.innerHTML = S.accounts.map(function(a){ return accountCard(a, dups, rec); }).join('') + addCard();
 }
 
+// ── 프로바이더(GPT·Grok) - OAuth 온보딩 카드 + 사용률 미터 ───────────
+// 사용량 조회는 메타데이터 GET 이라 소비 0. 로고는 인라인 SVG(외부 리소스 없음).
+var PROV_LOGOS = {
+  openai: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.8956zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
+  xai: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m3.005 8.858 8.783 12.544h3.904L6.908 8.858zM6.905 15.825 3 21.402h3.907l1.951-2.788zM16.585 2l-6.75 9.64 1.953 2.79L20.492 2zM17.292 7.965v13.437h3.2V3.395z"/></svg>'
+};
+var PROV_STALE_MS = 15*M;      // usage_at 이 이보다 오래되면 자동 재조회
+function provWin(w){
+  if(!w || w.used_pct===null || w.used_pct===undefined) return null;
+  return {u: w.used_pct/100, r: ms(w.reset_at), s: null};
+}
+function provLogo(id){ return '<span class="plogo p-'+esc(id)+'">'+(PROV_LOGOS[id]||'')+'</span>'; }
+function provJoinCard(p){
+  var body;
+  if(p.login_pending){
+    body = '<span class="hint">브라우저에서 로그인 진행 중 - 완료하면 이 카드가 사용량으로 바뀝니다</span>'
+      + '<form class="prov-code" data-p="'+esc(p.id)+'">'
+      + '<input type="text" placeholder="리다이렉트가 안 되면 화면의 코드 붙여넣기" autocomplete="off">'
+      + '<button class="btn sm" type="submit">확인</button></form>'
+      + '<button class="btn sm ghost" data-act="prov-login" data-p="'+esc(p.id)+'">다시 시도</button>';
+  } else {
+    body = '<button class="btn accent" data-act="prov-login" data-p="'+esc(p.id)+'">'+esc(p.name)+' 계정 연결</button>';
+  }
+  return '<article class="acct prov"><div class="prov-join">'
+    + provLogo(p.id)
+    + '<span class="pname">'+esc(p.name)+'</span><span class="pvendor">'+esc(p.vendor)+'</span>'
+    + body
+    + (p.login_error ? '<span class="perr">'+esc(p.login_error)+'</span>' : '')
+    + '<span class="pnote">브라우저 OAuth 로그인 · 토큰은 이 기기(mode 600)에만 저장 · 비공식 조회라 정책 변경 시 끊길 수 있음</span>'
+    + '</div></article>';
+}
+function provCard(p){
+  if(!p.connected) return provJoinCard(p);
+  var u = p.usage || null, w = (u && u.windows) || {};
+  var badges = '';
+  if(u && u.plan) badges += '<span class="badge acc">'+esc(u.plan)+'</span>';
+  if(p.usage_error) badges += '<span class="badge bad" title="'+esc(p.usage_error.message||'')+'">조회 실패</span>';
+  var body;
+  if(p.id==='openai'){
+    body = metric('5h', provWin(w['5h']), false) + metric('7d', provWin(w['7d']), true);
+  } else {
+    body = metric('wk', provWin(w['weekly']), true);
+    if(u && u.products && u.products.length){
+      body += '<div class="ac-note">'+u.products.map(function(x){
+        return esc(x.name)+' '+esc(String(x.used_pct))+'%'; }).join(' · ')+'</div>';
+    }
+  }
+  if(!u && !p.usage_error) body = naMetric(p.id==='openai'?'5h':'wk', '미확인', false);
+  if(p.usage_error && !u) body = naMetric(p.id==='openai'?'5h':'wk', '조회 실패', true);
+  var meta = '<div class="ac-meta">'
+    + '<span class="mi">확인 <b>'+(p.usage_at?ago(ms(p.usage_at)):'미확인')+'</b></span>'
+    + (p.email ? '<span class="mi">계정 <b>'+esc(p.email)+'</b></span>' : '')
+    + '</div>';
+  var act = '<div class="ac-act">'
+    + '<button class="btn sm" data-act="prov-refresh" data-p="'+esc(p.id)+'" title="메타데이터 조회만 - 사용량 소비 0">갱신</button>'
+    + '<button class="btn sm ghost" data-act="prov-logout" data-p="'+esc(p.id)+'">연결 해제</button>'
+    + '</div>';
+  return '<article class="acct prov"><div class="ac-head">'+provLogo(p.id)
+    + '<span class="lbl">'+esc(p.name)+'</span>'
+    + '<span class="ac-badges">'+badges+'</span></div>'
+    + '<div class="ac-metrics">'+body+'</div>'+meta+act+'</article>';
+}
+function renderProviders(){
+  var host = el('providers');
+  if(!host) return;
+  var P = S.providers || [];
+  host.innerHTML = P.length ? P.map(provCard).join('')
+    : '<div class="empty"><b>프로바이더 추적이 꺼져 있습니다</b><span>서버를 --no-providers 없이 실행하면 GPT·Grok 카드가 표시됩니다.</span></div>';
+}
+var provPoll = null;
+function startProvPoll(){
+  // 로그인 콜백은 서버가 받으므로, 완료를 상태 폴링으로 감지한다(최대 2분).
+  var ticks = 0;
+  clearInterval(provPoll);
+  provPoll = setInterval(function(){
+    ticks++;
+    var pending = S && S.providers.some(function(p){ return p.login_pending; });
+    var joined = S && S.providers.every(function(p){ return !p.login_pending; });
+    if(ticks>40 || (!pending && joined && ticks>1)){ clearInterval(provPoll); provPoll=null; }
+    if(!busy) load(true).catch(function(){});
+  }, 3e3);
+}
+function provAutoRefresh(){
+  if(!S || S.server.fake) return;
+  var stale = S.providers.some(function(p){
+    return p.connected && (!p.usage_at || Date.now()-ms(p.usage_at) > PROV_STALE_MS);
+  });
+  if(!stale) return;
+  api('/api/providers/refresh', {force:false}).then(function(){ return load(true); }).catch(function(){});
+}
+
 function renderTimeline(){
   var winMs = 24*H, now = Date.now(), axis = '', rows = '', later = [];
   for(var i=0;i<=24;i+=6){ axis += '<span style="left:'+(i/24*100)+'%">'+(i===0?'지금':(i===24?'+24h':'+'+i+'h'))+'</span>'; }
@@ -554,7 +646,7 @@ function render(skipCards){
   if(!S) return;
   renderTop(); renderActiveBar(); renderAlerts(); syncSettings();
   if(!skipCards) renderCards();
-  renderTimeline(); renderDoctor(); renderLog();
+  renderProviders(); renderTimeline(); renderDoctor(); renderLog();
 }
 
 // ── 토스트·에러 ───────────────────────────────────────────────────
@@ -599,6 +691,29 @@ document.addEventListener('click', function(e){
   var b = t.closest ? t.closest('button[data-act]') : null; if(!b) return;
   var a = b.getAttribute('data-act'), l = b.getAttribute('data-l');
   closeMenus(null);
+  if(a==='prov-login'){
+    var pid = b.getAttribute('data-p');
+    return act(b, '로그인 시작', function(){
+      return api('/api/providers/login', {provider: pid}).then(function(r){
+        var url = r.login && r.login.auth_url;
+        if(url){
+          var w = window.open(url, '_blank');
+          if(!w) toast('팝업이 차단됨 - 브라우저에서 팝업을 허용하세요', true);
+          startProvPoll();
+        }
+        return r;
+      });
+    });
+  }
+  if(a==='prov-refresh'){
+    var pid2 = b.getAttribute('data-p');
+    return act(b, '사용량 갱신', function(){ return api('/api/providers/refresh', {provider: pid2, force: true}); });
+  }
+  if(a==='prov-logout'){
+    var pid3 = b.getAttribute('data-p');
+    if(!confirm(pid3+' 연결을 해제할까요?\n저장된 토큰이 삭제되며 다시 로그인해야 추적됩니다.')) return;
+    return act(b, '연결 해제', function(){ return api('/api/providers/logout', {provider: pid3}); });
+  }
   if(a==='copy'){ copy('cct '+l); return; }
   if(a==='usage') return act(b, l+' 갱신', function(){ return api('/api/refresh', {label:l}); }).then(loadHist);
   if(a==='check') return act(b, l+' 점검', function(){ return api('/api/check', {label:l}); });
@@ -623,6 +738,17 @@ document.addEventListener('keydown', function(e){
   if(e.key==='Enter' && e.target && (e.target.id==='in-warn' || e.target.id==='in-crit')) e.target.blur();
 });
 document.addEventListener('submit', function(e){
+  if(e.target.classList && e.target.classList.contains('prov-code')){
+    e.preventDefault();
+    var pid = e.target.getAttribute('data-p');
+    var input = e.target.querySelector('input');
+    var codeVal = input.value.trim();
+    if(!codeVal){ toast('코드가 비어 있음', true); return; }
+    input.value = '';
+    var btn = e.target.querySelector('button[type=submit]');
+    act(btn, '코드 확인', function(){ return api('/api/providers/code', {provider: pid, code: codeVal}); });
+    return;
+  }
   if(e.target.id!=='form-add') return; e.preventDefault();
   var l = el('add-label').value.trim().toLowerCase();
   var ow = el('add-ow').checked;
@@ -673,9 +799,10 @@ var w0 = false;
 try { w0 = sessionStorage.getItem('cct-write')==='1'; } catch(_){}
 if(/[?&]write=1/.test(location.search)) w0 = true;
 if(w0){ el('chk-write').checked = true; document.body.classList.add('write'); }
-load().catch(function(){});
+load().then(provAutoRefresh).catch(function(){});
 loadHist(); loadTok();
 setInterval(function(){ if(!busy) load(true).catch(function(){}); }, 30e3);
+setInterval(provAutoRefresh, 600e3);                                 // 프로바이더 10분 주기 - 소비 0
 setInterval(function(){ if(S){ renderTop(); renderActiveBar(); renderAlerts(); renderTokMeta(); if(!menuOpen()) renderCards(); renderTimeline(); } }, 60e3);
 setInterval(loadHist, 300e3);                                        // 히스토리 5분 주기 - 로컬 sqlite 읽기만
 setInterval(function(){ if(!(TOK && TOK.scanning)) loadTok(); }, 600e3);   // 토큰 10분 주기

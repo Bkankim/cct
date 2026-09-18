@@ -1,0 +1,17 @@
+{
+  "openai": {
+    "connected": true,
+    "email": "demo@example.com",
+    "connected_at": 1789000000,
+    "usage": {
+      "plan": "plus",
+      "windows": {
+        "5h": {"used_pct": 43, "reset_in": 12452},
+        "7d": {"used_pct": 24, "reset_in": 44365}
+      }
+    }
+  },
+  "xai": {
+    "connected": false
+  }
+}

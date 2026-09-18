@@ -64,6 +64,7 @@ launchctl bootout gui/$(id -u)/com.bkan.cct-dash
 | 활성 계정 바 | 활성 라벨과 sticky·기본 여부, statusline 캐시의 rate_limits·모델·컨텍스트·세션 비용, 갈아탈 계정 1개(가장 빡빡한 창 기준)와 전환 버튼 | 프로브 없음 |
 | 알림 스트립 | 임계 초과·프로브 실패 활성 알림과 최근 기록. 임계값과 macOS 알림 수준은 `···` 설정에서 조정 | 프로브 없음 |
 | 계정 카드 | 라벨별 5h/7d/7f 한 줄 미터(사용률 바 + 남은 시간 · 리셋 시각)·사용률 히스토리 스파크라인·상태 배지·org·check, `···` 에 점검/복사/이름변경/삭제 | 갱신·점검 시 프로브 |
+| 프로바이더 | GPT(ChatGPT/Codex)·Grok(xAI) 구독 사용량 - 미연결이면 OAuth 온보딩 카드, 연결 후 5h/7d·주간 미터 | 프로브 없음 (메타데이터 조회) |
 | 리셋 타임라인 | 다음 24시간의 창 리셋 시점 | 프로브 없음 |
 | 진단 | `cct doctor` 를 PASS / WARN / FAIL 로. 정상은 접고 경고·실패만 펼친다. 하단에 `cct status` 요약 | 프로브 없음 |
 | 토큰·비용 | `~/.claude/projects` JSONL 로컬 집계 - 일별 비용 차트, 모델별 토큰·비용 표, 재스캔 | 프로브 없음 (디스크 읽기만) |
@@ -110,6 +111,16 @@ ccusage 처럼 Claude Code 세션 로그(`~/.claude/projects/**/*.jsonl`)를 읽
 - 스캔은 mtime+size 증분이다. 초회 전수는 약 3초(847MB · 1,100파일 실측), 이후에는 바뀐 파일만 다시 읽는다. `GET /api/tokens` 가 10분 넘게 낡은 스캔을 보면 백그라운드로 다시 돌고, 재스캔 버튼은 즉시 돈다.
 - Claude Code 로그 보존창은 약 30일이라 원본은 사라진다. DB 적재분은 파일이 지워져도 남아 그 너머의 이력 저장소가 된다.
 
+## 프로바이더 사용량 (GPT·Grok)
+
+Claude 지갑과 별개로, GPT(ChatGPT/Codex)와 Grok(xAI SuperGrok) 구독 사용량을 같은 화면에서 추적한다. 미연결 상태에서는 로고와 "계정 연결" 버튼만 있는 온보딩 카드가 뜨고, 버튼을 누르면 브라우저에서 해당 서비스의 OAuth 로그인이 열린다. 로그인을 마치면 카드가 사용률 미터로 바뀐다.
+
+- **인증**: 각 서비스의 공식 CLI(Codex CLI·Grok CLI)가 쓰는 공개 PKCE 클라이언트로 브라우저 OAuth 를 수행한다. 클라이언트 시크릿이 없는 공개 플로우이며, 콜백은 `localhost:1455`(OpenAI) / `127.0.0.1:56121`(xAI) 1회용 리스너가 받는다. 해당 포트를 CLI 로그인이 점유 중이면 409 로 알린다. xAI 는 리다이렉트 대신 코드 표시 화면을 줄 때가 있어(실측), 진행 중 카드에 코드(또는 전체 리다이렉트 URL) 붙여넣기 입력을 둔다.
+- **저장**: 토큰은 `~/.claude/cct-dash-providers.json` (mode 600) 에만 저장한다. cct 지갑(`tokens.env`)과 섞지 않는다. refresh token 은 회전하므로 갱신 즉시 저장한다.
+- **조회**: OpenAI 는 `chatgpt.com/backend-api/wham/usage` (5h·7d 창), xAI 는 `cli-chat-proxy.grok.com/v1/billing` (주간 크레딧 %) 를 읽는다. 메타데이터 GET 이라 구독 사용량을 소비하지 않으며, 대시보드가 열려 있을 때 15분 넘게 낡으면 자동 재조회한다(10분 주기 점검).
+- **고지**: 두 조회 모두 각 서비스의 **비공식 내부 엔드포인트**다. 정책 변경으로 언제든 끊길 수 있고, 그 경우 카드에 "조회 실패" 로 표시될 뿐 지갑·계정에는 영향이 없다. 구독 OAuth 를 자사 클라이언트 밖에서 차단하는 정책 변화가 온 전례(Anthropic, 2026-02)도 있으므로, 이 기능은 언제든 중단될 수 있는 편의로 취급한다.
+- **끄기**: `--no-providers` 로 섹션 자체를 비활성화할 수 있고, 저장 경로는 `--providers-file` 로 바꾼다. 연결 해제 버튼은 저장된 토큰을 삭제한다.
+
 ## 보안
 
 - 서버는 127.0.0.1 에만 바인드한다. 외부 노출은 tailscale serve 가 맡는다.
@@ -118,6 +129,7 @@ ccusage 처럼 Claude Code 세션 로그(`~/.claude/projects/**/*.jsonl`)를 읽
 - statusline 캐시에서는 화이트리스트한 필드만 읽는다. 경로와 세션 식별자는 내보내지 않는다.
 - 상태 파일은 `~/.claude/cct-dash-state.json` (mode 600). 공개 리포 안에는 상태를 두지 않는다.
 - 히스토리·토큰 DB 는 `~/.claude/cct-dash-data.sqlite3` (mode 600). JSONL 에서는 날짜·모델·토큰 수만 뽑고 메시지 본문·경로·세션 ID 는 저장도 노출도 하지 않는다.
+- 프로바이더 토큰은 `~/.claude/cct-dash-providers.json` (mode 600). access·refresh 값은 `/api/state` 응답·실행 로그·예외 메시지 어디에도 싣지 않고, 화면에는 이메일·플랜·사용률만 나간다.
 
 ## 테스트
 
