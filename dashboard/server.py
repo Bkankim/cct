@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # 정책 상수
 FLOOR_MIN = 15          # 자동갱신 하한(분). 서버가 강제한다.
@@ -95,6 +95,28 @@ RESERVED = {
 LIVE_KEYS = ("rate_limits", "model", "context_window", "cost", "version")
 
 log = logging.getLogger("cct-dash")
+
+
+def _load_providers_module():
+    """providers.py 를 파일 경로로 로드한다.
+
+    server.py 자체가 importlib 로 로드되는 테스트 환경에서도 sys.path 에
+    의존하지 않도록 같은 방식으로 옆 파일을 읽는다. 이미 로드돼 있으면 재사용.
+    """
+    import importlib.util
+    name = "cct_dash_providers"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = Path(__file__).resolve().parent / "providers.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    sys.modules[name] = mod
+    return mod
+
+
+pv = _load_providers_module()
 
 
 def mask(text: str) -> str:
@@ -1226,9 +1248,11 @@ class App:
     def __init__(self, cct: Cct, state: State, web_dir: str | Path,
                  live_file: str | Path, bind: str = "127.0.0.1", port: int = 8790,
                  auto_tick: float = 5.0, db: DashDB | None = None,
-                 scanner: TokenScanner | None = None, notifier=None):
+                 scanner: TokenScanner | None = None, notifier=None,
+                 providers=None):
         self.cct = cct
         self.state = state
+        self.providers = providers            # ProviderManager | None (GPT·Grok 사용량)
         self.db = db or DashDB()          # 기본은 프로세스 내 메모리 DB(테스트 친화)
         self.scanner = scanner
         self.notifier = notifier          # callable(title, message) - 실서버는 notify_macos
@@ -1261,6 +1285,8 @@ class App:
     def close(self) -> None:
         self._stop.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
+        if self.providers is not None:
+            self.providers.close()
         self.db.close()
 
     def _compute_next(self, base: int) -> int | None:
@@ -1344,6 +1370,7 @@ class App:
             "refreshing": self.refreshing,
             "settings": self.state.settings_view(),
             "alerts": self.state.alerts_view(),
+            "providers": self.providers.view() if self.providers is not None else [],
             "log": self.state.log_view(),
         }
 
@@ -1683,6 +1710,84 @@ class App:
         return 200, {"ok": True, "started": started,
                      "scanning": self.scanner.scanning}
 
+    # -- 프로바이더(GPT·Grok) - 토큰 값은 어떤 응답·로그에도 싣지 않는다
+    def _provider_err(self, exc) -> tuple[int, dict]:
+        http = {"unknown_provider": 400, "not_connected": 400,
+                "no_refresh": 401, "port_busy": 409}.get(exc.code, 502)
+        return self._err(http, "provider_%s" % exc.code, exc.message)
+
+    def _require_provider(self, body: dict) -> tuple[str | None, tuple | None]:
+        pid = body.get("provider")
+        if not isinstance(pid, str) or pid not in pv.PROVIDER_IDS:
+            return None, self._err(400, "bad_provider", "provider 는 openai|xai 여야 합니다")
+        return pid, None
+
+    def api_providers_login(self, body: dict) -> tuple[int, dict]:
+        if self.providers is None:
+            return self._err(503, "providers_off", "프로바이더 추적이 꺼져 있습니다")
+        pid, err = self._require_provider(body)
+        if err:
+            return err
+        t0 = time.monotonic()
+        try:
+            out = self.providers.start_login(pid)
+        except pv.ProviderError as exc:
+            self.state.log_add("provider login %s" % pid, 1,
+                               int((time.monotonic() - t0) * 1000))
+            return self._provider_err(exc)
+        self.state.log_add("provider login %s" % pid, 0,
+                           int((time.monotonic() - t0) * 1000))
+        return self._ok({"login": out})
+
+    def api_providers_code(self, body: dict) -> tuple[int, dict]:
+        """수동 코드 폴백 - 리다이렉트가 안 될 때 화면의 코드를 붙여넣는다. 코드 값은 로그에 남기지 않는다."""
+        if self.providers is None:
+            return self._err(503, "providers_off", "프로바이더 추적이 꺼져 있습니다")
+        pid, err = self._require_provider(body)
+        if err:
+            return err
+        code = body.get("code")
+        if not isinstance(code, str) or not code.strip():
+            return self._err(400, "bad_code", "code 가 비어 있습니다")
+        try:
+            self.providers.submit_code(pid, code)
+        except pv.ProviderError as exc:
+            self.state.log_add("provider code %s" % pid, 1, 0)
+            return self._provider_err(exc)
+        self.state.log_add("provider code %s" % pid, 0, 0)
+        return self._ok()
+
+    def api_providers_logout(self, body: dict) -> tuple[int, dict]:
+        if self.providers is None:
+            return self._err(503, "providers_off", "프로바이더 추적이 꺼져 있습니다")
+        pid, err = self._require_provider(body)
+        if err:
+            return err
+        try:
+            self.providers.logout(pid)
+        except pv.ProviderError as exc:
+            return self._provider_err(exc)
+        self.state.log_add("provider logout %s" % pid, 0, 0)
+        return self._ok()
+
+    def api_providers_refresh(self, body: dict) -> tuple[int, dict]:
+        """연결된 프로바이더의 사용량 재조회. 메타데이터 GET 만이라 사용량을 소비하지 않는다."""
+        if self.providers is None:
+            return self._err(503, "providers_off", "프로바이더 추적이 꺼져 있습니다")
+        pid = body.get("provider")
+        if pid is not None and (not isinstance(pid, str) or pid not in pv.PROVIDER_IDS):
+            return self._err(400, "bad_provider", "provider 는 openai|xai 여야 합니다")
+        t0 = time.monotonic()
+        try:
+            self.providers.refresh_usage(pid, force=bool(body.get("force", True)))
+        except pv.ProviderError as exc:
+            self.state.log_add("provider usage %s" % (pid or "all"), 1,
+                               int((time.monotonic() - t0) * 1000))
+            return self._provider_err(exc)
+        self.state.log_add("provider usage %s" % (pid or "all"), 0,
+                           int((time.monotonic() - t0) * 1000))
+        return self._ok()
+
     def _tokens_payload(self, days: int) -> dict:
         rows = self.db.tokens_report(days)
         days_map: dict[str, dict] = {}
@@ -1909,6 +2014,14 @@ class Handler(BaseHTTPRequestHandler):
                 code, payload = app.api_settings(body)
             elif path == "/api/tokens/scan":
                 code, payload = app.api_tokens_scan()
+            elif path == "/api/providers/login":
+                code, payload = app.api_providers_login(body)
+            elif path == "/api/providers/code":
+                code, payload = app.api_providers_code(body)
+            elif path == "/api/providers/logout":
+                code, payload = app.api_providers_logout(body)
+            elif path == "/api/providers/refresh":
+                code, payload = app.api_providers_refresh(body)
             else:
                 self._error(404, "not_found", "없는 엔드포인트입니다")
                 return
@@ -2006,6 +2119,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="cct.sh 경로 (기본 ~/.claude/cct.sh)")
     p.add_argument("--live-file", default=None,
                    help="statusline 캐시 (기본 ~/.claude/orca-usage-cache.json)")
+    p.add_argument("--providers-file", default=pv.DEFAULT_STORE,
+                   help="GPT·Grok 자격증명·사용량 캐시 (기본 %s)" % pv.DEFAULT_STORE)
+    p.add_argument("--no-providers", action="store_true",
+                   help="GPT·Grok 프로바이더 추적 비활성화")
     p.add_argument("--fake", action="store_true",
                    help="cct 호출을 픽스처로 대체 (실프로브 0회)")
     p.add_argument("--fixtures", default=str(here / "tests" / "fixtures"),
@@ -2051,9 +2168,12 @@ def main(argv: list[str] | None = None) -> int:
         seed_fake_db(db, cct)            # type: ignore[arg-type]
         scanner = None                   # 픽스처 모드는 실로그를 읽지 않는다
         notifier = None                  # 알림도 이력에만 남긴다
+        providers = None if args.no_providers else pv.FakeProviderManager(fixtures)
     else:
         scanner = None if args.no_tokens else TokenScanner(db, args.projects_dir)
         notifier = notify_macos
+        providers = None if args.no_providers else \
+            pv.ProviderManager(pv.ProviderStore(args.providers_file))
     app = App(
         cct=cct,
         state=state,
@@ -2064,6 +2184,7 @@ def main(argv: list[str] | None = None) -> int:
         db=db,
         scanner=scanner,
         notifier=notifier,
+        providers=providers,
     )
     httpd = make_server(args.bind, args.port, app)
     state.log_add("server start %s:%d%s" % (args.bind, app.port,
