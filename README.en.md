@@ -1,10 +1,10 @@
-# cct — Portable Claude Account Wallet
+# cct - Portable Claude Account Wallet
 
 [한국어](README.md) · **English**
 
 [![cct dashboard](dashboard/screenshots/desktop-1400.png)](#dashboard-optional)
 
-<sub>The optional [local dashboard](#dashboard-optional) — a fixture-mode demo with account labels blurred. cct itself is a shell tool.</sub>
+<sub>The optional [local dashboard](#dashboard-optional) - a fixture-mode demo with account labels blurred. cct itself is a shell tool.</sub>
 
 Authenticate each Claude account once with `claude setup-token`, register the long-lived token in a local wallet, and explicitly select an account with `cct <label>` whenever you need it. Move the wallet securely to use Claude Code in a new environment without repeating browser OAuth login for every account.
 
@@ -46,61 +46,60 @@ A `setup-token` is the current mechanism for long-lived use, but its lifetime an
 
 ## Commands
 
-| Command | Behavior | Main exit codes |
+| Command | Behavior |
+|---|---|
+| `cct [claude args...]` | Launch the sticky active label, or `CCT_DEFAULT_LABEL` (default `gv`) when none is active |
+| `cct <label> [claude args...]` | Launch that account and forward all Claude arguments |
+| `cct run <label> [claude args...]` | Launch even a reserved label such as `rm` |
+| `cct use <label>` | Switch the active label without launching claude |
+| `cct active` | Show the current active label |
+| `cct refresh` | Apply an active-label switch made in another terminal to this shell |
+| `cct off` | Clear active state and cct auth variables from this shell |
+| `cct ls` / `cct list` | List registered accounts (no token values) |
+| `cct add <label>` | Register or replace a setup-token (hidden input) |
+| `cct rm <label> [--force]` | Remove an account after a `[y/N]` prompt |
+| `cct rename <old> <new>` | Rename a label without touching the token |
+| `cct status` | Wallet path/mode/count, active/default label, Claude version (offline) |
+| `cct doctor` | Diagnose wallet, permissions, backup, lock, and shell as `PASS/WARN/FAIL` (offline) |
+| `cct check [label]` | Validate token(s) with a real call |
+| `cct fp [label]` / `cct who [label]` | Detect duplicate accounts from real-call fingerprints |
+| `cct usage [--json] [label\|--all]` | Subscription 5h/7d/7f utilization and reset time (probe ≤32 tokens). `--json` prints one JSON line per label (NDJSON) |
+| `cct help` | Built-in help |
+
+Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z0-9_]*`.
+
+**Exit codes** are `0` success, `1` runtime failure (missing account or token, cancellation, storage failure, invalid token), and `2` usage or label-format error. Launch commands (`cct`, `cct <label>`, `cct run`) return claude's own exit code. Three exceptions: `cct doctor` returns `1` on any FAIL; `cct check` returns `2` when the token is missing, and all-label mode returns `1` if any label fails; `cct fp`, `cct who`, and `cct usage` report a missing token or failed probe in their output only and return `0`.
+
+### Defaults and environment variables
+
+`cct <label>` turns the following on by default; each can be changed with an environment variable.
+
+| Variable | Default | Effect |
 |---|---|---|
-| `cct [claude args...]` | Launch the sticky active label, or `CCT_DEFAULT_LABEL` (default `gv`) when none is active | Claude exit code; configuration error `1`; usage/label error `2` |
-| `cct <label> [claude args...]` | Select that account and forward all Claude arguments | Claude exit code; account missing `1`; label error `2` |
-| `cct run <label> [claude args...]` | Explicitly launch even a reserved label such as `rm` | Claude exit code; account missing `1`; usage/label error `2` |
-| `cct ls` / `cct list` | List registered accounts without token values | success `0` |
-| `cct add <label>` | Register a setup-token or replace an existing one through hidden input | success `0`; cancellation/storage failure `1`; usage error `2` |
-| `cct rm <label> [--force]` | Remove the account and annotation after a default `[y/N]` prompt | success `0`; cancellation/failure `1`; usage error `2` |
-| `cct rename <old> <new>` | Change the label and active state without changing token bytes | success `0`; collision/failure `1`; usage error `2` |
-| `cct status` | Show wallet path/mode/count, active/default label, sticky state, and local Claude version offline | success `0`; usage error `2` |
-| `cct doctor` | Diagnose wallet structure, permissions, backup, lock, Claude, and shell as `PASS/WARN/FAIL`, offline | no FAIL `0`; health failure `1`; usage error `2` |
-| `cct check [label]` | Validate token(s) with a real Claude call | valid `0`; invalid/unavailable `1`; no token `2`; all-label mode returns `1` if any fail |
-| `cct fp [label]` / `cct who [label]` | Compare account fingerprints returned by a real call | A validly formed label returns `0` even when the token is missing or the probe response fails (output-only); invalid label `2` |
-| `cct usage [--json] [label\|--all]` | Show subscription 5h/7d/7f(premium) utilization and reset from real-call headers (defaults to the active label; premium probe costs ≤32 tokens). `--json` prints one JSON object per label (NDJSON) for scripts and dashboards | Same as fp: output-only `0`; usage or label error `2` |
-| `cct use <label>` | Switch the sticky active label without launching claude (other open shells still need `cct refresh`) | success `0`; missing token, storage failure, or `CCT_STICKY=0` `1`; usage or label error `2` |
-| `cct active` | Show the current sticky active label | success `0` |
-| `cct refresh` | Re-apply the on-disk active label to the current shell environment (sync after switching in another terminal) | success `0`; missing token `1`; usage error `2` |
-| `cct off` | Remove active state and cct auth variables from the current shell | success `0`; state deletion failure `1` |
-| `cct help` | Show built-in help | success `0` |
+| `CCT_STICKY` | `1` | Remember the selected account in the current shell and the active file (mode `600`), so plain `claude` and new terminals keep using it. `0` skips persisting |
+| `CCT_ACTIVE_FILE` | `cct-active` next to `tokens.env` | Active-label file path |
+| `CCT_DEFAULT_LABEL` | `gv` | Label used when nothing is active |
+| `CCT_SKIP_PERMS` | `1` | Launch claude with `--dangerously-skip-permissions` |
+| `CCT_CLAUDE_FLAGS` | none | Extra claude flags (space-separated) |
+| `CCT_DISABLE_WEB_FEATURES` | `1` | Block nonessential web calls (Advisor, telemetry, error reporting); auto-update keeps working |
+| `CCT_FIX_ONBOARDING` | `1` | Fix `hasCompletedOnboarding` in the Claude config so an env-token launch skips the login wizard. Missing, symlinked, or malformed configs are left alone and the file mode is preserved |
+| `CCT_GJC_WARN` | `1` | Warn (never delete) when gjc's stored anthropic credentials would override the env token |
 
-Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z0-9_]*`. `cct <label>` disables Advisor and nonessential web calls (telemetry, error reporting) by default while keeping auto-update working. Opt in only when needed with `CCT_DISABLE_WEB_FEATURES=0 cct <label>`. The blocking flags (`DISABLE_TELEMETRY` and friends) are generic variable names, so if you already set the same variables yourself, `cct off`, `cct rm` of the active account, `cct refresh` with no active label, and the opt-out clear them in that shell, while a sticky label launch (`cct <label>`) overwrites the same variable with `1` even if you had set it to a different value. To turn auto-update off on purpose, set `DISABLE_AUTOUPDATER=1` yourself; cct never reads or writes it.
-
-`cct <label>` launches claude with `--dangerously-skip-permissions` by default (disable with `CCT_SKIP_PERMS=0`). Pass extra claude flags through `CCT_CLAUDE_FLAGS` (space-separated).
-
-Sticky mode is enabled by default. `cct <label>` remembers the selected account in the current shell and in mode-`600` `~/.claude/cct-active` (override the path with `CCT_ACTIVE_FILE`), so plain `claude` and new terminals keep using it. Run `cct off` to clear it, or set `CCT_STICKY=0` for a launch that does not persist the selection. An already-open terminal does not follow a switch made in another terminal; run `cct refresh` in that shell to re-apply the on-disk active label. To switch accounts without launching claude, use `cct use <label>`: it takes the same lock and writes the same state as a label launch, minus the claude process.
-
-Before launching, `cct <label>` fixes the `hasCompletedOnboarding` flag in the Claude config so an env-token launch does not trigger the interactive login wizard (the flag is reset by `/logout` or updates). Missing, symlinked, or malformed configs are left untouched, and the file mode is preserved. Disable with `CCT_FIX_ONBOARDING=0`.
-
-When applying or clearing an account, cct exports and unsets `ANTHROPIC_OAUTH_TOKEN` alongside `CLAUDE_CODE_OAUTH_TOKEN`, so env-inheriting tools (gjc, aside, ...) follow the active account. gjc keeps stored credentials (agent.db) that take precedence over env tokens, so cct prints a warning on switch/refresh while active anthropic credentials remain there (it never deletes them). Disable with `CCT_GJC_WARN=0`; machines without gjc pass through silently.
-
-For tools that support command-valued secrets instead of env inheritance, the installer also ships the `~/.claude/cct-token.sh` bridge (mode `700`). It prints the active profile's setup-token to stdout and exits non-zero with no output when there is no active profile or token. Example: aside's `models.json` with `"apiKey": "!<home>/.claude/cct-token.sh"` — the tool follows the active account at call time.
+- An already-open terminal does not follow a switch made elsewhere; run `cct refresh` in that shell.
+- When applying or clearing an account, cct exports and unsets `ANTHROPIC_OAUTH_TOKEN` alongside `CLAUDE_CODE_OAUTH_TOKEN`, so env-inheriting tools (gjc, aside, ...) follow the active account.
+- The web-blocking flags (`DISABLE_TELEMETRY` and friends) are generic names. If you set them yourself, `cct off`, `cct rm` of the active account, `cct refresh` with no active label, and the opt-out clear them in that shell, and `cct <label>` overwrites them with `1`. To turn auto-update off, set `DISABLE_AUTOUPDATER=1` yourself; cct never reads or writes it.
+- For tools that take command-valued secrets instead of inheriting env, the installer ships `~/.claude/cct-token.sh` (mode `700`). It prints the active account's setup-token to stdout only, and exits non-zero with no output when there is no active account or token. Example: aside's `models.json` with `"apiKey": "!<home>/.claude/cct-token.sh"` follows the active account at call time.
 
 ## Dashboard (optional)
 
-`dashboard/` holds a local web dashboard that shows wallet state on one screen. Instead of typing `cct status`, `cct doctor`, and `cct usage --all` separately, you see at a glance how much each account has left and which one to switch to. It is vanilla HTML/CSS/JS plus a standard-library Python server — no build step, no external resources, no CDN.
+`dashboard/` holds a local web dashboard that shows wallet state on one screen: per-account 5h/7d/7f utilization and reset times, a switch suggestion, `cct doctor` diagnostics, local token and cost totals, and GPT/Grok subscription usage. It is vanilla HTML/CSS/JS plus a standard-library Python server, with no build step and no external resources.
 
 ```sh
 uv run --script dashboard/server.py --port 8790          # real wallet
 uv run --script dashboard/server.py --fake --port 8799   # fixture mode (zero real probes)
 ```
 
-It binds to `127.0.0.1` and is read-first by default. Adding, renaming, and deleting accounts only appear once you enable write mode from the `···` menu, and token values never show up on screen, in responses, or in the execution log. For always-on use, see the plist templates in `dashboard/launchd/`.
-
-| Area | Content | Probe |
-|---|---|---|
-| Top bar | Connection, last refresh, today's probe budget, auto-refresh interval, refresh all | Spent on refresh |
-| Active account bar | Active label, 5h/7d + model + context + session cost from the statusline cache, one switch suggestion | None |
-| Account cards | Per-label 5h/7d/7f single-line meters, reset time, status badge, org, check | Spent on refresh/check |
-| Providers | GPT (ChatGPT/Codex) and Grok (xAI) subscription usage - connect via OAuth to see 5h/7d and weekly meters | None (metadata read) |
-| Reset timeline | Window resets over the next 24 hours | None |
-| Diagnostics | `cct doctor` as PASS/WARN/FAIL; passes collapse, warnings and failures expand | None |
-
-Utilization bars read under 65% as headroom, 65-89% as caution, and 90% or higher (or `rejected`) as danger. A window with no data is never filled with a made-up number - it says `unknown`, `unsupported`, or `no response` instead. `cct usage` is a real API call that consumes quota (premium probe ≤32 tokens), so the top bar always shows today's probe count and estimated tokens.
-
-Beyond Claude, the dashboard can also track **GPT and Grok subscription usage**. Click a provider card's logo to sign in with browser OAuth (reusing each official CLI's public PKCE client), and the card turns into 5h/7d (GPT) or weekly-credit (Grok) meters. Tokens are stored only in `~/.claude/cct-dash-providers.json` (mode 600), and the usage reads rely on unofficial internal endpoints that may break if provider policy changes. See [dashboard/README.md](dashboard/README.md) for details and caveats.
+It binds to `127.0.0.1` and is read-first by default, and token values never appear on screen, in responses, or in logs. Usage reads are real API calls that consume a little quota. Screen layout, probe cost, always-on setup, and the GPT/Grok integration and caveats are in [dashboard/README.md](dashboard/README.md).
 
 <details>
 <summary>400px mobile and write mode</summary>
@@ -111,7 +110,7 @@ Beyond Claude, the dashboard can also track **GPT and Grok subscription usage**.
 
 </details>
 
-Every screenshot is a fixture-mode (`--fake`) demo with account labels blurred. See [dashboard/README.md](dashboard/README.md) for details.
+Every screenshot is a fixture-mode (`--fake`) demo with account labels blurred.
 
 ## Portability and the OSS boundary
 
@@ -159,4 +158,4 @@ cct is not an OAuth refresh service, proxy, orchestrator, automatic or quota-bas
 
 ## License
 
-MIT — [LICENSE](LICENSE)
+MIT - [LICENSE](LICENSE)

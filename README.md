@@ -1,10 +1,10 @@
-# cct — 휴대용 Claude 계정 지갑
+# cct - 휴대용 Claude 계정 지갑
 
 **한국어** · [English](README.en.md)
 
 [![cct 대시보드](dashboard/screenshots/desktop-1400.png)](#대시보드-선택)
 
-<sub>선택 기능인 [로컬 대시보드](#대시보드-선택) — 픽스처 데모이며 계정 라벨은 블러 처리했다. cct 자체는 셸 도구다.</sub>
+<sub>선택 기능인 [로컬 대시보드](#대시보드-선택) - 픽스처 데모이며 계정 라벨은 블러 처리했다. cct 자체는 셸 도구다.</sub>
 
 여러 Claude 계정을 한 번씩 `claude setup-token`으로 인증해 장기 토큰을 로컬 지갑에 등록하고, 필요할 때 `cct <라벨>`로 직접 선택하는 셸 도구다. 지갑을 안전하게 옮기면 새 환경에서 계정마다 브라우저 OAuth 로그인을 반복하지 않고 Claude Code를 사용할 수 있다.
 
@@ -46,61 +46,60 @@ cct personal                  # personal 계정으로 전환
 
 ## 명령
 
-| 명령 | 동작 | 주요 종료 코드 |
+| 명령 | 동작 |
+|---|---|
+| `cct [claude 인자...]` | 활성(sticky) 라벨로 실행. 활성 라벨이 없으면 `CCT_DEFAULT_LABEL`(기본 `gv`) |
+| `cct <라벨> [claude 인자...]` | 해당 계정으로 실행하고 Claude 인자를 그대로 전달 |
+| `cct run <라벨> [claude 인자...]` | `rm` 같은 예약어 라벨도 충돌 없이 실행 |
+| `cct use <라벨>` | claude를 띄우지 않고 활성 라벨만 전환 |
+| `cct active` | 현재 활성 라벨 표시 |
+| `cct refresh` | 다른 터미널에서 바꾼 활성 라벨을 현재 셸에 반영 |
+| `cct off` | 활성 상태와 현재 셸의 cct 인증 환경 해제 |
+| `cct ls` / `cct list` | 등록 계정 목록 (토큰 값 미표시) |
+| `cct add <라벨>` | setup-token 등록 또는 교체 (숨김 입력) |
+| `cct rm <라벨> [--force]` | `[y/N]` 확인 후 계정 삭제 |
+| `cct rename <기존> <새>` | 토큰은 그대로 두고 라벨만 변경 |
+| `cct status` | 지갑 경로·mode·계정 수·활성/기본 라벨·Claude 버전 (오프라인) |
+| `cct doctor` | 지갑·권한·백업·잠금·셸 상태를 `PASS/WARN/FAIL`로 진단 (오프라인) |
+| `cct check [라벨]` | 실제 호출로 토큰 유효성 점검 |
+| `cct fp [라벨]` / `cct who [라벨]` | 실제 호출의 계정 지문으로 중복 계정 점검 |
+| `cct usage [--json] [라벨\|--all]` | 구독 5h/7d/7f 사용률과 리셋 시각 (프로브 ≤32토큰). `--json`은 라벨당 JSON 한 줄(NDJSON) |
+| `cct help` | 내장 도움말 |
+
+라벨은 소문자 영문, 숫자, 밑줄만 허용한다: `[a-z0-9_][a-z0-9_]*`.
+
+**종료 코드**는 `0` 성공, `1` 실행 실패(계정·토큰 없음, 취소, 저장 실패, 무효 토큰), `2` 사용법·라벨 형식 오류다. 실행 명령(`cct`, `cct <라벨>`, `cct run`)은 claude의 종료 코드를 그대로 돌려준다. 예외는 셋이다. `cct doctor`는 FAIL이 있으면 `1`, `cct check`는 토큰이 없으면 `2`이고 전체 점검은 하나라도 문제면 `1`, `cct fp`·`cct who`·`cct usage`는 토큰 없음·응답 실패를 출력으로만 알리고 `0`이다.
+
+### 기본 동작과 환경 변수
+
+`cct <라벨>`은 아래 동작을 기본으로 켜며, 각각 환경 변수로 바꿀 수 있다.
+
+| 변수 | 기본 | 효과 |
 |---|---|---|
-| `cct [claude 인자...]` | 활성(sticky) 라벨로 실행하고, 없으면 `CCT_DEFAULT_LABEL`(기본 `gv`) 사용 | Claude 종료 코드, 설정 오류 `1`, 사용법/라벨 오류 `2` |
-| `cct <라벨> [claude 인자...]` | 해당 계정을 선택하고 Claude 인자를 그대로 전달 | Claude 종료 코드, 계정 없음 `1`, 라벨 오류 `2` |
-| `cct run <라벨> [claude 인자...]` | `rm` 같은 예약어 라벨도 충돌 없이 명시 실행 | Claude 종료 코드, 계정 없음 `1`, 사용법/라벨 오류 `2` |
-| `cct ls` / `cct list` | 등록 계정 목록 표시(토큰 값 미표시) | 성공 `0` |
-| `cct add <라벨>` | setup-token 등록 또는 기존 토큰 교체(숨김 입력) | 성공 `0`, 취소/저장 실패 `1`, 사용법 오류 `2` |
-| `cct rm <라벨> [--force]` | 기본 `[y/N]` 확인 후 계정과 주석 삭제 | 성공 `0`, 취소/실패 `1`, 사용법 오류 `2` |
-| `cct rename <기존> <새>` | 토큰 값은 유지하고 라벨과 활성 상태를 변경 | 성공 `0`, 충돌/실패 `1`, 사용법 오류 `2` |
-| `cct status` | 지갑 경로·mode·계정 수·활성/기본 라벨·sticky·로컬 Claude 버전 표시(오프라인) | 성공 `0`, 사용법 오류 `2` |
-| `cct doctor` | 지갑 구조·권한·백업·잠금·Claude·셸 상태를 `PASS/WARN/FAIL`로 진단(오프라인) | FAIL 없음 `0`, 상태 실패 `1`, 사용법 오류 `2` |
-| `cct check [라벨]` | 실제 Claude 호출로 토큰 유효성 점검 | 유효 `0`, 무효/점검 불가 `1`, 토큰 없음 `2`; 전체 점검은 하나라도 문제면 `1` |
-| `cct fp [라벨]` / `cct who [라벨]` | 실제 호출에서 얻은 계정 지문으로 중복 여부 점검 | 유효 형식 라벨은 토큰 없음·응답 실패도 출력으로만 알리고 `0`, 라벨 형식 오류 `2` |
-| `cct usage [--json] [라벨\|--all]` | 실제 호출 헤더로 구독 5h/7d/7f(프리미엄) 사용률·리셋 표시 (기본 활성 라벨, 프리미엄 프로브 ≤32토큰). `--json`은 라벨당 JSON 한 줄(NDJSON)만 내보내 스크립트·대시보드가 그대로 파싱한다 | fp와 동일: 출력으로만 알리고 `0`, 사용법·라벨 오류 `2` |
-| `cct use <라벨>` | claude를 실행하지 않고 활성(sticky) 라벨만 전환 (열린 다른 셸은 `cct refresh` 필요) | 성공 `0`, 토큰 없음·저장 실패·`CCT_STICKY=0` `1`, 사용법·라벨 오류 `2` |
-| `cct active` | 현재 sticky 활성 라벨 표시 | 성공 `0` |
-| `cct refresh` | 디스크의 활성 라벨을 현재 셸 env에 재적용 (다른 터미널 전환 동기화) | 성공 `0`, 토큰 없음 `1`, 사용법 오류 `2` |
-| `cct off` | 활성 파일과 현재 셸의 cct 인증 환경 해제 | 성공 `0`, 상태 삭제 실패 `1` |
-| `cct help` | 내장 도움말 표시 | 성공 `0` |
+| `CCT_STICKY` | `1` | 선택한 계정을 현재 셸과 활성 파일(mode `600`)에 기억해 이후 `claude`와 새 터미널도 같은 계정을 쓴다. `0`이면 저장하지 않는다 |
+| `CCT_ACTIVE_FILE` | `tokens.env` 옆 `cct-active` | 활성 라벨 파일 경로 |
+| `CCT_DEFAULT_LABEL` | `gv` | 활성 라벨이 없을 때 쓰는 라벨 |
+| `CCT_SKIP_PERMS` | `1` | claude를 `--dangerously-skip-permissions`로 실행 |
+| `CCT_CLAUDE_FLAGS` | 없음 | claude에 추가로 넘길 플래그 (공백 구분) |
+| `CCT_DISABLE_WEB_FEATURES` | `1` | Advisor·텔레메트리·에러 리포팅 등 비필수 웹 호출 차단. 자동업데이트는 유지 |
+| `CCT_FIX_ONBOARDING` | `1` | env 토큰으로 실행할 때 로그인 마법사가 뜨지 않도록 Claude 설정의 `hasCompletedOnboarding`을 보정. 파일이 없거나 symlink·깨진 JSON이면 건드리지 않고 mode를 유지 |
+| `CCT_GJC_WARN` | `1` | gjc(가재코드)에 저장된 anthropic 자격증명이 env 토큰보다 우선할 때 경고만 출력 (삭제하지 않음) |
 
-라벨은 소문자 영문, 숫자, 밑줄만 허용한다: `[a-z0-9_][a-z0-9_]*`. `cct <라벨>`은 기본적으로 Advisor와 텔레메트리, 에러 리포팅 등 비필수 웹 호출을 차단하되 자동업데이트는 유지한다. 필요할 때만 `CCT_DISABLE_WEB_FEATURES=0 cct <라벨>`로 허용할 수 있다. 차단에 쓰는 `DISABLE_TELEMETRY` 등은 generic한 변수명이라, 같은 변수를 직접 쓰고 있었다면 `cct off`, 활성 계정을 지우는 `cct rm`, 활성 라벨이 없을 때의 `cct refresh`, opt-out이 그 셸에서 함께 해제하고, 반대로 라벨 sticky 실행(`cct <라벨>`)은 당신이 다른 값으로 둔 같은 변수를 `1`로 덮어쓴다. 자동업데이트를 끄고 싶으면 `DISABLE_AUTOUPDATER=1`을 직접 지정하면 되고, cct는 이 변수를 읽거나 쓰지 않는다.
-
-`cct <라벨>`은 기본으로 `--dangerously-skip-permissions`를 붙여 실행한다(`CCT_SKIP_PERMS=0`으로 끔). claude에 추가로 넘길 플래그는 `CCT_CLAUDE_FLAGS`(공백 구분)로 전달한다.
-
-Sticky는 기본으로 켜져 있다. `cct <라벨>`이 선택한 계정을 현재 셸과 mode `600`의 `~/.claude/cct-active`(경로는 `CCT_ACTIVE_FILE`로 변경 가능)에 기억하므로 이후 일반 `claude` 실행과 새 터미널도 같은 계정을 쓴다. `cct off`로 해제하거나 `CCT_STICKY=0`으로 저장하지 않는 실행을 선택할 수 있다. 이미 열려 있던 터미널은 다른 터미널의 전환을 자동으로 따라가지 않으므로, 그 셸에서 `cct refresh`를 실행해 디스크의 활성 라벨과 동기화한다. claude를 띄우지 않고 계정만 바꾸려면 `cct use <라벨>`을 쓴다. 잠금·저장 경로는 `cct <라벨>`과 같고 claude 실행만 생략한다.
-
-`cct <라벨>`은 실행 직전에 Claude 설정의 `hasCompletedOnboarding` 플래그를 자동 보정해, env 토큰이 있는데도 인터랙티브 로그인 마법사가 뜨는 것을 막는다(`/logout`이나 업데이트로 리셋되는 값). 설정 파일이 없거나 symlink이거나 JSON이 깨졌으면 건드리지 않고, 보정 시 파일 mode를 유지한다. `CCT_FIX_ONBOARDING=0`으로 끌 수 있다.
-
-계정을 적용·해제할 때 `CLAUDE_CODE_OAUTH_TOKEN`과 함께 `ANTHROPIC_OAUTH_TOKEN`도 같은 값으로 export·해제해, env를 상속하는 다른 도구(gjc, aside 등)도 활성 계정을 따라간다. gjc(가재코드)는 자체 저장 자격증명(agent.db)이 env 토큰보다 우선이므로, 활성 anthropic 자격증명이 남아 있으면 전환·refresh 때 경고만 출력한다(자동 삭제하지 않음). `CCT_GJC_WARN=0`으로 끌 수 있고, gjc 미사용 머신에서는 조용히 통과한다.
-
-env 상속이 아니라 명령값 시크릿을 지원하는 도구에는 설치기가 함께 놓는 `~/.claude/cct-token.sh` 브릿지(mode `700`)를 쓴다. 활성 프로필의 setup-token을 stdout으로만 출력하고, 활성 프로필·토큰이 없으면 아무것도 출력하지 않고 비제로 종료한다. 예: aside의 `models.json`에 `"apiKey": "!<홈경로>/.claude/cct-token.sh"` — 호출 시점의 활성 계정을 실시간으로 따라간다.
+- 이미 열린 터미널은 다른 터미널의 전환을 자동으로 따라가지 않는다. 그 셸에서 `cct refresh`를 실행한다.
+- 계정을 적용·해제할 때 `CLAUDE_CODE_OAUTH_TOKEN`과 함께 `ANTHROPIC_OAUTH_TOKEN`도 같은 값으로 export·해제해, env를 상속하는 다른 도구(gjc, aside 등)도 활성 계정을 따라간다.
+- 웹 호출 차단에 쓰는 `DISABLE_TELEMETRY` 등은 범용 변수명이다. 같은 변수를 직접 쓰고 있었다면 `cct off`, 활성 계정의 `cct rm`, 활성 라벨이 없을 때의 `cct refresh`, opt-out이 그 셸에서 해제하고, `cct <라벨>`은 `1`로 덮어쓴다. 자동업데이트를 끄려면 `DISABLE_AUTOUPDATER=1`을 직접 지정한다. cct는 이 변수를 읽거나 쓰지 않는다.
+- env 상속 대신 명령값 시크릿을 받는 도구에는 설치기가 함께 놓는 `~/.claude/cct-token.sh`(mode `700`)를 쓴다. 활성 계정의 setup-token을 stdout으로만 출력하고, 활성 계정·토큰이 없으면 출력 없이 비제로 종료한다. 예: aside `models.json`의 `"apiKey": "!<홈경로>/.claude/cct-token.sh"`는 호출 시점의 활성 계정을 따라간다.
 
 ## 대시보드 (선택)
 
-`dashboard/` 에 지갑 상태를 한 화면에서 보는 로컬 웹 대시보드가 있다. 터미널에서 `cct status` · `cct doctor` · `cct usage --all` 을 따로 치는 대신, 어느 계정이 얼마나 남았고 지금 어디로 갈아타야 하는지를 한눈에 본다. 빌드 도구·외부 리소스·CDN 이 없는 바닐라 HTML/CSS/JS 와 표준 라이브러리 파이썬 서버뿐이다.
+`dashboard/`에 지갑 상태를 한 화면에서 보는 로컬 웹 대시보드가 있다. 계정별 5h/7d/7f 사용률과 리셋 시각, 갈아탈 계정 추천, `cct doctor` 진단, 로컬 토큰·비용 집계, GPT·Grok 구독 사용량을 보여준다. 빌드 도구·외부 리소스 없이 바닐라 HTML/CSS/JS와 표준 라이브러리 파이썬 서버로만 돈다.
 
 ```sh
 uv run --script dashboard/server.py --port 8790          # 실지갑
 uv run --script dashboard/server.py --fake --port 8799   # 픽스처 모드(실프로브 0회)
 ```
 
-기본은 `127.0.0.1` 바인드이고 읽기 우선이다. 계정 등록·이름변경·삭제는 `···` 메뉴의 쓰기 모드를 켜야 보이며, 토큰 값은 화면·응답·실행 로그 어디에도 나타나지 않는다. 상시 실행은 `dashboard/launchd/` 의 plist 템플릿을 쓴다.
-
-| 영역 | 내용 | 프로브 |
-|---|---|---|
-| 상단 바 | 연결 상태·마지막 갱신·오늘 프로브 예산·자동갱신 주기·전체 갱신 | 갱신 시 소비 |
-| 활성 계정 바 | 활성 라벨, statusline 캐시의 5h/7d·모델·컨텍스트·세션 비용, 갈아탈 계정 1개와 전환 버튼 | 없음 |
-| 계정 카드 | 라벨별 5h/7d/7f 한 줄 미터·리셋 시각·상태 배지·org·check | 갱신·점검 시 소비 |
-| 프로바이더 | GPT(ChatGPT/Codex)·Grok(xAI) 구독 사용량 - OAuth 로 연결하면 5h/7d·주간 미터 표시 | 없음 (메타데이터 조회) |
-| 리셋 타임라인 | 다음 24시간의 창 리셋 시점 | 없음 |
-| 진단 | `cct doctor` 를 PASS/WARN/FAIL 로, 정상은 접고 경고·실패만 펼침 | 없음 |
-
-사용률 바는 65% 미만 여유, 65~89% 주의, 90% 이상 또는 `rejected` 를 위험으로 칠한다. 값이 없는 창은 숫자를 만들지 않고 `미확인` · `미지원` · `응답 실패` 처럼 사유를 적는다. `cct usage` 는 실제 API 호출이라 사용량을 소비하므로(프리미엄 프로브 ≤32토큰), 상단 바가 오늘 쓴 프로브 횟수와 추정 토큰을 항상 보여준다.
-
-Claude 외에 **GPT·Grok 구독 사용량**도 같은 화면에서 추적할 수 있다. 프로바이더 카드의 로고를 눌러 브라우저 OAuth 로 로그인하면(각 공식 CLI 의 공개 PKCE 클라이언트 재사용), 5h/7d(GPT)·주간 크레딧(Grok) 미터가 표시된다. 토큰은 `~/.claude/cct-dash-providers.json`(mode 600)에만 저장되고, 조회는 비공식 내부 엔드포인트라 정책 변경 시 끊길 수 있다. 자세한 동작과 고지는 [dashboard/README.md](dashboard/README.md) 참고.
+기본은 `127.0.0.1` 바인드와 읽기 우선이고, 토큰 값은 화면·응답·로그 어디에도 나오지 않는다. 사용률 조회는 실제 API 호출이라 사용량을 조금 소비한다. 화면 구성, 프로브 비용, 상시 실행, GPT·Grok 연동과 고지는 [dashboard/README.md](dashboard/README.md)에 있다.
 
 <details>
 <summary>400px 모바일 · 쓰기 모드 화면</summary>
@@ -111,7 +110,7 @@ Claude 외에 **GPT·Grok 구독 사용량**도 같은 화면에서 추적할 �
 
 </details>
 
-스크린샷은 모두 픽스처 모드(`--fake`)로 찍은 데모이며 계정 라벨은 블러 처리했다. 자세한 내용은 [dashboard/README.md](dashboard/README.md) 에 있다.
+스크린샷은 모두 픽스처 모드(`--fake`)로 찍은 데모이며 계정 라벨은 블러 처리했다.
 
 ## 휴대성과 OSS 경계
 
@@ -159,4 +158,4 @@ cct는 OAuth refresh 서비스, 프록시, 오케스트레이터, 자동/쿼터 
 
 ## 라이선스
 
-MIT — [LICENSE](LICENSE)
+MIT - [LICENSE](LICENSE)
