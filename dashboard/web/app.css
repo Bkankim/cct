@@ -1,22 +1,23 @@
 /* cct dashboard - Beszel 계열 시각 언어 (2026-09-16)
    원칙: 배경과 카드 표면의 명도 차를 최소로 두고 hairline 으로 면을 나눈다.
-   강조색(테라코타)은 활성 계정과 주 액션 한 곳에만 쓴다.
+   강조색(해록색)은 활성 계정과 주 액션 한 곳에만 쓴다. 2026-09-23 야간 해도 팔레트로 교체.
    사용률은 얇은 수평 바 + 왼쪽 고정폭 숫자로 계정 간 비교가 되게 정렬한다.
    외부 리소스 0 - 시스템 폰트만 사용한다. 그림자·블러·그라디언트 없음. */
 :root{
-  /* 표면 - 거의 검은 배경 위에 한 단계 밝은 카드 */
-  --bg:#0C0D0E; --surface:#111214; --surface-2:#17181B; --surface-3:#1D1F22;
-  --line:#26282C; --line-soft:#1F2125; --line-strong:#34383D;
-  /* 텍스트 - 순백 금지 */
-  --fg:#E9EBED; --fg-2:#A7ADB4; --fg-dim:#828990;
-  /* 강조 - Claude 계열 테라코타. 활성·주 액션 전용 */
-  --accent:#D97757; --accent-hi:#E68B6C; --accent-tint:rgba(217,119,87,.13); --accent-line:rgba(217,119,87,.42);
-  /* 의미 색 - 임계값 65 / 90 */
-  --ok:#43A65F; --warn:#D8A21C; --bad:#E5544B;
-  --ok-tint:rgba(67,166,95,.12); --warn-tint:rgba(216,162,28,.12); --bad-tint:rgba(229,84,75,.12);
+  /* 표면 - 야간 해도(ECDIS night) 청흑. 중립 검정 대신 바다 쪽으로 기운 명도 계단 */
+  --bg:#0C151B; --surface:#111C23; --surface-2:#16232C; --surface-3:#1C2B35;
+  --line:#233440; --line-soft:#1A2932; --line-strong:#334855;
+  --fg:#E1EAED; --fg-2:#A2B5BD; --fg-dim:#7D929B;
+  /* 강조 - 옅은 해록색. 활성·주 액션 전용, 채움 버튼은 어두운 글자 */
+  --accent:#8FCBD5; --accent-hi:#AADAE2; --accent-tint:rgba(143,203,213,.12); --accent-line:rgba(143,203,213,.40);
+  /* 의미 색 - 부표 색: 해록 녹 / 특수표지 황 / 좌현표지 적 */
+  --ok:#4CAD7E; --warn:#D9A441; --bad:#E0604F;
+  --ok-tint:rgba(76,173,126,.12); --warn-tint:rgba(217,164,65,.12); --bad-tint:rgba(224,96,79,.12);
   --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Pretendard,"Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
   --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"Cascadia Mono",Consolas,monospace;
-  --r-card:12px; --r-panel:10px; --r-ctl:8px; --r-bar:6px; --r-pill:999px;
+  /* 수심 숫자 - 사용률·비용 값만 이탤릭 세리프 */
+  --snd:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --r-card:10px; --r-panel:10px; --r-ctl:6px; --r-bar:4px; --r-pill:999px;
   --t:.14s cubic-bezier(.4,0,.2,1);
 }
 *{box-sizing:border-box}
@@ -30,19 +31,19 @@ h1,h2,h3{margin:0;font-weight:600}
 
 /* ── 컨트롤 ───────────────────────────────────────────────────────── */
 .btn{font:500 12.5px/1 var(--font);color:var(--fg-2);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-ctl);height:30px;padding:0 11px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;transition:var(--t);transition-property:background-color,border-color,color}
-.btn:hover:not(:disabled){background:#232629;border-color:var(--line-strong);color:var(--fg)}
+.btn:hover:not(:disabled){background:#223340;border-color:var(--line-strong);color:var(--fg)}
 .btn:disabled{opacity:.42;cursor:not-allowed}
 .btn.sm{height:26px;padding:0 9px;font-size:12px}
 .btn.icon{width:30px;padding:0}
 .btn.sm.icon{width:26px}
-.btn.accent{color:#1A0E08;background:var(--accent);border-color:transparent;font-weight:600}
-.btn.accent:hover:not(:disabled){background:var(--accent-hi);border-color:transparent;color:#1A0E08}
+.btn.accent{color:#0A1D23;background:var(--accent);border-color:transparent;font-weight:600}
+.btn.accent:hover:not(:disabled){background:var(--accent-hi);border-color:transparent;color:#0A1D23}
 .btn.ghost{background:transparent}
 .btn.ghost:hover:not(:disabled){background:var(--surface-3)}
 .btn.link-accent{color:var(--accent);border-color:var(--accent-line);background:transparent}
 .btn.link-accent:hover:not(:disabled){background:var(--accent-tint);border-color:var(--accent);color:var(--accent-hi)}
 .btn.danger{color:var(--bad)}
-.btn.danger:hover:not(:disabled){background:var(--bad-tint);border-color:rgba(229,84,75,.4);color:var(--bad)}
+.btn.danger:hover:not(:disabled){background:var(--bad-tint);border-color:rgba(224,96,79,.4);color:var(--bad)}
 select,input[type=text],input[type=password]{font:400 12.5px/1 var(--font);color:var(--fg);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-ctl);height:30px;padding:0 8px;transition:var(--t);transition-property:border-color}
 select:hover,input:hover{border-color:var(--line-strong)}
 input::placeholder{color:var(--fg-dim)}
@@ -74,7 +75,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0}
 .menu{position:relative}
 .menu>summary{list-style:none;cursor:pointer}
 .menu>summary::-webkit-details-marker{display:none}
-.menu[open]>summary{background:#232629;border-color:var(--line-strong);color:var(--fg)}
+.menu[open]>summary{background:#223340;border-color:var(--line-strong);color:var(--fg)}
 .pop{position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:214px;background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--r-panel);padding:5px;display:flex;flex-direction:column;gap:1px}
 .pop .mi{display:flex;align-items:center;gap:8px;width:100%;height:30px;padding:0 9px;border:0;border-radius:6px;background:transparent;color:var(--fg-2);font:500 12.5px/1 var(--font);cursor:pointer;text-align:left;white-space:nowrap;transition:var(--t);transition-property:background-color,color}
 .pop .mi:hover{background:var(--surface-2);color:var(--fg)}
@@ -95,20 +96,20 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0}
 .pop .setrow select{height:24px;font-size:12px;padding:0 6px}
 
 /* ── 알림 ─────────────────────────────────────────────────────────── */
-.alert{display:flex;align-items:flex-start;gap:9px;padding:10px 13px;border:1px solid rgba(229,84,75,.38);background:var(--bad-tint);border-radius:var(--r-panel);color:#F3968F;font-size:12.5px;line-height:1.45}
+.alert{display:flex;align-items:flex-start;gap:9px;padding:10px 13px;border:1px solid rgba(224,96,79,.38);background:var(--bad-tint);border-radius:var(--r-panel);color:#F29384;font-size:12.5px;line-height:1.45}
 .alert b{color:var(--bad);font-weight:600}
 .alert[hidden]{display:none}
 
 /* ── 알림 스트립 - 활성 임계 교차·프로브 실패 (crit 우선 정렬은 서버) ── */
-.alertstrip{display:flex;align-items:center;gap:6px 9px;flex-wrap:wrap;padding:8px 12px;background:var(--surface);border:1px solid rgba(216,162,28,.38);border-radius:var(--r-panel)}
-.alertstrip.crit{border-color:rgba(229,84,75,.42)}
+.alertstrip{display:flex;align-items:center;gap:6px 9px;flex-wrap:wrap;padding:8px 12px;background:var(--surface);border:1px solid rgba(217,164,65,.38);border-radius:var(--r-panel)}
+.alertstrip.crit{border-color:rgba(224,96,79,.42)}
 .alertstrip[hidden]{display:none}
 .as-head{flex:none;font:600 10.5px/22px var(--font);letter-spacing:.07em;text-transform:uppercase}
 .as-head.warn{color:var(--warn)} .as-head.bad{color:var(--bad)}
 .as-list{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;flex:1 1 auto}
 .apill{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:var(--r-pill);border:1px solid;font:600 11px/1 var(--mono);letter-spacing:-.01em;white-space:nowrap}
-.apill.warn{color:var(--warn);border-color:rgba(216,162,28,.4);background:var(--warn-tint)}
-.apill.bad{color:var(--bad);border-color:rgba(229,84,75,.4);background:var(--bad-tint)}
+.apill.warn{color:var(--warn);border-color:rgba(217,164,65,.4);background:var(--warn-tint)}
+.apill.bad{color:var(--bad);border-color:rgba(224,96,79,.4);background:var(--bad-tint)}
 .ahist{flex:none;margin-left:auto}
 .ahist .pop{min-width:272px;max-width:min(88vw,380px)}
 .aev{display:flex;align-items:baseline;gap:8px;padding:5px 8px;font:400 11px/1.4 var(--mono);color:var(--fg-2)}
@@ -164,9 +165,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0}
 
 .badge{display:inline-flex;align-items:center;gap:4px;height:19px;padding:0 7px;border-radius:var(--r-pill);border:1px solid var(--line-strong);font:600 10.5px/1 var(--font);letter-spacing:.02em;color:var(--fg-dim);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .badge.acc{color:var(--accent);border-color:var(--accent-line);background:var(--accent-tint)}
-.badge.ok{color:var(--ok);border-color:rgba(67,166,95,.4);background:var(--ok-tint)}
-.badge.warn{color:var(--warn);border-color:rgba(216,162,28,.4);background:var(--warn-tint)}
-.badge.bad{color:var(--bad);border-color:rgba(229,84,75,.4);background:var(--bad-tint)}
+.badge.ok{color:var(--ok);border-color:rgba(76,173,126,.4);background:var(--ok-tint)}
+.badge.warn{color:var(--warn);border-color:rgba(217,164,65,.4);background:var(--warn-tint)}
+.badge.bad{color:var(--bad);border-color:rgba(224,96,79,.4);background:var(--bad-tint)}
 
 /* 미터 - [키 24] [값 40] [바 1fr] [리셋 106] 한 줄 30px, 모든 카드가 같은 좌표 */
 .ac-metrics{flex:1 0 auto;display:flex;flex-direction:column}
@@ -186,7 +187,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0}
 
 /* 카드 상태 메모 - 미프로브·무효·미등록 */
 .ac-note{padding:9px 13px;font-size:11.5px;line-height:1.5;color:var(--fg-dim);border-bottom:1px solid var(--line-soft)}
-.ac-note.bad{color:#E39089}
+.ac-note.bad{color:#EE8E80}
 .ac-note code{background:var(--surface-2);border:1px solid var(--line-soft);border-radius:4px;padding:1px 5px;color:var(--fg-2)}
 
 /* 카드 스파크라인 - 7d 주황 · 5h 회색, 가로 기준선은 주의/위험 임계 */
@@ -221,9 +222,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0}
 .diag-row .ic{font:700 9.5px/1.5 var(--font);text-align:left;letter-spacing:.04em;color:var(--fg-dim)}
 .diag-row .nm{font:500 11.5px/1.4 var(--mono);color:var(--fg-2);overflow:hidden;text-overflow:ellipsis}
 .diag-row .ds{color:var(--fg-dim);overflow-wrap:anywhere}
-.diag-row.WARN{background:var(--warn-tint);border-color:rgba(216,162,28,.3)}
+.diag-row.WARN{background:var(--warn-tint);border-color:rgba(217,164,65,.3)}
 .diag-row.WARN .ic,.diag-row.WARN .nm{color:var(--warn)}
-.diag-row.FAIL{background:var(--bad-tint);border-color:rgba(229,84,75,.32)}
+.diag-row.FAIL{background:var(--bad-tint);border-color:rgba(224,96,79,.32)}
 .diag-row.FAIL .ic,.diag-row.FAIL .nm{color:var(--bad)}
 .diag-row.PASS .ic{color:var(--ok)}
 .fold{border:0;padding:0;background:none}
@@ -252,7 +253,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0}
 .tchip b{font:600 15.5px/1.15 var(--mono);letter-spacing:-.02em;color:var(--fg)}
 .tchip .sub{font:400 10.5px/1.4 var(--mono);color:var(--fg-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tok-chart{display:flex;align-items:flex-end;gap:2px;height:72px;margin-top:11px;border-bottom:1px solid var(--line)}
-.tok-chart i{flex:1 1 0;min-width:1px;background:#41464C;border-radius:1.5px 1.5px 0 0}
+.tok-chart i{flex:1 1 0;min-width:1px;background:#3A5462;border-radius:1.5px 1.5px 0 0}
 .tok-chart i:hover{background:var(--fg-dim)}
 .tok-chart i.zero{background:var(--surface-3)}
 .tok-chart i.now{background:var(--accent)}
@@ -328,7 +329,7 @@ body.write .acct.add{display:flex}
 /* ── 토스트 · 스피너 · 푸터 ───────────────────────────────────────── */
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:200;background:var(--surface-3);border:1px solid var(--line-strong);border-radius:var(--r-panel);padding:9px 14px;font-size:12.5px;font-weight:500;color:var(--fg);opacity:0;transition:opacity var(--t);pointer-events:none;max-width:92vw;text-align:center}
 .toast.show{opacity:1}
-.toast.bad{border-color:rgba(229,84,75,.5);color:#F3968F}
+.toast.bad{border-color:rgba(224,96,79,.5);color:#F29384}
 .spin{display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;opacity:.8}
 @keyframes sp{to{transform:rotate(360deg)}}
 footer{display:flex;flex-wrap:wrap;gap:5px 16px;justify-content:space-between;padding-top:2px;font-size:11px;color:var(--fg-dim)}
@@ -340,7 +341,7 @@ footer{display:flex;flex-wrap:wrap;gap:5px 16px;justify-content:space-between;pa
 /* ── 프로바이더(GPT·Grok) 카드 - 계정 카드와 같은 골격, 온보딩만 전용 레이아웃 ── */
 .plogo{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;color:var(--fg-2);flex:none}
 .plogo svg{width:16px;height:16px}
-.plogo.p-claude{color:var(--accent)}
+.plogo.p-claude{color:#D97757} /* Claude 브랜드 원색 - 강조색과 분리 */
 .prov .ac-head .lbl{max-width:16ch}
 .prov-join{display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;padding:24px 18px 16px}
 .prov-join .plogo{width:44px;height:44px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);color:var(--fg)}
@@ -379,3 +380,26 @@ footer{display:flex;flex-wrap:wrap;gap:5px 16px;justify-content:space-between;pa
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{transition:none!important;animation:none!important}
 }
+
+/* ── refine 시안: 디테일 덮어쓰기 ─────────────────────────────────── */
+/* 대문자 eyebrow 제거 - 문장형 라벨 */
+.as-head,.ab-eyebrow,.block-head h2,.tchip .tk,.tok-table tr.sum td.tm{text-transform:none;letter-spacing:0}
+.block-head h2{font-size:14px;color:var(--fg)}
+.ab-eyebrow{font-size:12px}
+.as-head{font-size:12px}
+.tchip .tk{font-size:11.5px;font-weight:500}
+/* 사용률 값 - 이탤릭 세리프 수심 숫자 */
+.m{grid-template-columns:24px 46px minmax(0,1fr) 126px}
+.m .mv{font:italic 400 16px/1 var(--snd);letter-spacing:0;font-variant-numeric:lining-nums tabular-nums}
+.tchip b{font:italic 400 21px/1.1 var(--snd);letter-spacing:0}
+.ab-live .lk b{font:italic 400 14px/1 var(--snd)}
+/* 미터 트랙에 주의/위험 눈금 (기본 65/90) */
+.track{height:6px;background-color:var(--surface-3);
+  background-image:linear-gradient(90deg,transparent calc(65% - 1px),var(--line-strong) calc(65% - 1px) 65%,transparent 65% calc(90% - 1px),var(--line-strong) calc(90% - 1px) 90%,transparent 90%)}
+.track>i{position:relative}
+/* 활성 카드 - 머리띠 상단 2px 강조선 */
+.acct.is-active .ac-head{box-shadow:inset 0 2px 0 var(--accent)}
+.acct.is-active{border-color:var(--line-strong)}
+/* 칩 배경은 표면과 같은 톤으로 한 단계만 */
+.tchip{background:transparent;border-color:var(--line)}
+@media (max-width:640px){.m{grid-template-columns:22px 42px minmax(0,1fr) 126px;column-gap:7px}}
