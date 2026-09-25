@@ -1367,9 +1367,13 @@ class State:
     def drop_account(self, label: str) -> None:
         with self._lock:
             self.data["accounts"].pop(label, None)
+            (self.data["settings"].get("plan_usd") or {}).pop(label, None)
 
     def rename_account(self, old: str, new: str) -> None:
         with self._lock:
+            plans = self.data["settings"].get("plan_usd") or {}
+            if old in plans:
+                plans[new] = plans.pop(old)
             acc = self.data["accounts"].pop(old, None)
             if acc is None:
                 return
@@ -1573,8 +1577,9 @@ class App:
             if not nxt or time.time() < nxt:
                 continue
             try:
-                labels = [e["label"] for e in self.snapshot()[2] if e["has_token"]]
-                self._run_refresh(labels)
+                labels = [e["label"] for e in self.snapshot()[2] if e["has_token"]
+                          and time.time() - self._last_probe.get(e["label"], 0.0) >= COOLDOWN_SEC]
+                self._run_refresh(labels)     # 방금 활성 조회한 라벨은 다시 쏘지 않는다
             except Exception as exc:                      # 스케줄러는 죽지 않는다
                 log.warning("자동갱신 실패: %s", type(exc).__name__)
             finally:
@@ -1603,6 +1608,10 @@ class App:
                     labels.add(label)
         due = sorted(l for l in labels
                      if time.time() - self._last_probe.get(l, 0.0) >= ACTIVE_PROBE_SEC)
+        if due:
+            # 훅 기록엔 삭제·이름변경 전 라벨이 남는다 - 지갑에 토큰이 있는 라벨만 쏜다
+            wallet = {e["label"] for e in self.snapshot()[2] if e["has_token"]}
+            due = [l for l in due if l in wallet]
         if due:
             self._run_refresh(due)
 
@@ -2053,20 +2062,27 @@ class App:
         marks = load_sessions(self.sessions_file) if self.sessions_file else {}
         mine = [sid for sid, m in marks.items() if any(lbl == label for _, lbl in m)]
         tracking_since = min((m[0][0] for m in marks.values() if m), default=None)
-        msgs = []
+        history = self.db.label_history(label, since)
+        # 가장 오래된 5h 창은 since 보다 먼저 시작할 수 있다 - 창 집계용 메시지는 그 시작부터 모은다
+        win_floor = min([since] + [r5 - WINDOW_5H_SEC for *_x, r5 in history
+                                   if isinstance(r5, int)])
+        msgs, win_msgs = [], []
         month_cost = 0.0
         for (at, sid, project, model, i, o, c5m, c1h, cr,
-             cost) in self.db.session_entries(mine, min(since, month0)):
+             cost) in self.db.session_entries(mine, min(win_floor, month0)):
             if label_at(marks[sid], at) != label:
                 continue
             if at >= month0:
                 month_cost += float(cost or 0.0)
-            if at < since:
+            if at < win_floor:
                 continue
-            msgs.append({"at": at, "session": sid, "project": project or "-",
-                         "model": model, "input": int(i or 0), "output": int(o or 0),
-                         "cache_create": int(c5m or 0) + int(c1h or 0),
-                         "cache_read": int(cr or 0), "cost": float(cost or 0.0)})
+            m = {"at": at, "session": sid, "project": project or "-",
+                 "model": model, "input": int(i or 0), "output": int(o or 0),
+                 "cache_create": int(c5m or 0) + int(c1h or 0),
+                 "cache_read": int(cr or 0), "cost": float(cost or 0.0)}
+            win_msgs.append(m)
+            if at >= since:
+                msgs.append(m)
 
         def blank(**keys) -> dict:
             return dict(keys, requests=0, input=0, output=0, cache_create=0,
@@ -2092,16 +2108,19 @@ class App:
             bump(models.setdefault(m["model"], blank(model=m["model"])), m)
             bump(projects.setdefault(m["project"], blank(project=m["project"])), m)
         summary["sessions"] = len(sessions)
-        limits = []
-        for at, sid, kind, resets in self.db.session_limit_events(mine, since):
+        limits, win_limits = [], []
+        for at, sid, kind, resets in self.db.session_limit_events(mine, win_floor):
             if label_at(marks[sid], at) != label:
                 continue
-            limits.append({"at": at, "session": sid, "kind": kind, "resets_at": resets})
+            ev = {"at": at, "session": sid, "kind": kind, "resets_at": resets}
+            win_limits.append(ev)
+            if at < since:
+                continue
+            limits.append(ev)
             if sid in sessions:
                 sessions[sid]["limit_errors"] += 1
         plan = self.state.plan_usd(label)
-        history = self.db.label_history(label, since)
-        windows = account_windows(history, msgs, limits, now_i())
+        windows = account_windows(history, win_msgs, win_limits, now_i())
         buckets: dict[int, dict] = {}
         for m in msgs:
             at = m["at"] - m["at"] % ACCOUNT_BUCKET_SEC
