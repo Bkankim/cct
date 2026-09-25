@@ -158,6 +158,10 @@ Removing or renaming the active account treats wallet and active-state changes a
 
 cct is not an OAuth refresh service, proxy, orchestrator, automatic or quota-based router, load balancer, GUI, or daemon. It does not inspect account state to choose the “best” account and never replaces the user's explicit choice. It also requires neither macOS Keychain nor a separate runtime.
 
+## Related projects
+
+- [smartthink](https://github.com/Bkankim/smartthink) - a Claude Code plugin that arms the session with only the mental-model references your task needs before you start. Install it from the [bkankim-plugins](https://github.com/Bkankim/bkankim-plugins) marketplace.
+
 ## License
 
 MIT - [LICENSE](LICENSE)
