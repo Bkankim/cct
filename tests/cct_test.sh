@@ -44,6 +44,7 @@ if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
   exit 0
 fi
 echo "CLAUDE args=[$*] argc=[$#] tok=[${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}]" >&2
+echo "CLAUDE label=[${CCT_LABEL:-<unset>}]" >&2
 echo "CLAUDE web=[${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-<unset>},${DISABLE_TELEMETRY:-<unset>},${DISABLE_ERROR_REPORTING:-<unset>},${DISABLE_BUG_COMMAND:-<unset>},${DISABLE_FEEDBACK_COMMAND:-<unset>},${CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH:-<unset>},${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-<unset>}]" >&2
 case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in *BAD*) exit 1 ;; esac
 exit 0
@@ -107,6 +108,112 @@ write_account_fixture(){
 }
 
 # -------------------------------------------------------------------------
+# 계정별 사용량 귀속: cct 가 띄운 claude(와 그 훅)는 CCT_LABEL 로 자기 계정을 안다.
+test_label_env(){
+  echo "== CCT_LABEL 전달 =="
+  set +u
+  local sb
+  sb="$(mktemp -d)"; mk_shim "$sb/bin"
+  export PATH="$sb/bin:$PATH"
+  export CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active"
+  unset CCT_STICKY CLAUDE_CODE_OAUTH_TOKEN CCT_LABEL
+  # shellcheck disable=SC1090
+  . "$REPO/cct.sh"
+  add_tok good "sk-good" >/dev/null 2>&1
+  add_tok other "sk-other" >/dev/null 2>&1
+
+  echo "-- 비-sticky 실행: 자식 claude 만 라벨을 받고 셸에는 남지 않는다"
+  chk_has "CCT_STICKY=0 run 자식이 라벨 수신" "label=[good]" "$(CCT_STICKY=0 cct run good 2>&1)"
+  chk "CCT_STICKY=0 run 후 셸에 라벨 없음" "" "${CCT_LABEL:-}"
+
+  echo "-- sticky: cct <라벨>·cct use 는 셸에 라벨을 남겨 그냥 claude 도 귀속된다"
+  cct good >/dev/null 2>&1
+  chk "sticky 실행 후 셸 라벨 == good" "good" "${CCT_LABEL:-}"
+  chk_has "sticky 이후 그냥 claude 가 라벨 상속" "label=[good]" "$(claude 2>&1)"
+  cct use other >/dev/null 2>&1
+  chk "use 전환 후 셸 라벨 == other" "other" "${CCT_LABEL:-}"
+  cct off >/dev/null 2>&1
+  chk "off 후 셸 라벨 해제" "" "${CCT_LABEL:-}"
+
+  echo "-- 새 셸 자동 로드·refresh·rm 도 라벨을 토큰과 함께 맞춘다"
+  cct use good >/dev/null 2>&1
+  chk_has "새 셸 자동 로드가 라벨 export" "label=[good]" \
+    "$(env -u CCT_LABEL PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" CCT_ACTIVE_FILE="$sb/active" bash -c ". '$REPO/cct.sh'; claude" 2>&1)"
+  rm -f "$sb/active"
+  cct refresh >/dev/null 2>&1
+  chk "활성 없음 refresh 가 라벨 해제" "" "${CCT_LABEL:-}"
+  cct use other >/dev/null 2>&1
+  cct rm other --force >/dev/null 2>&1   # 파이프는 서브셸이라 셸 env 검증이 안 됨
+  chk "활성 계정 rm 이 라벨 해제" "" "${CCT_LABEL:-}"
+  rm -rf "$sb"
+}
+
+# SessionStart 훅: claude 가 세션을 열 때 {시각, 세션ID, 라벨, source} 한 줄을 남긴다.
+test_session_hook(){
+  echo "== SessionStart 훅 =="
+  local sb hook out rc
+  sb="$(mktemp -d)"; hook="$REPO/cct-session-hook.sh"
+  export CCT_SESSIONS_FILE="$sb/cct-sessions.jsonl"
+
+  echo "-- 라벨이 있으면 세션 한 줄 기록"
+  out="$(printf '%s' '{"session_id":"0b1c2d3e-aaaa-4bbb-8ccc-1234567890ab","transcript_path":"/x/y.jsonl","cwd":"/work/proj","hook_event_name":"SessionStart","source":"startup"}' \
+    | CCT_LABEL=good CLAUDE_CODE_OAUTH_TOKEN=sk-hook-secret bash "$hook")"; rc=$?
+  chk "훅 rc=0" "0" "$rc"
+  chk "훅 stdout 비어 있음(컨텍스트 오염 금지)" "" "$out"
+  chk_has "세션ID 기록" '"session_id":"0b1c2d3e-aaaa-4bbb-8ccc-1234567890ab"' "$(cat "$CCT_SESSIONS_FILE" 2>/dev/null)"
+  chk_has "라벨 기록" '"label":"good"' "$(cat "$CCT_SESSIONS_FILE" 2>/dev/null)"
+  chk_has "source 기록" '"source":"startup"' "$(cat "$CCT_SESSIONS_FILE" 2>/dev/null)"
+  chk "한 줄" "1" "$(wc -l < "$CCT_SESSIONS_FILE" 2>/dev/null | tr -d ' ')"
+  chk "파일 mode 600" "600" "$(wallet_mode "$CCT_SESSIONS_FILE" 2>/dev/null)"
+  chk_not_has "토큰 미기록" "sk-hook-secret" "$(cat "$CCT_SESSIONS_FILE" 2>/dev/null)"
+
+  echo "-- 라벨 없음·형식 오류·쓰기 실패는 기록 없이 rc=0"
+  rm -f "$CCT_SESSIONS_FILE"
+  printf '%s' '{"session_id":"0b1c2d3e-aaaa-4bbb-8ccc-1234567890ab","source":"startup"}' | env -u CCT_LABEL bash "$hook"; rc=$?
+  chk "라벨 없음 rc=0" "0" "$rc"
+  chk "라벨 없음은 파일 안 만듦" "no" "$([ -e "$CCT_SESSIONS_FILE" ] && echo yes || echo no)"
+  printf '%s' '{"session_id":"0b1c2d3e-aaaa-4bbb-8ccc-1234567890ab","source":"startup"}' | CCT_LABEL='Bad"lbl' bash "$hook"
+  chk "라벨 형식 오류는 기록 안 함" "no" "$([ -e "$CCT_SESSIONS_FILE" ] && echo yes || echo no)"
+  printf '%s' '{"session_id":"x\",\"label\":\"evil","source":"startup"}' | CCT_LABEL=good bash "$hook"
+  chk "세션ID 형식 오류는 기록 안 함" "no" "$([ -e "$CCT_SESSIONS_FILE" ] && echo yes || echo no)"
+  printf 'not json' | CCT_LABEL=good bash "$hook"; rc=$?
+  chk "깨진 입력 rc=0" "0" "$rc"
+  chk "깨진 입력은 기록 안 함" "no" "$([ -e "$CCT_SESSIONS_FILE" ] && echo yes || echo no)"
+  out="$(printf '%s' '{"session_id":"0b1c2d3e-aaaa-4bbb-8ccc-1234567890ab","source":"startup"}' \
+    | CCT_LABEL=good CCT_SESSIONS_FILE="$sb/no/such/dir/f.jsonl" bash "$hook" 2>&1)"; rc=$?
+  chk "쓰기 실패 rc=0" "0" "$rc"
+  chk "쓰기 실패도 출력 없음" "" "$out"
+  unset CCT_SESSIONS_FILE
+  rm -rf "$sb"
+}
+
+# install.sh: 세션 훅 스크립트 설치 + ~/.claude/settings.json SessionStart 등록(멱등·기존 설정 보존)
+test_install_hook(){
+  echo "== install.sh 세션 훅 =="
+  local H G cap rc n
+  H="$(mktemp -d)"; G="$H/.gitconfig"; mkdir -p "$H/.claude"
+  printf '%s\n' '{"model":"opus","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo other"}]}]}}' > "$H/.claude/settings.json"
+  cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash "$REPO/install.sh" 2>&1)"; rc=$?
+  chk "hook install rc=0" "0" "$rc"
+  chk "훅 스크립트 설치" "yes" "$([ -f "$H/.claude/cct-session-hook.sh" ] && [ ! -L "$H/.claude/cct-session-hook.sh" ] && echo yes || echo no)"
+  chk "훅 스크립트 mode 700" "700" "$(wallet_mode "$H/.claude/cct-session-hook.sh")"
+  n="$(grep -o 'cct-session-hook.sh' "$H/.claude/settings.json" | wc -l | tr -d ' ')"
+  chk "settings.json 에 훅 1회 등록" "1" "$n"
+  chk_has "기존 설정 보존(model)" '"model": "opus"' "$(cat "$H/.claude/settings.json")"
+  chk_has "기존 SessionStart 훅 보존" "echo other" "$(cat "$H/.claude/settings.json")"
+  chk_has "등록 안내" "세션 훅" "$cap"
+  cap="$(cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash bash "$REPO/install.sh" 2>&1)"
+  n="$(grep -o 'cct-session-hook.sh' "$H/.claude/settings.json" | wc -l | tr -d ' ')"
+  chk "재설치해도 1회" "1" "$n"
+  rm -rf "$H"
+
+  H="$(mktemp -d)"; G="$H/.gitconfig"
+  (cd "$REPO" && HOME="$H" GIT_CONFIG_GLOBAL="$G" SHELL=/bin/bash CCT_NO_SESSION_HOOK=1 bash "$REPO/install.sh" >/dev/null 2>&1)
+  chk "CCT_NO_SESSION_HOOK=1 이면 등록 안 함" "no" \
+    "$(grep -q cct-session-hook "$H/.claude/settings.json" 2>/dev/null && echo yes || echo no)"
+  rm -rf "$H"
+}
+
 test_install(){
   echo "== install.sh (portable wallet preservation + ignore coverage) =="
   local H G rc MINE cap wallet_before backup_before active_before temp_before owner_before
@@ -147,7 +254,7 @@ SHIM
     chk "stdin install launcher is regular" "yes" \
       "$([ -f "$H/.claude/cct.sh" ] && [ ! -L "$H/.claude/cct.sh" ] && echo yes || echo no)"
     chk "stdin install launcher mode 600" "600" "$(wallet_mode "$H/.claude/cct.sh")"
-    chk "stdin install invokes remote fetch path" "2" "$(count_exact "$H/curl.log" called)"
+    chk "stdin install invokes remote fetch path" "3" "$(count_exact "$H/curl.log" called)"   # 런처·브릿지·세션 훅
     chk "stdin install bridge is regular" "yes" \
       "$([ -f "$H/.claude/cct-token.sh" ] && [ ! -L "$H/.claude/cct-token.sh" ] && echo yes || echo no)"
     chk "stdin install bridge mode 700" "700" "$(wallet_mode "$H/.claude/cct-token.sh")"
@@ -3214,8 +3321,11 @@ case "${1:-all}" in
     ;;
   runtime) test_runtime_regressions ;;
   final4) test_final4_runtime_security ;;
+  label)  test_label_env ;;
+  hook)   test_session_hook ;;
+  install-hook) test_install_hook ;;
   fixture) shift; make_fixture "$@"; exit $? ;;
-  all)     test_install; test_cct; test_extra; test_sticky; test_onboarding; test_usage; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions; test_final4_runtime_security ;;
+  all)     test_install; test_cct; test_extra; test_sticky; test_onboarding; test_usage; test_wallet; test_accounts; test_lock_active_races; test_diagnostics; test_runtime_regressions; test_final4_runtime_security; test_label_env; test_session_hook; test_install_hook ;;
   *) echo "usage: $0 [install|cct|extra|sticky|onboarding|usage|wallet|accounts|races|diagnostics|runtime|final4|fixture|all]"; exit 2 ;;
 esac
 

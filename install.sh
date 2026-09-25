@@ -168,6 +168,111 @@ BRIDGE_TMP=""
 trap - EXIT HUP INT TERM
 echo "$bridge_message"
 
+# 세션 훅 확보: claude 세션이 열릴 때 어느 cct 라벨로 열렸는지 cct-sessions.jsonl 에 남긴다.
+# 대시보드 계정별 상세가 이 기록으로 사용량을 계정에 귀속한다. 브릿지와 같은 안전 절차.
+HOOK="$DEST/cct-session-hook.sh"
+HOOK_TMP=""
+HOOK_TMP_OWNED=0
+if [ -e "$HOOK" ] || [ -L "$HOOK" ]; then
+  if [ ! -f "$HOOK" ] || [ -L "$HOOK" ]; then
+    echo "❌ 세션 훅 경로가 일반 파일이 아닙니다: $HOOK" >&2
+    exit 1
+  fi
+fi
+cleanup_hook_tmp() {
+  if [ "$HOOK_TMP_OWNED" -eq 1 ] && [ -n "$HOOK_TMP" ] &&
+    [ -f "$HOOK_TMP" ] && [ ! -L "$HOOK_TMP" ]; then
+    rm -f "$HOOK_TMP"
+  fi
+}
+abort_hook_install() {
+  cleanup_hook_tmp
+  trap - EXIT HUP INT TERM
+  exit 1
+}
+trap cleanup_hook_tmp EXIT
+trap abort_hook_install HUP INT TERM
+HOOK_TMP="$(umask 077; mktemp "$DEST/.cct-session-hook.sh.install.XXXXXX")"
+case "$HOOK_TMP" in
+  "$DEST"/.cct-session-hook.sh.install.??????) ;;
+  *)
+    echo "❌ 안전한 세션 훅 임시 파일을 만들지 못했습니다." >&2
+    exit 1
+    ;;
+esac
+if [ ! -f "$HOOK_TMP" ] || [ -L "$HOOK_TMP" ]; then
+  echo "❌ 세션 훅 임시 경로가 일반 파일이 아닙니다." >&2
+  exit 1
+fi
+HOOK_TMP_OWNED=1
+if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/cct-session-hook.sh" ]; then
+  if ! cp "$SRC_DIR/cct-session-hook.sh" "$HOOK_TMP"; then
+    echo "❌ 세션 훅 복사에 실패했습니다." >&2
+    exit 1
+  fi
+  hook_message="✓ 세션 훅(로컬 복사): $HOOK"
+else
+  command -v curl >/dev/null 2>&1 || { echo "❌ curl 이 필요합니다."; exit 1; }
+  if ! curl -fsSL "$REPO_RAW/cct-session-hook.sh" -o "$HOOK_TMP"; then
+    echo "❌ 세션 훅 다운로드에 실패했습니다." >&2
+    exit 1
+  fi
+  hook_message="✓ 세션 훅(원격 다운로드): $HOOK"
+fi
+if [ ! -f "$HOOK_TMP" ] || [ -L "$HOOK_TMP" ]; then
+  echo "❌ 세션 훅 임시 경로가 안전하지 않습니다." >&2
+  exit 1
+fi
+chmod 700 "$HOOK_TMP"
+mv "$HOOK_TMP" "$HOOK"
+HOOK_TMP_OWNED=0
+HOOK_TMP=""
+trap - EXIT HUP INT TERM
+echo "$hook_message"
+
+# ~/.claude/settings.json 의 SessionStart 에 훅 등록 (멱등, 기존 설정 보존).
+# 심링크면 링크를 살리고 실물을 고친다. CCT_NO_SESSION_HOOK=1 이면 건너뛴다.
+if [ "${CCT_NO_SESSION_HOOK:-0}" = "1" ]; then
+  echo "• 세션 훅 등록 건너뜀 (CCT_NO_SESSION_HOOK=1)"
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo "⚠ python3 가 없어 세션 훅을 자동 등록하지 못했습니다. ~/.claude/settings.json 의"
+  echo "  hooks.SessionStart 에 command: bash \"\$HOME/.claude/cct-session-hook.sh\" 를 추가하세요."
+else
+  if hook_reg="$(CCT_SETTINGS="$DEST/settings.json" python3 - <<'PY'
+import json, os, sys, tempfile
+path = os.path.realpath(os.environ["CCT_SETTINGS"])
+cmd = 'bash "$HOME/.claude/cct-session-hook.sh"'
+data = {}
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as fh:
+        raw = fh.read()
+    data = json.loads(raw) if raw.strip() else {}
+if not isinstance(data, dict):
+    sys.exit(3)
+starts = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+if any("cct-session-hook.sh" in str(h.get("command", ""))
+       for group in starts if isinstance(group, dict)
+       for h in group.get("hooks", []) if isinstance(h, dict)):
+    print("exists")
+    sys.exit(0)
+starts.append({"hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
+mode = os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o600
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".settings.json.cct.")
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+os.chmod(tmp, mode)
+os.replace(tmp, path)
+print("added")
+PY
+)"; then
+    if [ "$hook_reg" = "exists" ]; then echo "• 세션 훅 이미 등록됨 (settings.json)"
+    else echo "✓ 세션 훅 등록: $DEST/settings.json (SessionStart)"; fi
+  else
+    echo "⚠ settings.json 을 해석하지 못해 세션 훅을 등록하지 않았습니다 (파일은 그대로 둠)."
+  fi
+fi
+
 # tokens.env 템플릿 (없을 때만 — 기존 토큰 보존)
 WALLET="$DEST/tokens.env"
 if [ ! -e "$WALLET" ] && [ ! -L "$WALLET" ]; then
