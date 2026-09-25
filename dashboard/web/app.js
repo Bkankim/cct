@@ -307,7 +307,7 @@ function accountCard(a, dups, rec){
         : '<button class="btn sm link-accent" data-act="use" data-l="'+esc(a.label)+'"'+dis+'>이 계정으로 전환</button>')
     + '<button class="btn sm" data-act="usage" data-l="'+esc(a.label)+'"'+dis+' title="cct usage - 실프로브라 사용량을 소비합니다">갱신</button>'
     + '</div>';
-  return '<article class="'+cls+'"><div class="ac-head">'+provLogo('claude')+'<span class="lbl" title="'+esc(a.label)+'">'+esc(a.label)+'</span>'
+  return '<article class="'+cls+'" data-l="'+esc(a.label)+'" title="눌러서 '+esc(a.label)+' 상세 보기"><div class="ac-head">'+provLogo('claude')+'<a class="lbl" href="#/account/'+esc(a.label)+'" title="'+esc(a.label)+' 상세">'+esc(a.label)+'</a>'
     + '<span class="ac-badges">'+badges+'</span>'+cardMenu(a)+'</div>'
     + '<div class="ac-metrics">'+body+'</div>'+sparkline(a.label)+note+meta+act+'</article>';
 }
@@ -632,6 +632,7 @@ function loadHist(){
   return api('/api/history?hours='+HIST_HOURS).then(function(r){
     HIST = r.series || {};
     if(S && !menuOpen()) renderCards();
+    if(DET_LABEL) loadDetail();          // 조회 직후 상세의 사용률 기록도 갱신
   }).catch(function(){});
 }
 function loadTok(){
@@ -648,6 +649,7 @@ function render(skipCards){
   renderTop(); renderActiveBar(); renderAlerts(); syncSettings();
   if(!skipCards) renderCards();
   renderProviders(); renderTimeline(); renderDoctor(); renderLog();
+  if(DET_LABEL) renderDetail();
 }
 
 // ── 토스트·에러 ───────────────────────────────────────────────────
@@ -795,12 +797,264 @@ el('sel-notify').addEventListener('change', function(){
   }).catch(function(e){ toast('알림 설정 실패: '+e.message, true); syncSettings(); });
 });
 
+// ── 계정 상세 (#/account/<라벨>) ─────────────────────────────────────
+// 세션 훅(cct-session-hook.sh) 기록으로 이 맥의 메시지를 계정에 귀속한 /api/account 를 그린다.
+var DET = null, DET_LABEL = null, DET_RANGE = 24, DET_REQ = {};
+var DET_DAYS = 7, WIN5 = 5*H;
+function modelName(m){
+  var s = String(m||'').replace(/^claude-/, '').replace(/-\d{8}$/, '').split('-');
+  if(!s[0]) return '-';
+  return s[0].charAt(0).toUpperCase()+s[0].slice(1)+(s.length>1 ? ' '+s.slice(1).join('.') : '');
+}
+function modelColor(m){
+  if(/opus/.test(m)) return 'var(--m-opus)';
+  if(/sonnet/.test(m)) return 'var(--m-sonnet)';
+  if(/haiku/.test(m)) return 'var(--m-haiku)';
+  return 'var(--fg-dim)';
+}
+function toneOf(p){ return p>=CRIT_AT ? 'bad' : p>=WARN_AT ? 'warn' : 'ok'; }
+function hm(ts){ return clock(ts, false); }
+function mdhm(ts){ var d=new Date(ts); return (d.getMonth()+1)+'/'+d.getDate()+' '+hm(ts); }
+function durTxt(sec){ var h=Math.floor(sec/3600), m=Math.round(sec%3600/60); return h ? h+'시간 '+m+'분' : m+'분'; }
+function detRoute(){
+  var m = /^#\/account\/([a-z0-9_]+)$/.exec(location.hash);
+  el('main').hidden = !!m; el('detail').hidden = !m;
+  if(!m){ DET_LABEL = null; return; }
+  if(DET_LABEL !== m[1]){ DET_LABEL = m[1]; DET = null; DET_REQ = {}; window.scrollTo(0, 0); }
+  renderDetail(); loadDetail();
+}
+function loadDetail(){
+  var l = DET_LABEL; if(!l) return Promise.resolve();
+  return api('/api/account?label='+encodeURIComponent(l)+'&days='+DET_DAYS).then(function(r){
+    if(l !== DET_LABEL) return;
+    DET = r; renderDetail();
+  }).catch(function(e){ if(l === DET_LABEL) toast('상세 불러오기 실패: '+e.message, true); });
+}
+function tile(k, v, bar, d){
+  return '<div class="dt-tile"><span class="k">'+k+'</span><span class="v">'+v+'</span>'+(bar||'')+'<span class="d">'+d+'</span></div>';
+}
+function utilTile(name, w, withDate){
+  if(!w || w.u===null || w.u===undefined) return tile(name, '-', '', '미확인');
+  var p = Math.round(w.u*100);
+  return tile(name, p+'<small>%</small>',
+    '<div class="dt-bar"><i style="width:'+Math.min(100,p)+'%;background:var(--'+toneOf(p)+')"></i></div>',
+    w.r ? '초기화 '+clock(w.r, withDate)+' · '+remaining(w.r)+' 남음' : '초기화 -');
+}
+function detHead(a){
+  var l = DET_LABEL, badges = '';
+  if(a && a.isActive) badges += '<span class="badge acc"><i class="dot on"></i>활성</span>';
+  if(a && a.isDefault) badges += '<span class="badge">기본</span>';
+  if(a && a.w5 && a.w5.s==='rejected') badges += '<span class="badge bad">5h 차단</span>';
+  var meta = a ? '<span class="dt-meta">org <b>'+esc(a.org||'-')+'</b> · 7d 초기화 <b>'+(a.w7&&a.w7.r?clock(a.w7.r,true):'-')
+    +'</b> · 마지막 조회 <b>'+(a.probeAt?ago(a.probeAt):'-')+'</b></span>' : '';
+  var dis = a && a.token ? '' : ' disabled';
+  return '<header class="topbar dt-top"><a class="dt-back" href="#">← 대시보드</a>'
+    + '<div class="dt-acct">'+provLogo('claude')+'<h1>'+esc(l)+'</h1>'+badges+meta+'</div>'
+    + '<div class="tctl"><button class="btn sm" data-act="check" data-l="'+esc(l)+'"'+dis+'>토큰 점검</button>'
+    + '<button class="btn sm" data-act="usage" data-l="'+esc(l)+'"'+dis+' title="cct usage - 실프로브라 사용량을 소비합니다">지금 조회</button></div></header>';
+}
+function detTiles(a){
+  var ins = DET ? DET.insights : {}, sum = DET ? DET.summary : null;
+  var eta = ins && ins.eta_5h ? ms(ins.eta_5h) : null;
+  var etaTile = eta
+    ? tile('5h 도달 예상', hm(eta), '', '최근 조회 두 번의 속도 유지 시 · 초기화 '+(a&&a.w5&&a.w5.r?fmtDur(a.w5.r-eta)+' 전':'-'))
+    : tile('5h 도달 예상', '-', '', '이 속도면 초기화 전에 닿지 않거나 조회 기록 부족');
+  return '<div class="dt-tiles">'
+    + utilTile('5시간', a && a.w5, false) + utilTile('7일', a && a.w7, true) + utilTile('7일 Opus', a && a.wf, true)
+    + etaTile
+    + tile('최근 '+DET_DAYS+'일 API 환산', sum ? usd(sum.cost) : '-', '',
+           sum ? '요청 '+sum.requests+' · 세션 '+sum.sessions+' · 이 맥에서 쓴 몫' : '불러오는 중')
+    + '</div>';
+}
+// 사용률 선 + 모델별 토큰 막대 + 외부 사용 음영 + 한도 도달 점
+function detChart(){
+  var host = el('dt-chart'); if(!host || !DET) return;
+  var W = Math.max(560, host.clientWidth), Hh = 250, L = 36, R = 8, T = 10, B = 24;
+  var iw = W-L-R, ih = Hh-T-B, now = Date.now(), t0 = now - DET_RANGE*H;
+  function X(t){ return L + (t-t0)/(now-t0)*iw; }
+  function Y(u){ return T + ih - ih*Math.max(0, Math.min(1, u)); }
+  var bsec = DET.bucket_sec*1000, bw = Math.max(1, bsec/(now-t0)*iw);
+  var bk = DET.buckets.filter(function(b){ return b.at*1000 >= t0 - bsec; });
+  var maxTok = 1; bk.forEach(function(b){ maxTok = Math.max(maxTok, b.tokens); });
+  var hist = DET.history.map(function(h){ return {at:h[0]*1000, u:h[1], r:h[4]}; })
+                        .filter(function(h){ return h.u!==null && h.at >= t0 - WIN5; });
+  var s = '';
+  [0,.25,.5,.75,1].forEach(function(p){
+    s += '<line x1="'+L+'" x2="'+(W-R)+'" y1="'+Y(p)+'" y2="'+Y(p)+'" stroke="var(--line-soft)"/>'
+      + '<text x="'+(L-5)+'" y="'+(Y(p)+3.5)+'" fill="var(--fg-dim)" font-size="10" text-anchor="end">'+(p*100)+'%</text>';
+  });
+  // 외부 사용 음영: 같은 창의 연속 조회 사이 사용률이 올랐는데 그 사이 로컬 토큰이 0
+  for(var i=1;i<hist.length;i++){
+    var a = hist[i-1], b = hist[i];
+    if(a.r !== b.r || b.u - a.u < 0.02 || b.at < t0) continue;
+    var local = bk.some(function(x){ var t=x.at*1000; return t+bsec > a.at && t < b.at && x.tokens > 0; });
+    if(!local) s += '<rect x="'+X(Math.max(a.at,t0))+'" y="'+T+'" width="'+Math.max(2, X(b.at)-X(Math.max(a.at,t0)))+'" height="'+ih+'" fill="var(--ext)"/>';
+  }
+  DET.windows.forEach(function(w){
+    var st = (w.reset*1000) - WIN5;
+    if(st > t0) s += '<line x1="'+X(st)+'" x2="'+X(st)+'" y1="'+T+'" y2="'+(T+ih)+'" stroke="var(--line-strong)" stroke-dasharray="2 3"/>';
+  });
+  bk.forEach(function(b){
+    var x = X(b.at*1000), y0 = T+ih;
+    Object.keys(b.models).sort().forEach(function(m){
+      var h = ih*.55*b.models[m]/maxTok; if(h <= 0) return; y0 -= h;
+      s += '<rect x="'+(x+bw*.1)+'" y="'+y0+'" width="'+Math.max(1, bw*.8)+'" height="'+h+'" fill="'+modelColor(m)+'" opacity=".78"/>';
+    });
+  });
+  // 사용률 선: 창이 바뀌면 이전 창 초기화 시각에 0 으로 떨어뜨린다
+  var pts = [], prev = null;
+  hist.forEach(function(h){
+    if(prev && h.r !== prev.r && prev.r && prev.r*1000 <= h.at){
+      pts.push([prev.r*1000, prev.u], [prev.r*1000, 0], [Math.max(prev.r*1000, h.r*1000 - WIN5), 0]);
+    }
+    pts.push([h.at, h.u]); prev = h;
+  });
+  if(prev) pts.push([prev.r && prev.r*1000 < now ? prev.r*1000 : now, prev.u]);
+  pts = pts.filter(function(p){ return p[0] >= t0; });
+  if(pts.length > 1)
+    s += '<path d="'+pts.map(function(p,j){ return (j?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1); }).join(' ')+'" fill="none" stroke="var(--fg)" stroke-width="1.5"/>';
+  DET.windows.forEach(function(w){
+    if(w.hit_at && w.hit_at*1000 >= t0) s += '<circle cx="'+X(w.hit_at*1000)+'" cy="'+Y(1)+'" r="4" fill="var(--bad)"><title>한도 도달 '+mdhm(w.hit_at*1000)+'</title></circle>';
+  });
+  var step = DET_RANGE <= 24 ? 3*H : D;
+  for(var t = Math.ceil(t0/step)*step; t < now; t += step){
+    var d = new Date(t), lbl = DET_RANGE <= 24 ? pad(d.getHours())+':00' : (d.getMonth()+1)+'/'+d.getDate();
+    if(DET_RANGE > 24){ d.setHours(0,0,0,0); t = d.getTime(); if(t < t0) continue; }
+    s += '<text x="'+X(t)+'" y="'+(Hh-7)+'" fill="var(--fg-dim)" font-size="10" text-anchor="middle">'+lbl+'</text>';
+  }
+  if(!hist.some(function(h){ return h.at >= t0; }))
+    s += '<text class="dt-empty" x="'+(L+iw/2)+'" y="'+(T+18)+'" text-anchor="middle">이 기간에 사용률 조회 기록이 없습니다 - 카드의 갱신이나 자동 갱신으로 쌓입니다</text>';
+  s += '<rect class="dt-hit" x="'+L+'" y="'+T+'" width="'+iw+'" height="'+ih+'" fill="transparent"/>';
+  host.innerHTML = '<svg width="'+W+'" height="'+Hh+'" viewBox="0 0 '+W+' '+Hh+'">'+s+'</svg>';
+  var hit = host.querySelector('.dt-hit'), tip = el('dt-tip');
+  hit.onmousemove = function(e){
+    var r = host.querySelector('svg').getBoundingClientRect(), t = t0 + (e.clientX - r.left - L)/iw*(now-t0);
+    var b = bk.filter(function(x){ return x.at*1000 <= t && t < x.at*1000 + bsec; })[0];
+    var h = null; hist.forEach(function(x){ if(x.at <= t) h = x; });
+    var rows = '<b>'+mdhm(t)+'</b>'+(h ? ' · 5h '+pct(h.u)+' <span class="hint">('+ago(h.at)+' 조회)</span>' : '');
+    if(b) rows += '<br>'+Object.keys(b.models).map(function(m){ return modelName(m)+' '+fmtTok(b.models[m]); }).join(' · ')+' · '+usd(b.cost);
+    tip.innerHTML = rows; tip.hidden = false;
+    tip.style.left = Math.min(e.clientX+12, innerWidth-260)+'px'; tip.style.top = (e.clientY+12)+'px';
+  };
+  hit.onmouseleave = function(){ tip.hidden = true; };
+}
+function detLegend(){
+  var ms_ = {};
+  DET.buckets.forEach(function(b){ Object.keys(b.models).forEach(function(m){ ms_[m] = 1; }); });
+  return Object.keys(ms_).sort().map(function(m){ return '<span><i class="sw" style="background:'+modelColor(m)+'"></i>'+esc(modelName(m))+'</span>'; }).join('')
+    + '<span><i class="sw" style="background:var(--fg)"></i>5h 사용률</span>'
+    + '<span><i class="sw" style="background:var(--ext)"></i>외부 사용 추정</span>'
+    + '<span><i class="sw" style="background:var(--bad);border-radius:50%"></i>한도 도달</span>';
+}
+function detWindows(){
+  var rows = DET.windows.filter(function(w){ return w.requests || w.peak > 0; }).slice(0, 12).map(function(w){
+    var st = w.reset*1000 - WIN5, p = Math.floor(w.peak*100), ext = w.external_pct;
+    return '<tr><td class="tm">'+mdhm(st)+' - '+hm(w.reset*1000)+(w.active?' <span class="badge acc">진행 중</span>':'')+'</td>'
+      + '<td class="'+toneOf(p)+'">'+p+'%</td>'
+      + '<td>'+(w.hit_at?'<span class="badge bad">'+hm(w.hit_at*1000)+' 도달</span>':'<span class="dim">-</span>')+'</td>'
+      + '<td>'+w.sessions+'</td><td>'+fmtTok(w.input+w.output+w.cache_create+w.cache_read)+'</td>'
+      + '<td class="'+(ext?'warn':'dim')+'">'+(ext===null||ext===undefined ? '기록 전' : ext>=1 ? '+'+Math.round(ext)+'%p' : '-')+'</td>'
+      + '<td>'+usd(w.cost)+'</td></tr>';
+  }).join('');
+  return rows ? '<div class="dt-scroll"><table class="tok-table dt-table"><thead><tr><th>구간</th><th>최고</th><th>한도</th><th>세션</th><th>로컬 토큰</th><th>외부 추정</th><th>API 환산</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    : '<p class="hint">조회 기록이 없습니다. 카드에서 갱신하거나 자동 갱신을 켜면 쌓입니다.</p>';
+}
+function mixBar(models){
+  var tot = 0; Object.keys(models).forEach(function(m){ tot += models[m]; });
+  return '<span class="dt-mix">'+Object.keys(models).sort().map(function(m){
+    return '<i style="width:'+(models[m]/tot*100)+'%;background:'+modelColor(m)+'" title="'+esc(modelName(m))+' '+models[m]+'건"></i>'; }).join('')+'</span>';
+}
+function reqTable(sid){
+  var r = DET_REQ[sid];
+  if(!r) return '<p class="hint">불러오는 중…</p>';
+  if(!r.length) return '<p class="hint">요청 없음</p>';
+  return '<table class="tok-table"><thead><tr><th>시각</th><th>모델</th><th>입력</th><th>캐시 쓰기</th><th>캐시 읽기</th><th>출력</th><th>API 환산</th></tr></thead><tbody>'
+    + r.map(function(q){ return '<tr><td class="tm">'+mdhm(q.at*1000)+'</td><td>'+esc(modelName(q.model))+'</td><td>'+fmtTok(q.input)+'</td><td>'+fmtTok(q.cache_create)
+      +'</td><td>'+fmtTok(q.cache_read)+'</td><td>'+fmtTok(q.output)+'</td><td class="tc">'+usd(q.cost)+'</td></tr>'; }).join('')
+    + '</tbody></table>';
+}
+function detSessions(){
+  if(!DET.sessions.length) return '<p class="hint">이 계정으로 귀속된 세션이 아직 없습니다. 세션 훅이 설치된 뒤 <code>cct</code> 로 실행한 세션부터 집계됩니다.</p>';
+  var now = Date.now();
+  return '<div class="dt-scroll"><table class="tok-table dt-table dt-ses"><thead><tr><th>시작</th><th>프로젝트</th><th>시간</th><th>모델</th><th>요청</th><th>입력</th><th>출력</th><th>캐시 읽기</th><th>API 환산</th><th>한도 에러</th></tr></thead><tbody>'
+    + DET.sessions.map(function(s){
+      var open = DET_REQ.hasOwnProperty(s.session) && DET_REQ['open:'+s.session];
+      var live = now - s.end*1000 < 10*M;
+      return '<tr class="dt-row'+(open?' open':'')+'" data-sid="'+esc(s.session)+'"><td class="tm"><span class="caret">▸</span> '+mdhm(s.start*1000)
+        + ' <span class="dim">'+esc(s.session.slice(0,8))+'</span></td><td class="tm">'+esc(s.project)+'</td>'
+        + '<td>'+durTxt(s.end-s.start)+(live?' <span class="badge acc">진행 중</span>':'')+'</td><td>'+mixBar(s.models)+'</td>'
+        + '<td>'+s.requests+'</td><td>'+fmtTok(s.input+s.cache_create)+'</td><td>'+fmtTok(s.output)+'</td><td>'+fmtTok(s.cache_read)+'</td>'
+        + '<td class="tc">'+usd(s.cost)+'</td><td class="'+(s.limit_errors?'bad':'dim')+'">'+(s.limit_errors||'-')+'</td></tr>'
+        + (open ? '<tr class="dt-sub"><td colspan="10"><div class="dt-req">'+reqTable(s.session)+'</div></td></tr>' : '');
+    }).join('') + '</tbody></table></div>';
+}
+function hbars(rows, key, colorOf){
+  if(!rows.length) return '<p class="hint">데이터 없음</p>';
+  var max = Math.max.apply(null, rows.map(function(r){ return r.cost; })) || 1;
+  return rows.slice(0, 8).map(function(r){
+    return '<div class="dt-hb"><span class="lbl">'+esc(key(r))+'</span><div class="dt-bar big"><i style="width:'+(r.cost/max*100)+'%;background:'+colorOf(r)+'"></i></div><span class="val">'+usd(r.cost)+'</span></div>';
+  }).join('');
+}
+function detInsights(){
+  var ins = DET.insights, top = DET.sessions.slice().sort(function(a,b){ return b.cache_read-a.cache_read; })[0];
+  var hits = DET.windows.filter(function(w){ return w.hit_at; }).map(function(w){ return mdhm(w.hit_at*1000); });
+  function card(k, v, d){ return '<div class="dt-card"><span class="k">'+k+'</span><span class="v">'+v+'</span><span class="d">'+d+'</span></div>'; }
+  return card('5h 1%당 토큰', ins.tokens_per_pct ? '≈ '+fmtTok(ins.tokens_per_pct) : '-', '로컬 사용이 있는 창 중 외부 사용이 가장 적은 창 기준 · 캐시 읽기 포함')
+    + card('외부 사용 비율', ins.external_share===null ? '-' : pct(ins.external_share), '끝난 5h 창 사용률 중 이 맥 토큰으로 설명되지 않는 몫 · 웹·앱·다른 PC')
+    + card('캐시 읽기 비중', ins.cache_read_share===null ? '-' : pct(ins.cache_read_share), top ? '최대 세션 '+esc(top.session.slice(0,8))+' '+fmtTok(top.cache_read) : '세션 없음')
+    + card('한도 도달', ins.limit_hits+'회', hits.length ? hits.slice(0,3).join(' · ') : '최근 '+DET_DAYS+'일 없음');
+}
+function renderDetail(){
+  var host = el('detail'); if(!DET_LABEL) return;
+  var a = acc(DET_LABEL);
+  if(!DET){ host.innerHTML = detHead(a)+'<p class="hint dt-loading">불러오는 중…</p>'; return; }
+  var seg = '<span class="dt-seg"><button class="btn sm'+(DET_RANGE===24?' on':'')+'" data-range="24">24시간</button>'
+          + '<button class="btn sm'+(DET_RANGE===168?' on':'')+'" data-range="168">7일</button></span>';
+  host.innerHTML = detHead(a) + detTiles(a)
+    + '<section class="panel"><div class="p-head"><h3>사용률 · 토큰 타임라인</h3><span class="hint">선 = 5h 사용률(조회 시점) · 막대 = 이 맥에서 '+esc(DET_LABEL)+'(으)로 쓴 토큰(15분) · 노란 음영 = 로컬 토큰 없이 사용률 상승</span>'+seg+'</div>'
+    + '<div class="legend dt-legend">'+detLegend()+'</div><div class="p-body"><div class="dt-scroll" id="dt-chart"></div></div></section>'
+    + '<section class="panel"><div class="p-head"><h3>5시간 구간 기록</h3><span class="hint">초기화 시각마다 끊은 구간 · 최근 '+DET_DAYS+'일</span></div><div class="p-body">'+detWindows()+'</div></section>'
+    + '<section class="panel"><div class="p-head"><h3>세션</h3><span class="hint">'+esc(DET_LABEL)+'(으)로 실행된 세션 · 누르면 요청 단위로 펼침 (대화 내용은 표시하지 않음)</span></div><div class="p-body">'+detSessions()+'</div></section>'
+    + '<div class="cols dt-cols"><section class="panel"><div class="p-head"><h3>모델별</h3><span class="hint">최근 '+DET_DAYS+'일 · API 환산</span></div><div class="p-body">'
+    + hbars(DET.models, function(r){ return modelName(r.model); }, function(r){ return modelColor(r.model); }) + '</div></section>'
+    + '<section class="panel"><div class="p-head"><h3>프로젝트별</h3><span class="hint">최근 '+DET_DAYS+'일 · API 환산</span></div><div class="p-body">'
+    + hbars(DET.projects, function(r){ return r.project; }, function(){ return 'var(--accent)'; }) + '</div></section></div>'
+    + '<section class="panel"><div class="p-head"><h3>분석</h3><span class="hint">최근 '+DET_DAYS+'일 · 추정치</span></div><div class="p-body dt-cards">'+detInsights()+'</div></section>'
+    + '<p class="hint dt-foot">'+(DET.tracking_since ? '세션 기록 시작 '+mdhm(DET.tracking_since*1000)+' · ' : '세션 기록 없음 (훅 미설치) · ')
+    + '이 맥에서 <code>cct</code> 로 실행한 Claude Code 세션만 계정별로 나뉩니다. 웹·앱·다른 PC 사용은 사용률 선과 외부 추정으로만 보입니다.</p>';
+  detChart();
+}
+el('detail').addEventListener('click', function(e){
+  var r = e.target.closest('[data-range]');
+  if(r){ DET_RANGE = +r.getAttribute('data-range'); renderDetail(); return; }
+  var row = e.target.closest('tr.dt-row'); if(!row) return;
+  var sid = row.getAttribute('data-sid'), key = 'open:'+sid;
+  DET_REQ[key] = !DET_REQ[key];
+  if(DET_REQ[key] && !DET_REQ.hasOwnProperty(sid)){
+    DET_REQ[sid] = null;
+    api('/api/account?label='+encodeURIComponent(DET_LABEL)+'&days='+DET_DAYS+'&session='+encodeURIComponent(sid))
+      .then(function(res){ DET_REQ[sid] = res.requests; renderDetail(); })
+      .catch(function(err){ DET_REQ[sid] = []; toast('요청 목록 실패: '+err.message, true); renderDetail(); });
+  }
+  renderDetail();
+});
+// 카드 빈 곳(버튼·메뉴·폼 제외)을 누르면 상세로
+el('cards').addEventListener('click', function(e){
+  var t = e.target;
+  if(t.closest('button, a, details, form, input, label, select')) return;
+  var card = t.closest('article.acct[data-l]'); if(!card) return;
+  location.hash = '#/account/'+card.getAttribute('data-l');
+});
+window.addEventListener('hashchange', detRoute);
+window.addEventListener('resize', function(){ if(DET && DET_LABEL) detChart(); });
+
 // ── 기동 ──────────────────────────────────────────────────────────
 var w0 = false;
 try { w0 = sessionStorage.getItem('cct-write')==='1'; } catch(_){}
 if(/[?&]write=1/.test(location.search)) w0 = true;
 if(w0){ el('chk-write').checked = true; document.body.classList.add('write'); }
 load().then(provAutoRefresh).catch(function(){});
+detRoute();
 loadHist(); loadTok();
 setInterval(function(){ if(!busy) load(true).catch(function(){}); }, 30e3);
 setInterval(provAutoRefresh, 600e3);                                 // 프로바이더 10분 주기 - 소비 0

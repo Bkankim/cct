@@ -13,7 +13,7 @@
 <!-- Beszel 계열 리팩터링 (2026-09-16)
      상단 바 → 활성 계정 바 → 계정 카드 그리드 → 리셋/진단 → 실행 로그(접힘).
      데이터 계약(/api/state)과 액션 엔드포인트는 그대로다. -->
-<div class="app">
+<div class="app" id="main">
 
   <header class="topbar">
     <div class="brand">
@@ -129,6 +129,9 @@
     <span>빌드 없음 · 외부 리소스 없음</span>
   </footer>
 </div>
+<!-- 계정 상세 (#/account/<라벨>) - 카드를 누르면 열린다. /api/account 만 읽는다(프로브 0회). -->
+<div class="app" id="detail" hidden></div>
+<div class="tip" id="dt-tip" hidden></div>
 <div class="toast" id="toast"></div>
 <script src="app.js"></script>
 </body>

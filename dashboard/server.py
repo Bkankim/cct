@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # 정책 상수
 FLOOR_MIN = 15          # 자동갱신 하한(분). 서버가 강제한다.
@@ -84,6 +84,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 LS_RE = re.compile(r"^\s*cct (\S+)(\s+\(비어있음\))?(\s+← 활성)?\s*$")
 DOCTOR_RE = re.compile(r"^(PASS|WARN|FAIL) (.+)$")
 LABEL_RE = re.compile(r"^[a-z0-9_]+$")
+SESSION_RE = re.compile(r"^[A-Za-z0-9-]{1,80}$")
 
 # cct 예약어(라벨로 쓸 수 없다). use 는 WP1 에서 추가되는 서브커맨드다.
 RESERVED = {
@@ -307,9 +308,15 @@ PRICING: dict[str, dict[str, float]] = {
 }
 
 
+TOKENS_SCHEMA = 2
+ACCOUNT_BUCKET_SEC = 900       # 계정 상세 타임라인 막대 1칸(15분)
+WINDOW_5H_SEC = 5 * 3600
+
+
 def pricing_version() -> str:
     """단가표 지문. 값이 바뀌면 토큰 집계를 처음부터 다시 만든다."""
-    payload = json.dumps(PRICING, sort_keys=True)
+    # 스키마 버전도 섞는다 - 행 모양이 바뀌면(2: at·session·project 추가) 전체 재집계.
+    payload = json.dumps({"pricing": PRICING, "schema": TOKENS_SCHEMA}, sort_keys=True)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
@@ -370,8 +377,18 @@ class DashDB:
                 " uniq TEXT PRIMARY KEY, date TEXT NOT NULL, model TEXT NOT NULL,"
                 " input INTEGER, output INTEGER, cache_5m INTEGER, cache_1h INTEGER,"
                 " cache_read INTEGER, cost REAL)")
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tokens_entries)")}
+            for col, typ in (("at", "INTEGER"), ("session", "TEXT"), ("project", "TEXT")):
+                if col not in cols:     # 0.3 이하 DB - 새 칸은 재집계(스키마 지문)로 채워진다
+                    self.conn.execute("ALTER TABLE tokens_entries ADD COLUMN %s %s" % (col, typ))
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tokens_date ON tokens_entries(date)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tokens_session ON tokens_entries(session)")
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS limit_events ("
+                " uniq TEXT PRIMARY KEY, at INTEGER, session TEXT, kind TEXT,"
+                " resets_at INTEGER)")
             self.conn.execute(
                 "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         if self.is_file:
@@ -444,6 +461,13 @@ class DashDB:
             series.setdefault(label, []).append([int(at), u5, u7, uf])
         return series
 
+    def label_history(self, label: str, since: int) -> list[tuple]:
+        """계정 1개의 원본 프로브 행 (at, u5, u7, uf, r5) 시각순."""
+        with self._lock:
+            return self.conn.execute(
+                "SELECT at, u5, u7, uf, r5 FROM history WHERE label=? AND at >= ?"
+                " ORDER BY at", (label, since)).fetchall()
+
     def history_count(self) -> int:
         with self._lock:
             return int(self.conn.execute("SELECT COUNT(*) FROM history").fetchone()[0])
@@ -463,28 +487,63 @@ class DashDB:
                 (path, mtime, size))
 
     def add_entries(self, rows: list[tuple]) -> None:
-        """(uniq, date, model, input, output, cache_5m, cache_1h, cache_read, cost) 벌크 삽입.
+        """(uniq, date, model, input, output, cache_5m, cache_1h, cache_read, cost
+        [, at, session, project]) 벌크 삽입. 뒤 3칸이 없는 행은 NULL 로 채운다.
 
         uniq PRIMARY KEY 라 재파싱·중복 라인은 INSERT OR IGNORE 로 자연히 걸러진다.
         """
         if not rows:
             return
+        rows = [tuple(r) + (None,) * (12 - len(r)) for r in rows]
         with self._lock, self.conn:
             self.conn.executemany(
                 "INSERT OR IGNORE INTO tokens_entries"
                 " (uniq, date, model, input, output, cache_5m, cache_1h,"
-                "  cache_read, cost)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+                "  cache_read, cost, at, session, project)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
 
     def tokens_reset(self) -> None:
         """단가표가 바뀌었을 때 집계를 처음부터 다시 만들기 위해 비운다."""
         with self._lock, self.conn:
             self.conn.execute("DELETE FROM tokens_entries")
+            self.conn.execute("DELETE FROM limit_events")
             self.conn.execute("DELETE FROM tokens_files")
 
     def tokens_count(self) -> int:
         with self._lock:
             return int(self.conn.execute("SELECT COUNT(*) FROM tokens_entries").fetchone()[0])
+
+    def add_limit_events(self, rows: list[tuple]) -> None:
+        """(uniq, at, session, kind, resets_at) - 한도 거절(rate_limit) 에러 줄."""
+        if not rows:
+            return
+        with self._lock, self.conn:
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO limit_events (uniq, at, session, kind, resets_at)"
+                " VALUES (?, ?, ?, ?, ?)", rows)
+
+    def session_limit_events(self, sessions: list[str], since: int) -> list[tuple]:
+        if not sessions:
+            return []
+        marks = ",".join("?" * len(sessions))
+        with self._lock:
+            return self.conn.execute(
+                "SELECT at, session, kind, resets_at FROM limit_events"
+                " WHERE session IN (%s) AND at >= ? ORDER BY at" % marks,
+                (*sessions, since)).fetchall()
+
+    def session_entries(self, sessions: list[str], since: int) -> list[tuple]:
+        """세션들의 메시지 행 (at, session, project, model, input, output, cache_5m,
+        cache_1h, cache_read, cost) 을 시각순으로."""
+        if not sessions:
+            return []
+        marks = ",".join("?" * len(sessions))
+        with self._lock:
+            return self.conn.execute(
+                "SELECT at, session, project, model, input, output, cache_5m, cache_1h,"
+                " cache_read, cost FROM tokens_entries"
+                " WHERE session IN (%s) AND at >= ? ORDER BY at" % marks,
+                (*sessions, since)).fetchall()
 
     def tokens_report(self, days: int) -> list[tuple]:
         """날짜 x 모델 집계 행. cost 합계와 '비용 미상' 엔트리 수를 함께 돌려준다."""
@@ -497,6 +556,19 @@ class DashDB:
                 " SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END)"
                 " FROM tokens_entries WHERE date >= ?"
                 " GROUP BY date, model ORDER BY date DESC, model", (since,)).fetchall()
+
+
+def iso_epoch(ts: Any) -> int | None:
+    """ISO 타임스탬프를 epoch 초로. 해석 불가면 None."""
+    if not isinstance(ts, str) or len(ts) < 10:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
 
 def local_date(ts: Any) -> str | None:
@@ -512,7 +584,24 @@ def local_date(ts: Any) -> str | None:
     return time.strftime("%Y-%m-%d", time.localtime(dt.timestamp()))
 
 
-def parse_claude_jsonl(path: Path) -> list[tuple]:
+def limit_event(obj: dict, path: Path, lineno: int) -> tuple | None:
+    """rate_limit 에러 줄을 (uniq, at, session, kind, resets_at) 로. 아니면 None."""
+    if obj.get("error") != "rate_limit":
+        return None
+    at = iso_epoch(obj.get("timestamp"))
+    sid = obj.get("sessionId")
+    if at is None or not isinstance(sid, str) or not sid:
+        return None
+    quota = obj.get("quotaLimits") if isinstance(obj.get("quotaLimits"), dict) else {}
+    kind = quota.get("rateLimitType")
+    resets = quota.get("resetsAt")
+    uuid = obj.get("uuid")
+    uniq = uuid if isinstance(uuid, str) and uuid else "f:%s:%d" % (path.name, lineno)
+    return (uniq, at, sid, kind if isinstance(kind, str) else None,
+            resets if isinstance(resets, int) else None)
+
+
+def parse_claude_jsonl(path: Path, events: list | None = None) -> list[tuple]:
     """Claude Code 세션 로그 한 파일에서 토큰 사용 엔트리만 뽑는다.
 
     메시지 본문은 읽는 즉시 버린다 - 반환 값에는 날짜·모델·토큰 수·비용만 담는다.
@@ -527,13 +616,19 @@ def parse_claude_jsonl(path: Path) -> list[tuple]:
     with fh:
         for lineno, line in enumerate(fh):
             # json.loads 전에 싼 문자열 검사로 사용량 없는 줄(user 등)을 걸러낸다.
-            if '"usage"' not in line and '"costUSD"' not in line:
+            if ('"usage"' not in line and '"costUSD"' not in line
+                    and (events is None or '"rate_limit"' not in line)):
                 continue
             try:
                 obj = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(obj, dict) or obj.get("isApiErrorMessage"):
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("isApiErrorMessage"):
+                ev = limit_event(obj, path, lineno) if events is not None else None
+                if ev:
+                    events.append(ev)
                 continue
             msg = obj.get("message")
             if not isinstance(msg, dict):
@@ -577,10 +672,130 @@ def parse_claude_jsonl(path: Path) -> list[tuple]:
                 seed = "%s:%d:%s" % (path.name, lineno, obj.get("timestamp"))
                 uniq = "f:" + hashlib.sha1(seed.encode("utf-8")).hexdigest()
             cost = entry_cost(model, tokens, obj.get("costUSD"))
+            sid = obj.get("sessionId")
+            cwd = obj.get("cwd")
             rows.append((uniq, date, model, tokens["input"], tokens["output"],
                          tokens["cache_5m"], tokens["cache_1h"],
-                         tokens["cache_read"], cost))
+                         tokens["cache_read"], cost, iso_epoch(obj.get("timestamp")),
+                         sid if isinstance(sid, str) and sid else None,
+                         Path(cwd).name if isinstance(cwd, str) and cwd else None))
     return rows
+
+
+def load_sessions(path: str | Path) -> dict[str, list[tuple[int, str]]]:
+    """cct-session-hook.sh 기록을 세션ID -> [(시각, 라벨)] (시각순) 으로 읽는다.
+
+    같은 세션을 다른 계정으로 이어 열면 줄이 더 붙는다 - 메시지는 자기 시각 이전의
+    가장 최근 줄의 라벨로 귀속한다(label_at). 깨진 줄은 건너뛴다.
+    """
+    out: dict[str, list[tuple[int, str]]] = {}
+    try:
+        fh = open(Path(path).expanduser(), encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    with fh:
+        for line in fh:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            ts, sid, label = obj.get("ts"), obj.get("session_id"), obj.get("label")
+            if (isinstance(ts, int) and isinstance(sid, str) and sid
+                    and isinstance(label, str) and LABEL_RE.match(label)):
+                out.setdefault(sid, []).append((ts, label))
+    for marks in out.values():
+        marks.sort()
+    return out
+
+
+def label_at(marks: list[tuple[int, str]], at: int | None) -> str | None:
+    """세션 기록 marks 기준으로 시각 at 의 메시지가 어느 라벨인지."""
+    label = None
+    for ts, lbl in marks:
+        if at is not None and ts > at:
+            break
+        label = lbl
+    return label if at is not None else None
+
+
+def account_windows(history: list[tuple], msgs: list[dict], limits: list[dict],
+                    now: int) -> list[dict]:
+    """프로브 기록의 5h 초기화 시각(r5)으로 창을 나누고, 창마다 로컬 사용·한도 도달을 붙인다.
+
+    도달 시각은 사용률이 처음 100% 로 찍힌 프로브와 첫 five_hour 한도 에러 중 이른 쪽.
+    """
+    wins: dict[int, dict] = {}
+    for at, u5, _u7, _uf, r5 in history:
+        if not isinstance(r5, int):
+            continue
+        w = wins.setdefault(r5, {"reset": r5, "start": r5 - WINDOW_5H_SEC,
+                                 "active": r5 > now, "peak": 0.0, "hit_at": None,
+                                 "requests": 0, "input": 0, "output": 0,
+                                 "cache_create": 0, "cache_read": 0, "cost": 0.0,
+                                 "sessions": 0})
+        if isinstance(u5, (int, float)):
+            w["peak"] = max(w["peak"], float(u5))
+            if u5 >= 1.0 and w["hit_at"] is None:
+                w["hit_at"] = at
+    for w in wins.values():
+        inside = [m for m in msgs if w["start"] <= m["at"] < w["reset"]]
+        for m in inside:
+            w["requests"] += 1
+            for key in ("input", "output", "cache_create", "cache_read", "cost"):
+                w[key] += m[key]
+        w["sessions"] = len({m["session"] for m in inside})
+        for ev in limits:
+            if ev["kind"] == "five_hour" and w["start"] <= ev["at"] < w["reset"]:
+                if w["hit_at"] is None or ev["at"] < w["hit_at"]:
+                    w["hit_at"] = ev["at"]
+                break
+    return sorted(wins.values(), key=lambda w: -w["reset"])
+
+
+def account_insights(windows: list[dict], summary: dict, history: list[tuple],
+                     now: int, tracking_since: int | None = None) -> dict:
+    """상세 화면 분석 카드용 추정치. 창의 external_pct 도 여기서 채운다.
+
+    tokens_per_pct: 5h 1% 당 로컬 토큰. 외부 사용이 섞인 창은 비율이 낮아지므로
+    로컬 사용이 있는 창 중 비율이 가장 높은(가장 순수한) 창을 기준으로 삼는다.
+    """
+    def wtokens(w: dict) -> int:
+        return w["input"] + w["output"] + w["cache_create"] + w["cache_read"]
+
+    ratios = [wtokens(w) / (w["peak"] * 100) for w in windows
+              if w["requests"] and w["peak"] > 0]
+    per_pct = max(ratios) if ratios else None
+    for w in windows:
+        local = wtokens(w) / per_pct if per_pct else 0.0
+        if tracking_since is None or w["start"] < tracking_since:
+            w["external_pct"] = None                 # 훅 기록 전 - 로컬 몫을 알 수 없다
+        elif not w["requests"]:
+            w["external_pct"] = w["peak"] * 100      # 로컬 사용이 없으면 전부 밖에서 쓴 것
+        else:
+            w["external_pct"] = max(0.0, w["peak"] * 100 - local) if per_pct else None
+    closed = [w for w in windows if not w["active"] and w["external_pct"] is not None]
+    peak_sum = sum(w["peak"] * 100 for w in closed)
+    eta = None
+    active = next((w for w in windows if w["active"]), None)
+    if active:
+        pts = [(at, u5) for at, u5, _u7, _uf, r5 in history
+               if r5 == active["reset"] and isinstance(u5, (int, float))]
+        if len(pts) >= 2 and pts[-1][1] > pts[-2][1] and pts[-1][1] < 1.0:
+            (t1, u1), (t2, u2) = pts[-2], pts[-1]
+            eta = int(t2 + (1.0 - u2) * (t2 - t1) / (u2 - u1))
+            if eta >= active["reset"]:
+                eta = None                  # 이 속도면 초기화 전에 안 닿는다
+    fed = summary["input"] + summary["cache_create"] + summary["cache_read"]
+    return {
+        "tokens_per_pct": per_pct,
+        "external_share": (sum(w["external_pct"] for w in closed) / peak_sum
+                           if peak_sum else None),
+        "eta_5h": eta,
+        "cache_read_share": summary["cache_read"] / fed if fed else None,
+        "limit_hits": sum(1 for w in windows if w["hit_at"] is not None),
+    }
 
 
 class TokenScanner:
@@ -639,7 +854,9 @@ class TokenScanner:
                     continue
                 meta = (int(st.st_mtime), int(st.st_size))
                 if self.db.file_meta(str(path)) != meta:
-                    self.db.add_entries(parse_claude_jsonl(path))
+                    events: list[tuple] = []
+                    self.db.add_entries(parse_claude_jsonl(path, events))
+                    self.db.add_limit_events(events)
                     self.db.set_file_meta(str(path), *meta)
                 self.progress["done"] += 1
             self.scanned_at = now_i()
@@ -1249,8 +1466,9 @@ class App:
                  live_file: str | Path, bind: str = "127.0.0.1", port: int = 8790,
                  auto_tick: float = 5.0, db: DashDB | None = None,
                  scanner: TokenScanner | None = None, notifier=None,
-                 providers=None):
+                 providers=None, sessions_file: str | Path | None = None):
         self.cct = cct
+        self.sessions_file = sessions_file     # cct-session-hook.sh 기록 (계정별 귀속)
         self.state = state
         self.providers = providers            # ProviderManager | None (GPT·Grok 사용량)
         self.db = db or DashDB()          # 기본은 프로세스 내 메모리 DB(테스트 친화)
@@ -1701,6 +1919,106 @@ class App:
             self.scanner.kick()      # 낡았으면 백그라운드 재스캔(디스크 읽기만)
         return 200, self._tokens_payload(days)
 
+    def api_account(self, query: dict) -> tuple[int, dict]:
+        """계정 1개의 상세 - 세션 훅 기록으로 이 맥의 메시지를 그 계정에 귀속한다."""
+        label = (query.get("label") or [""])[0]
+        if not LABEL_RE.match(label):
+            return self._err(400, "bad_label", "label 형식이 올바르지 않습니다")
+        try:
+            days = int((query.get("days") or ["7"])[0])
+        except (TypeError, ValueError):
+            return self._err(400, "bad_request", "days 는 정수여야 합니다")
+        days = max(1, min(days, TOKENS_DAYS_MAX))
+        session = (query.get("session") or [None])[0]
+        if session is not None:
+            if not SESSION_RE.match(session):
+                return self._err(400, "bad_session", "session 형식이 올바르지 않습니다")
+            return 200, self._session_requests(label, session, days)
+        if self.scanner is not None:
+            self.scanner.kick()
+        return 200, self._account_payload(label, days)
+
+    def _session_requests(self, label: str, session: str, days: int) -> dict:
+        """세션 1개에서 이 계정에 귀속된 요청 목록(대화 내용 없이 토큰·비용만)."""
+        marks = load_sessions(self.sessions_file) if self.sessions_file else {}
+        reqs = []
+        for (at, _sid, _project, model, i, o, c5m, c1h, cr,
+             cost) in self.db.session_entries([session], now_i() - days * 86400):
+            if session not in marks or label_at(marks[session], at) != label:
+                continue
+            reqs.append({"at": at, "model": model, "input": int(i or 0),
+                         "output": int(o or 0), "cache_create": int(c5m or 0) + int(c1h or 0),
+                         "cache_read": int(cr or 0), "cost": float(cost or 0.0)})
+        return {"ok": True, "label": label, "session": session, "requests": reqs}
+
+    def _account_payload(self, label: str, days: int) -> dict:
+        since = now_i() - days * 86400
+        marks = load_sessions(self.sessions_file) if self.sessions_file else {}
+        mine = [sid for sid, m in marks.items() if any(lbl == label for _, lbl in m)]
+        tracking_since = min((m[0][0] for m in marks.values() if m), default=None)
+        msgs = []
+        for (at, sid, project, model, i, o, c5m, c1h, cr,
+             cost) in self.db.session_entries(mine, since):
+            if label_at(marks[sid], at) != label:
+                continue
+            msgs.append({"at": at, "session": sid, "project": project or "-",
+                         "model": model, "input": int(i or 0), "output": int(o or 0),
+                         "cache_create": int(c5m or 0) + int(c1h or 0),
+                         "cache_read": int(cr or 0), "cost": float(cost or 0.0)})
+
+        def blank(**keys) -> dict:
+            return dict(keys, requests=0, input=0, output=0, cache_create=0,
+                        cache_read=0, cost=0.0)
+
+        def bump(dst: dict, m: dict) -> None:
+            dst["requests"] += 1
+            for key in ("input", "output", "cache_create", "cache_read", "cost"):
+                dst[key] += m[key]
+
+        summary = blank()
+        sessions: dict[str, dict] = {}
+        models: dict[str, dict] = {}
+        projects: dict[str, dict] = {}
+        for m in msgs:
+            bump(summary, m)
+            s = sessions.setdefault(m["session"], blank(
+                session=m["session"], project=m["project"], start=m["at"],
+                end=m["at"], models={}, limit_errors=0))
+            s["end"] = m["at"]
+            s["models"][m["model"]] = s["models"].get(m["model"], 0) + 1
+            bump(s, m)
+            bump(models.setdefault(m["model"], blank(model=m["model"])), m)
+            bump(projects.setdefault(m["project"], blank(project=m["project"])), m)
+        summary["sessions"] = len(sessions)
+        limits = []
+        for at, sid, kind, resets in self.db.session_limit_events(mine, since):
+            if label_at(marks[sid], at) != label:
+                continue
+            limits.append({"at": at, "session": sid, "kind": kind, "resets_at": resets})
+            if sid in sessions:
+                sessions[sid]["limit_errors"] += 1
+        history = self.db.label_history(label, since)
+        windows = account_windows(history, msgs, limits, now_i())
+        buckets: dict[int, dict] = {}
+        for m in msgs:
+            at = m["at"] - m["at"] % ACCOUNT_BUCKET_SEC
+            b = buckets.setdefault(at, {"at": at, "tokens": 0, "cost": 0.0, "models": {}})
+            tokens = m["input"] + m["output"] + m["cache_create"] + m["cache_read"]
+            b["tokens"] += tokens
+            b["cost"] += m["cost"]
+            b["models"][m["model"]] = b["models"].get(m["model"], 0) + tokens
+        by_cost = lambda rows: sorted(rows, key=lambda x: -x["cost"])
+        return {"ok": True, "label": label, "days": days, "summary": summary,
+                "sessions": sorted(sessions.values(), key=lambda x: -x["start"]),
+                "models": by_cost(models.values()),
+                "projects": by_cost(projects.values()), "limits": limits,
+                "history": [list(h) for h in history], "windows": windows,
+                "insights": account_insights(windows, summary, history, now_i(),
+                                             tracking_since),
+                "tracking_since": tracking_since,
+                "bucket_sec": ACCOUNT_BUCKET_SEC,
+                "buckets": sorted(buckets.values(), key=lambda b: b["at"])}
+
     def api_tokens_scan(self) -> tuple[int, dict]:
         if self.scanner is None or not self.scanner.enabled:
             return self._err(409, "scan_disabled", "이 모드에서는 JSONL 스캔을 하지 않습니다")
@@ -1968,6 +2286,10 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = self.app.api_history(parse_qs(url.query))
             self._send(code, payload)
             return
+        if path == "/api/account":
+            code, payload = self.app.api_account(parse_qs(url.query))
+            self._send(code, payload)
+            return
         if path == "/api/tokens":
             code, payload = self.app.api_tokens(parse_qs(url.query))
             self._send(code, payload)
@@ -2113,6 +2435,9 @@ def build_parser() -> argparse.ArgumentParser:
                         " --fake 는 .fake.sqlite3)")
     p.add_argument("--projects-dir", default=str(Path("~/.claude/projects").expanduser()),
                    help="Claude Code 세션 로그(JSONL) 루트")
+    p.add_argument("--sessions-file",
+                   default=str(Path("~/.claude/cct-sessions.jsonl").expanduser()),
+                   help="cct-session-hook.sh 가 남기는 세션->라벨 기록 (계정별 상세)")
     p.add_argument("--no-tokens", action="store_true",
                    help="JSONL 토큰 스캔 비활성화")
     p.add_argument("--cct", default=str(Path("~/.claude/cct.sh").expanduser()),
@@ -2185,6 +2510,7 @@ def main(argv: list[str] | None = None) -> int:
         scanner=scanner,
         notifier=notifier,
         providers=providers,
+        sessions_file=None if args.fake else args.sessions_file,
     )
     httpd = make_server(args.bind, args.port, app)
     state.log_add("server start %s:%d%s" % (args.bind, app.port,

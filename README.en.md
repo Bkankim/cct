@@ -99,6 +99,8 @@ uv run --script dashboard/server.py --port 8790          # real wallet
 uv run --script dashboard/server.py --fake --port 8799   # fixture mode (zero real probes)
 ```
 
+Clicking an account card opens its detail view: per-5h-window utilization, limit-hit times, per-session and per-request tokens with API-equivalent cost, model and project breakdowns, and an external-usage estimate. Accounts are told apart by `~/.claude/cct-session-hook.sh`, which the installer registers under SessionStart in `~/.claude/settings.json`. For every session launched through `cct` it appends `{time, session id, label}` to `~/.claude/cct-sessions.jsonl` (mode `600`); it never writes tokens or conversation content. To skip registration, run `CCT_NO_SESSION_HOOK=1 bash install.sh`. Only sessions launched with `cct` on this machine are attributed; web, app, and other-machine usage shows up only as utilization.
+
 It binds to `127.0.0.1` and is read-first by default, and token values never appear on screen, in responses, or in logs. Usage reads are real API calls that consume a little quota. Screen layout, probe cost, always-on setup, and the GPT/Grok integration and caveats are in [dashboard/README.md](dashboard/README.md).
 
 <details>
