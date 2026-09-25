@@ -158,6 +158,10 @@ cct doctor
 
 cct는 OAuth refresh 서비스, 프록시, 오케스트레이터, 자동/쿼터 기반 라우터, 로드밸런서, GUI, 데몬이 아니다. 계정 상태를 보고 최적 계정을 고르지 않으며, 사용자의 명시적 선택을 대신하지 않는다. macOS Keychain이나 별도 런타임도 필수로 요구하지 않는다.
 
+## 관련 프로젝트
+
+- [smartthink](https://github.com/Bkankim/smartthink) - 작업에 필요한 멘탈 모델 레퍼런스만 골라 Claude Code 세션을 먼저 무장시키는 플러그인. [bkankim-plugins](https://github.com/Bkankim/bkankim-plugins) 마켓플레이스로 설치한다.
+
 ## 라이선스
 
 MIT - [LICENSE](LICENSE)
