@@ -1325,8 +1325,9 @@ _cct_active_label() {
   printf '%s' "$v"
 }
 
-_cct_apply_env() {  # $1=token — 현재 셸에 토큰(+웹기능 차단 플래그) export
+_cct_apply_env() {  # $1=token $2=label — 현재 셸에 토큰(+웹기능 차단 플래그) export
   export CLAUDE_CODE_OAUTH_TOKEN="$1"
+  export CCT_LABEL="$2"   # 세션 훅이 계정별 사용량 귀속에 쓴다(라벨만, 토큰 아님)
   export ANTHROPIC_OAUTH_TOKEN="$1"   # gjc/aside 등 env 상속 도구도 같은 계정으로
   if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
     unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
@@ -1484,7 +1485,7 @@ _cct_use() {
     echo "❌ 활성 프로필 저장 실패: $(_cct_active_file)" >&2
     return 1
   }
-  _cct_apply_env "$tok"
+  _cct_apply_env "$tok" "$label"
   _cct_gjc_guard
   echo "✓ 활성 = $label (열린 다른 셸은 cct refresh)"
 }
@@ -1494,7 +1495,7 @@ _cct_off() {  # sticky 해제: 저장 파일 삭제 + 현재 셸 env 해제
     echo "❌ 활성 프로필 해제 실패: $(_cct_active_file)" >&2
     return 1
   }
-  unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
+  unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CCT_LABEL CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
   echo "✓ 활성 프로필 해제 — 이후 cct <라벨> 로 다시 선택"
 }
 
@@ -1503,13 +1504,13 @@ _cct_refresh() {  # 디스크의 활성 라벨을 현재 셸 env 에 재적용 �
   local a tok
   a="$(_cct_active_label)"
   if [ -z "$a" ]; then
-    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
+    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CCT_LABEL CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
     echo "활성 프로필 없음 → 현재 셸 cct 인증 환경 해제 (선택: cct <라벨>)"
     return 0
   fi
   tok="$(_cct_envtok "$(_cct_key "$a")")"
   [ -n "$tok" ] || { echo "❌ 활성 라벨 '$a' 의 토큰 없음 (등록: cct add $a)" >&2; return 1; }
-  _cct_apply_env "$tok"
+  _cct_apply_env "$tok" "$a"
   _cct_gjc_guard
   echo "✓ 현재 셸을 활성 라벨 '$a' 로 갱신 — 이후 이 셸에서 새로 실행하는 claude 부터 적용"
 }
@@ -1896,7 +1897,7 @@ _cct_rm() {
   if [ "$_cct_wallet_active_changed" -eq 1 ] ||
     { [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] &&
       [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$removed_token" ]; }; then
-    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
+    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CCT_LABEL CLAUDE_CODE_DISABLE_ADVISOR_TOOL \
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH \
       DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
   fi
@@ -2007,7 +2008,7 @@ _cct_launch_label() {
     if [ "${CCT_DISABLE_WEB_FEATURES:-1}" = "0" ]; then
       (
         unset CLAUDE_CODE_DISABLE_ADVISOR_TOOL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND
-        CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" "${command_args[@]}" "$@"
+        CCT_LABEL="$label" CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" "${command_args[@]}" "$@"
       )
     else
       # env-prefix 로는 unset 이 안 되므로 opt-out 분기와 같은 서브셸 idiom 으로 재구성:
@@ -2016,7 +2017,7 @@ _cct_launch_label() {
       (
         unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
         export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_BUG_COMMAND=1 DISABLE_FEEDBACK_COMMAND=1 CLAUDE_CODE_DISABLE_BACKGROUND_PLUGIN_REFRESH=1
-        CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" "${command_args[@]}" "$@"
+        CCT_LABEL="$label" CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" "${command_args[@]}" "$@"
       )
     fi
   else
@@ -2024,7 +2025,7 @@ _cct_launch_label() {
       echo "❌ 활성 프로필 저장 실패: $(_cct_active_file)" >&2
       return 1
     }
-    _cct_apply_env "$tok"
+    _cct_apply_env "$tok" "$label"
     _cct_gjc_guard
     "${command_args[@]}" "$@"
   fi
@@ -2071,7 +2072,7 @@ if [ "${CCT_STICKY:-1}" != "0" ]; then
   _cct_boot_label="$(_cct_active_label)"
   if [ -n "$_cct_boot_label" ]; then
     _cct_boot_tok="$(_cct_envtok "$(_cct_key "$_cct_boot_label")")"
-    [ -n "$_cct_boot_tok" ] && _cct_apply_env "$_cct_boot_tok"
+    [ -n "$_cct_boot_tok" ] && _cct_apply_env "$_cct_boot_tok" "$_cct_boot_label"
     unset _cct_boot_tok
   fi
   unset _cct_boot_label
