@@ -308,8 +308,6 @@ PRICING: dict[str, dict[str, float]] = {
 }
 
 
-ACTIVE_PROBE_SEC = 300       # 세션이 도는 계정의 자동 조회 간격(초)
-ACTIVE_WINDOW_SEC = 600      # 마지막 메시지가 이 안이면 "세션 진행 중"
 PLAN_USD_MAX = 10000          # 계정 월 구독료 입력 상한(USD)
 
 
@@ -547,17 +545,6 @@ class DashDB:
                 "SELECT at, session, kind, resets_at FROM limit_events"
                 " WHERE session IN (%s) AND at >= ? ORDER BY at" % marks,
                 (*sessions, since)).fetchall()
-
-    def session_last_at(self, sessions: list[str]) -> dict[str, int]:
-        """세션별 마지막 메시지 시각."""
-        if not sessions:
-            return {}
-        marks = ",".join("?" * len(sessions))
-        with self._lock:
-            rows = self.conn.execute(
-                "SELECT session, MAX(at) FROM tokens_entries WHERE session IN (%s)"
-                " GROUP BY session" % marks, tuple(sessions)).fetchall()
-        return {sid: int(at) for sid, at in rows if at is not None}
 
     def session_entries(self, sessions: list[str], since: int) -> list[tuple]:
         """세션들의 메시지 행 (at, session, project, model, input, output, cache_5m,
@@ -1274,7 +1261,7 @@ class State:
             "accounts": {},
             "settings": {"auto_min": auto_min, "alert_warn": ALERT_WARN_DEFAULT,
                          "alert_crit": ALERT_CRIT_DEFAULT, "notify": NOTIFY_DEFAULT,
-                         "plan_usd": {}, "active_probe": True},
+                         "plan_usd": {}},
             "alerts": {"active": {}, "events": []},
             "budget": {"day": today_str(), "usage_probes": 0, "fallback_probes": 0,
                        "check_probes": 0},
@@ -1306,8 +1293,6 @@ class State:
                 notify = raw["settings"].get("notify")
                 if notify in NOTIFY_LEVELS:
                     self.data["settings"]["notify"] = notify
-                if isinstance(raw["settings"].get("active_probe"), bool):
-                    self.data["settings"]["active_probe"] = raw["settings"]["active_probe"]
                 plans = raw["settings"].get("plan_usd")
                 if isinstance(plans, dict):
                     self.data["settings"]["plan_usd"] = {
@@ -1353,11 +1338,11 @@ class State:
         with self._lock:
             return dict(self.data["accounts"].get(label) or {})
 
-    def set_usage(self, label: str, usage: dict) -> None:
+    def set_usage(self, label: str, usage: dict, at: int | None = None) -> None:
         with self._lock:
             acc = self.data["accounts"].setdefault(label, {})
             acc["usage"] = usage
-            acc["usage_at"] = now_i()
+            acc["usage_at"] = at or now_i()
 
     def set_check(self, label: str, result: str) -> None:
         with self._lock:
@@ -1539,6 +1524,7 @@ class App:
         self._snap: tuple | None = None
         self._snap_at = 0.0
         self._last_probe: dict[str, float] = {}
+        self._passive_seen: tuple[int, int] | None = None   # statusline 캐시 (mtime_ns, size)
         self._pool = ThreadPoolExecutor(max_workers=PROBE_WORKERS, thread_name_prefix="probe")
         self._stop = threading.Event()
         self._auto_tick = auto_tick
@@ -1570,9 +1556,9 @@ class App:
         # wait 가 먼저 오므로 기동 직후에는 어떤 프로브도 실행되지 않는다.
         while not self._stop.wait(self._auto_tick):
             try:
-                self._active_tick()
+                self._passive_tick()
             except Exception as exc:                      # 스케줄러는 죽지 않는다
-                log.warning("활성 조회 실패: %s", type(exc).__name__)
+                log.warning("statusline 반영 실패: %s", type(exc).__name__)
             nxt = self.next_auto_at
             if not nxt or time.time() < nxt:
                 continue
@@ -1585,35 +1571,56 @@ class App:
             finally:
                 self.next_auto_at = self._compute_next(now_i())
 
-    def _active_tick(self) -> None:
-        """세션이 도는 계정만 ACTIVE_PROBE_SEC 간격으로 조회한다(전체 자동 갱신과 별개).
+    def _passive_tick(self) -> None:
+        """statusline 캐시(Claude Code 가 응답마다 쓰는 파일)의 사용률을 그 세션 계정에 반영한다.
 
-        기동 직후 금지 규칙은 그대로 - 기동 뒤 ACTIVE_PROBE_SEC 동안은 쏘지 않는다.
+        실호출이 없어 사용량을 소비하지 않는다. 세션ID -> 라벨은 세션 훅 기록으로 푼다.
+        statusline 엔 5h·7d 만 있으므로 7d_oi 등 다른 창은 마지막 프로브 값을 유지한다.
         """
-        now = now_i()
-        if not self.sessions_file or not self.state.settings_view().get("active_probe", True):
+        if not self.sessions_file:
             return
-        if now - self.started_at < ACTIVE_PROBE_SEC:
+        try:
+            st = self.live_file.stat()
+        except OSError:
             return
-        scanner = self.scanner
-        if scanner is not None and (scanner.scanned_at is None
-                                    or now - scanner.scanned_at >= ACTIVE_PROBE_SEC):
-            scanner.kick(force=True)      # 활동 감지가 10분 재스캔 주기에 묶이지 않게
-        marks = load_sessions(self.sessions_file)
-        labels = set()
-        for sid, at in self.db.session_last_at(list(marks)).items():
-            if now - at <= ACTIVE_WINDOW_SEC:
-                label = label_at(marks[sid], at)
-                if label:
-                    labels.add(label)
-        due = sorted(l for l in labels
-                     if time.time() - self._last_probe.get(l, 0.0) >= ACTIVE_PROBE_SEC)
-        if due:
-            # 훅 기록엔 삭제·이름변경 전 라벨이 남는다 - 지갑에 토큰이 있는 라벨만 쏜다
-            wallet = {e["label"] for e in self.snapshot()[2] if e["has_token"]}
-            due = [l for l in due if l in wallet]
-        if due:
-            self._run_refresh(due)
+        stamp = (st.st_mtime_ns, st.st_size)
+        if stamp == self._passive_seen:
+            return
+        self._passive_seen = stamp
+        try:
+            raw = json.loads(self.live_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        sid, limits = raw.get("session_id"), raw.get("rate_limits")
+        if not isinstance(sid, str) or not isinstance(limits, dict):
+            return
+        marks = load_sessions(self.sessions_file).get(sid)
+        label = label_at(marks, int(st.st_mtime)) if marks else None
+        if not label or label not in {e["label"] for e in self.snapshot()[2] if e["has_token"]}:
+            return
+        at = int(st.st_mtime)
+        acc = self.state.account(label)
+        if isinstance(acc.get("usage_at"), int) and acc["usage_at"] > at:
+            return                            # 캐시보다 새 프로브가 이미 있다
+        prev = acc.get("usage")
+        usage = dict(prev) if isinstance(prev, dict) else {}
+        windows = dict(usage.get("windows") or {})
+        for key, src in (("5h", "five_hour"), ("7d", "seven_day")):
+            w = limits.get(src)
+            pct, reset = (w.get("used_percentage"), w.get("resets_at")) if isinstance(w, dict) else (None, None)
+            if (isinstance(pct, (int, float)) and not isinstance(pct, bool)
+                    and isinstance(reset, int) and 0 <= pct <= 100):
+                windows[key] = {"utilization": pct / 100, "reset": reset,
+                                "status": "rejected" if pct >= 100 else "allowed"}
+        if not any(k in windows for k in ("5h", "7d")):
+            return
+        usage.update({"label": label, "state": "ok", "windows": windows, "source": "statusline"})
+        self.state.set_usage(label, usage, at=at)
+        self.db.record_usage(label, usage, at=at)
+        self._update_alerts(label, usage)
+        self.state.save()
 
     # -- 읽기 스냅샷(status/doctor/ls, 5초 캐시)
     def snapshot(self, force: bool = False) -> tuple[dict, dict, list]:
@@ -1973,11 +1980,6 @@ class App:
                                  "임계는 1 <= 주의 < 위험 <= 99 여야 합니다")
             self.state.set_setting("alert_warn", warn)
             self.state.set_setting("alert_crit", crit)
-            touched = True
-        if "active_probe" in body:
-            if not isinstance(body.get("active_probe"), bool):
-                return self._err(400, "bad_request", "active_probe 는 true/false 여야 합니다")
-            self.state.set_setting("active_probe", body["active_probe"])
             touched = True
         if "plan_usd" in body:
             plan = body.get("plan_usd")

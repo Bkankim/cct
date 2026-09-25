@@ -18,9 +18,9 @@
   rate-limit events; existing DBs are rescanned once.
 - Dashboard: per-account monthly subscription price (`plan_usd` setting, entered on the
   detail page) shows this month's API-equivalent cost as a multiple of the plan.
-- Dashboard: accounts with a running session (last message within 10 minutes) are
-  probed every 5 minutes, independent of the global auto-refresh; never within 5 minutes
-  of server start. Toggle `active_probe` in the settings menu.
+- Dashboard: accounts with a running session get their 5h/7d utilization from the
+  Claude Code statusline cache (session id -> label via the session hook), dated by the
+  cache file's mtime and never overwriting a newer probe. No probe calls, no quota use.
 - `cct doctor` accepts other `NAME=value` env lines in the wallet and counts them as
   `other key(s)` instead of failing.
 

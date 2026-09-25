@@ -99,7 +99,7 @@ uv run --script dashboard/server.py --port 8790          # 실지갑
 uv run --script dashboard/server.py --fake --port 8799   # 픽스처 모드(실프로브 0회)
 ```
 
-계정 카드를 누르면 그 계정의 상세(5h 구간별 사용률, 한도 도달 시각, 세션·요청별 토큰과 API 환산 비용, 모델·프로젝트별 비중, 외부 사용 추정)가 열린다. 계정 구분은 설치기가 `~/.claude/settings.json`의 SessionStart에 등록하는 `~/.claude/cct-session-hook.sh`가 담당한다. `cct`로 띄운 세션마다 `{시각, 세션ID, 라벨}` 한 줄을 `~/.claude/cct-sessions.jsonl`(mode `600`)에 남기고, 토큰과 대화 내용은 적지 않는다. 등록을 원하지 않으면 `CCT_NO_SESSION_HOOK=1 bash install.sh`. 상세 화면에 계정의 월 구독료를 넣으면 이번 달 API 환산 비용이 구독료의 몇 배인지 보여 준다. 세션이 돌고 있는 계정은 전체 자동 갱신과 별개로 5분마다 조회하며(설정 메뉴에서 끌 수 있음), 조회는 사용량을 조금 소비한다. 이 맥에서 `cct`로 실행한 세션만 계정별로 나뉘고, 웹·앱·다른 PC 사용은 사용률로만 보인다.
+계정 카드를 누르면 그 계정의 상세(5h 구간별 사용률, 한도 도달 시각, 세션·요청별 토큰과 API 환산 비용, 모델·프로젝트별 비중, 외부 사용 추정)가 열린다. 계정 구분은 설치기가 `~/.claude/settings.json`의 SessionStart에 등록하는 `~/.claude/cct-session-hook.sh`가 담당한다. `cct`로 띄운 세션마다 `{시각, 세션ID, 라벨}` 한 줄을 `~/.claude/cct-sessions.jsonl`(mode `600`)에 남기고, 토큰과 대화 내용은 적지 않는다. 등록을 원하지 않으면 `CCT_NO_SESSION_HOOK=1 bash install.sh`. 상세 화면에 계정의 월 구독료를 넣으면 이번 달 API 환산 비용이 구독료의 몇 배인지 보여 준다. 세션이 돌고 있는 계정의 사용률은 Claude Code가 응답마다 갱신하는 statusline 캐시(`~/.claude/orca-usage-cache.json`)에서 읽어 자동 반영하므로 조회 호출이 없다. 이 맥에서 `cct`로 실행한 세션만 계정별로 나뉘고, 웹·앱·다른 PC 사용은 사용률로만 보인다.
 
 기본은 `127.0.0.1` 바인드와 읽기 우선이고, 토큰 값은 화면·응답·로그 어디에도 나오지 않는다. 사용률 조회는 실제 API 호출이라 사용량을 조금 소비한다. 화면 구성, 프로브 비용, 상시 실행, GPT·Grok 연동과 고지는 [dashboard/README.md](dashboard/README.md)에 있다.
 
