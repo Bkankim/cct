@@ -934,12 +934,17 @@ function detChart(){
   DET.windows.forEach(function(w){
     if(w.hit_at && w.hit_at*1000 >= t0) s += '<circle cx="'+X(w.hit_at*1000)+'" cy="'+Y(1)+'" r="4" fill="var(--bad)"><title>한도 도달 '+mdhm(w.hit_at*1000)+'</title></circle>';
   });
-  var step = DET_RANGE <= 24 ? 3*H : D;
-  for(var t = Math.ceil(t0/step)*step; t < now; t += step){
-    var d = new Date(t), lbl = DET_RANGE <= 24 ? pad(d.getHours())+':00' : (d.getMonth()+1)+'/'+d.getDate();
-    if(DET_RANGE > 24){ d.setHours(0,0,0,0); t = d.getTime(); if(t < t0) continue; }
-    s += '<text x="'+X(t)+'" y="'+(Hh-7)+'" fill="var(--fg-dim)" font-size="10" text-anchor="middle">'+lbl+'</text>';
+  var ticks = [];
+  if(DET_RANGE <= 24){
+    for(var t = Math.ceil(t0/(3*H))*(3*H); t < now; t += 3*H) ticks.push([t, pad(new Date(t).getHours())+':00']);
+  } else {
+    // 날짜 단위로 넘긴다 - 고정 24h 를 더하면 DST 해제일(25h)에 같은 자정으로 되돌아가 끝나지 않는다
+    var d = new Date(t0); d.setHours(0,0,0,0); if(d.getTime() < t0) d.setDate(d.getDate()+1);
+    for(; d.getTime() < now; d.setDate(d.getDate()+1)) ticks.push([d.getTime(), (d.getMonth()+1)+'/'+d.getDate()]);
   }
+  ticks.forEach(function(k){
+    s += '<text x="'+X(k[0])+'" y="'+(Hh-7)+'" fill="var(--fg-dim)" font-size="10" text-anchor="middle">'+k[1]+'</text>';
+  });
   if(!hist.some(function(h){ return h.at >= t0; }))
     s += '<text class="dt-empty" x="'+(L+iw/2)+'" y="'+(T+18)+'" text-anchor="middle">이 기간에 사용률 조회 기록이 없습니다 - 카드의 갱신이나 자동 갱신으로 쌓입니다</text>';
   s += '<rect class="dt-hit" x="'+L+'" y="'+T+'" width="'+iw+'" height="'+ih+'" fill="transparent"/>';

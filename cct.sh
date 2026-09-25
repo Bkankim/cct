@@ -309,7 +309,8 @@ _cct_check_one() {  # $1 = 라벨
   # </dev/null 필수: 전체 점검 루프에서 claude 가 while 루프의 stdin(다음 라벨)을 삼키는 것 방지
   # ANTHROPIC_OAUTH_TOKEN 도 검사 라벨로 덮는다 - sticky 셸의 활성 계정 미러 상속 차단.
   # 현재 claude 는 이 변수를 인증에 쓰지 않지만(실측), 프로브 env 자기일관성을 위한 방어.
-  if CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" _cct_run_limited 30 "$cb" -p "ok" --model "$CCT_PROBE_MODEL" </dev/null >/dev/null 2>&1; then
+  # CCT_LABEL 도 검사 라벨로 - 세션 훅이 프로브 세션을 sticky 셸의 다른 계정에 귀속하지 않게.
+  if CCT_LABEL="$1" CLAUDE_CODE_OAUTH_TOKEN="$tok" ANTHROPIC_OAUTH_TOKEN="$tok" _cct_run_limited 30 "$cb" -p "ok" --model "$CCT_PROBE_MODEL" </dev/null >/dev/null 2>&1; then
     echo "  $1 : ✅ 유효"; return 0
   else
     echo "  $1 : ❌ 무효/실패 (재발급 필요할 수 있음)"; return 1
@@ -1692,7 +1693,14 @@ _cct_doctor_structure() {
         next
       }
       # cct 외 API 키 등 일반 env 항목은 같은 지갑에 둘 수 있다.
-      if (line ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+      if (line ~ /^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=/) {
+        name = line
+        sub(/^[[:space:]]*(export[[:space:]]+)?/, "", name)
+        # cct 키 오타(cct_token_x=, CCT_TOKN_X=)는 로더가 못 읽으니 일반 키로 봐주지 않는다
+        if (toupper(name) ~ /^CCT_/) {
+          fail("malformed key")
+          next
+        }
         other_count++
         next
       }
