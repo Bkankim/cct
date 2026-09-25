@@ -199,8 +199,8 @@ def test_api_state_schema(client, app):
     assert code == 200
     assert sorted(body) == ["accounts", "alerts", "budget", "doctor", "live", "log",
                             "providers", "refreshing", "server", "settings", "status"]
-    assert sorted(body["settings"]) == ["active_probe", "alert_crit", "alert_warn", "auto_min",
-                                       "notify", "plan_usd"]
+    assert sorted(body["settings"]) == ["alert_crit", "alert_warn", "auto_min", "notify",
+                                       "plan_usd"]
     assert body["settings"]["alert_warn"] == 65
     assert body["settings"]["alert_crit"] == 90
     assert body["settings"]["notify"] == "crit"
@@ -1288,45 +1288,69 @@ def test_plan_price_setting_and_month_multiple(client, app, tmp_path, pricing):
     assert again.settings_view()["plan_usd"] == {"gv": 200}
 
 
-def _active_setup(app, tmp_path, last_msg_ago: int):
+def _passive_setup(app, tmp_path, sid="s", label="gv", five=42, seven=7):
     now = srv.now_i()
-    app.db.add_entries([("a", "2026-09-25", "claude-known-1", 1, 1, 0, 0, 0, 0.0,
-                         now - last_msg_ago, "s", "a")])
-    write_sessions(tmp_path / "s.jsonl", [{"ts": now - 3600, "session_id": "s",
-                                           "label": "gv", "source": "startup"}])
+    write_sessions(tmp_path / "s.jsonl", [{"ts": now - 3 * 3600, "session_id": "s",
+                                           "label": label, "source": "startup"}])
     app.sessions_file = tmp_path / "s.jsonl"
+    live = tmp_path / "statusline.json"
+    live.write_text(json.dumps({
+        "session_id": sid, "model": {"display_name": "Opus"},
+        "rate_limits": {"five_hour": {"used_percentage": five, "resets_at": now + 3600},
+                        "seven_day": {"used_percentage": seven, "resets_at": now + 86400}}}),
+        encoding="utf-8")
+    app.live_file = live
     app.next_auto_at = None                                  # 전체 자동 갱신은 꺼 둔다
-    app.started_at = now - srv.ACTIVE_PROBE_SEC - 5          # 기동 직후 금지 구간은 지남
+    return now
 
 
-def wait_usage(app, timeout=1.5):
+def wait_account_usage(app, label, timeout=1.5):
     deadline = time.time() + timeout
-    while time.time() < deadline and not calls_of(app, "usage"):
+    while time.time() < deadline:
+        usage = app.state.account(label).get("usage")
+        if usage and usage.get("source") == "statusline":
+            return usage
         time.sleep(0.05)
-    time.sleep(0.2)                                          # 추가 발화가 없는지 잠깐 더 본다
-    return [c["args"][-1] for c in calls_of(app, "usage")]
+    return None
 
 
-def test_active_session_account_probed_every_5min(app, tmp_path):
-    _active_setup(app, tmp_path, last_msg_ago=60)
+def test_statusline_updates_session_account_without_probe(app, tmp_path):
+    app.state.set_usage("gv", {"state": "ok", "windows": {
+        "5h": {"utilization": 0.1, "reset": 1, "status": "allowed"},
+        "7d_oi": {"utilization": 0.33, "reset": 2, "status": "allowed"}}})
+    now = _passive_setup(app, tmp_path)
     app.start_scheduler()
-    assert wait_usage(app) == ["gv"]                         # 진행 중인 계정만, 한 번만(5분 간격)
+    usage = wait_account_usage(app, "gv")
+    assert usage is not None
+    w = usage["windows"]
+    assert w["5h"]["utilization"] == pytest.approx(0.42) and w["5h"]["reset"] == now + 3600
+    assert w["7d"]["utilization"] == pytest.approx(0.07)
+    assert w["7d_oi"]["utilization"] == pytest.approx(0.33)      # statusline 에 없는 창은 유지
+    assert calls_of(app, "usage") == []                           # 실호출 0회
+    assert [h[0] for h in app.db.label_history("gv", now - 60)] != []
+    n = app.db.history_count()
+    time.sleep(0.2)
+    assert app.db.history_count() == n                            # 파일이 그대로면 다시 안 적는다
 
 
-def test_idle_account_not_probed(app, tmp_path):
-    _active_setup(app, tmp_path, last_msg_ago=srv.ACTIVE_WINDOW_SEC + 60)
+def test_statusline_unknown_session_or_label_ignored(app, tmp_path):
+    _passive_setup(app, tmp_path, sid="other")                    # 훅 기록에 없는 세션
     app.start_scheduler()
-    assert wait_usage(app, timeout=0.6) == []
+    assert wait_account_usage(app, "gv", timeout=0.5) is None
+    _passive_setup(app, tmp_path, label="ghost")                  # 지갑에 없는 라벨
+    assert wait_account_usage(app, "ghost", timeout=0.5) is None
+    assert calls_of(app, "usage") == []
 
 
-def test_active_probe_waits_after_start_and_can_be_disabled(client, app, tmp_path):
-    _active_setup(app, tmp_path, last_msg_ago=60)
-    app.started_at = srv.now_i()                             # 방금 기동 - 5분간 금지
+def test_statusline_older_than_last_probe_is_ignored_and_dated_by_mtime(app, tmp_path):
+    now = _passive_setup(app, tmp_path, five=99)
+    os.utime(app.live_file, (now - 7200, now - 7200))          # 2시간 전에 쓰인 캐시
+    app.state.set_usage("gv", {"state": "ok", "windows": {
+        "5h": {"utilization": 0.2, "reset": now + 100, "status": "allowed"}}})   # 방금 프로브
     app.start_scheduler()
-    assert wait_usage(app, timeout=0.6) == []
-    code, out = client.post("/api/settings", {"active_probe": False})
-    assert code == 200 and out["settings"]["active_probe"] is False
-    app.started_at = srv.now_i() - srv.ACTIVE_PROBE_SEC - 5
-    assert wait_usage(app, timeout=0.6) == []                # 꺼져 있으면 안 쏜다
-    code, _ = client.post("/api/settings", {"active_probe": "yes"})
-    assert code == 400
+    assert wait_account_usage(app, "gv", timeout=0.5) is None   # 더 새 프로브를 덮지 않는다
+    app.state.set_usage("gv", {"state": "ok", "windows": {}}, at=now - 9000)     # 프로브가 더 옛날
+    app._passive_seen = None
+    usage = wait_account_usage(app, "gv")
+    assert usage is not None and app.state.account("gv")["usage_at"] == now - 7200
+    assert [h[0] for h in app.db.label_history("gv", now - 8000)] == [now - 7200]

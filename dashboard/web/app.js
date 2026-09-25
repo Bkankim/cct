@@ -538,8 +538,6 @@ function syncSettings(){
   });
   var sn = el('sel-notify');
   if(sn && document.activeElement!==sn) sn.value = st.notify || 'crit';
-  var ap = el('chk-active-probe');
-  if(ap) ap.checked = st.active_probe !== false;
 }
 function pushThresholds(){
   if(!S) return;
@@ -788,13 +786,6 @@ el('btn-tok-scan').addEventListener('click', function(){
   this.disabled = true;
   api('/api/tokens/scan', {}).then(function(){ toast('재스캔 시작 - 디스크 읽기만, 프로브 0회'); return loadTok(); })
     .catch(function(e){ toast('재스캔 실패: '+e.message, true); renderTokMeta(); });
-});
-el('chk-active-probe').addEventListener('change', function(){
-  var v = this.checked;
-  api('/api/settings', {active_probe: v}).then(function(r){
-    if(r.state){ RAW = r.state; S = toView(r.state); }
-    toast(v ? '세션 중 5분 조회 켬 - 조회가 사용량을 조금 소비' : '세션 중 5분 조회 끔');
-  }).catch(function(e){ toast('설정 실패: '+e.message, true); syncSettings(); });
 });
 el('in-warn').addEventListener('blur', pushThresholds);
 el('in-crit').addEventListener('blur', pushThresholds);
