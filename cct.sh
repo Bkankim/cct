@@ -1690,6 +1690,11 @@ _cct_doctor_structure() {
         else fail("duplicate key " key)
         next
       }
+      # cct 외 API 키 등 일반 env 항목은 같은 지갑에 둘 수 있다.
+      if (line ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+        other_count++
+        next
+      }
       fail("malformed entry")
     }
     END {
@@ -1702,7 +1707,7 @@ _cct_doctor_structure() {
         }
       }
       if (!failed)
-        printf "PASS structure: %d account(s), annotations valid\n", account_count
+        printf "PASS structure: %d account(s), %d other key(s), annotations valid\n", account_count, other_count
       exit failed ? 1 : 0
     }
   ' "$CCT_ENV_FILE"

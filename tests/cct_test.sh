@@ -2123,7 +2123,7 @@ SHIM
   write_account_fixture "$CCT_ENV_FILE" \
     'CCT_TOKEN_ALPHA=redaction-secret' \
     '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
-    'BROKEN=sk-ant-oat01-never-print-this'
+    'BROKEN sk-ant-oat01-never-print-this'
   before="$(wallet_sha "$CCT_ENV_FILE")"
   cap="$(cct doctor 2>&1)"; rc=$?
   chk "malformed wallet line -> 1" "1" "$rc"
@@ -2131,6 +2131,15 @@ SHIM
   chk_not_has "malformed wallet hides token" "redaction-secret" "$cap"
   chk_not_has "malformed wallet hides raw line secret" "sk-ant-oat01-never-print-this" "$cap"
   chk "malformed wallet preserves bytes" "$before" "$(wallet_sha "$CCT_ENV_FILE")"
+
+  write_account_fixture "$CCT_ENV_FILE" \
+    'CCT_TOKEN_ALPHA=other-key-alpha' \
+    '#cctlabel:CCT_TOKEN_ALPHA=alpha' \
+    'DEEPSEEK_API_KEY=other-key-secret'
+  cap="$(cct doctor 2>&1)"; rc=$?
+  chk "other env key in wallet -> 0" "0" "$rc"
+  chk_has "other env key counted" "PASS structure: 1 account(s), 1 other key(s)" "$cap"
+  chk_not_has "other env key hides value" "other-key-secret" "$cap"
 
   write_account_fixture "$CCT_ENV_FILE" \
     'CCT_TOKEN_ALPHA=symlink-target-secret' \
