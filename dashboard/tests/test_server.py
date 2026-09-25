@@ -199,7 +199,8 @@ def test_api_state_schema(client, app):
     assert code == 200
     assert sorted(body) == ["accounts", "alerts", "budget", "doctor", "live", "log",
                             "providers", "refreshing", "server", "settings", "status"]
-    assert sorted(body["settings"]) == ["alert_crit", "alert_warn", "auto_min", "notify"]
+    assert sorted(body["settings"]) == ["active_probe", "alert_crit", "alert_warn", "auto_min",
+                                       "notify", "plan_usd"]
     assert body["settings"]["alert_warn"] == 65
     assert body["settings"]["alert_crit"] == 90
     assert body["settings"]["notify"] == "crit"
@@ -1246,3 +1247,86 @@ def test_account_windows_before_hook_are_unknown(client, app, tmp_path):
     assert wins[r_cur]["external_pct"] == pytest.approx(10.0)
     assert body["tracking_since"] == now - 16200
     assert body["insights"]["external_share"] is None
+
+
+def month_start_epoch() -> int:
+    t = time.localtime()
+    return int(time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+
+
+def test_plan_price_setting_and_month_multiple(client, app, tmp_path, pricing):
+    ms = month_start_epoch()
+    root = tmp_path / "projects"
+    make_jsonl(root / "p" / "s.jsonl", [
+        entry(iso(ms - 3600), "claude-known-1", i=0, o=100000, mid="a", rid="1",
+              sessionId="s", cwd="/w/a"),                         # 지난달 - 제외
+        entry(iso(ms + 60), "claude-known-1", i=0, o=200000, mid="b", rid="2",
+              sessionId="s", cwd="/w/a"),                         # 이번 달 $3.00
+    ])
+    write_sessions(tmp_path / "s.jsonl", [{"ts": ms - 7200, "session_id": "s",
+                                           "label": "gv", "source": "startup"}])
+    app.sessions_file = tmp_path / "s.jsonl"
+    scan_into(app, root)
+
+    _, body = client.get("/api/account?label=gv&days=60")
+    assert body["plan"] == {"usd": None, "month_cost": pytest.approx(3.0), "multiple": None}
+
+    code, out = client.post("/api/settings", {"plan_usd": {"label": "gv", "usd": 20}})
+    assert code == 200 and out["settings"]["plan_usd"] == {"gv": 20}
+    _, body = client.get("/api/account?label=gv&days=60")
+    assert body["plan"]["usd"] == 20 and body["plan"]["multiple"] == pytest.approx(0.15)
+
+    for bad in ({"label": "BAD!", "usd": 20}, {"label": "gv", "usd": -1},
+                {"label": "gv", "usd": "20"}, {"label": "gv", "usd": 100000}):
+        code, _ = client.post("/api/settings", {"plan_usd": bad})
+        assert code == 400
+    code, out = client.post("/api/settings", {"plan_usd": {"label": "gv", "usd": None}})
+    assert code == 200 and out["settings"]["plan_usd"] == {}                 # 해제
+
+    client.post("/api/settings", {"plan_usd": {"label": "gv", "usd": 200}})
+    again = srv.State(app.state.path)                                         # 재기동 후 유지
+    assert again.settings_view()["plan_usd"] == {"gv": 200}
+
+
+def _active_setup(app, tmp_path, last_msg_ago: int):
+    now = srv.now_i()
+    app.db.add_entries([("a", "2026-09-25", "claude-known-1", 1, 1, 0, 0, 0, 0.0,
+                         now - last_msg_ago, "s", "a")])
+    write_sessions(tmp_path / "s.jsonl", [{"ts": now - 3600, "session_id": "s",
+                                           "label": "gv", "source": "startup"}])
+    app.sessions_file = tmp_path / "s.jsonl"
+    app.next_auto_at = None                                  # 전체 자동 갱신은 꺼 둔다
+    app.started_at = now - srv.ACTIVE_PROBE_SEC - 5          # 기동 직후 금지 구간은 지남
+
+
+def wait_usage(app, timeout=1.5):
+    deadline = time.time() + timeout
+    while time.time() < deadline and not calls_of(app, "usage"):
+        time.sleep(0.05)
+    time.sleep(0.2)                                          # 추가 발화가 없는지 잠깐 더 본다
+    return [c["args"][-1] for c in calls_of(app, "usage")]
+
+
+def test_active_session_account_probed_every_5min(app, tmp_path):
+    _active_setup(app, tmp_path, last_msg_ago=60)
+    app.start_scheduler()
+    assert wait_usage(app) == ["gv"]                         # 진행 중인 계정만, 한 번만(5분 간격)
+
+
+def test_idle_account_not_probed(app, tmp_path):
+    _active_setup(app, tmp_path, last_msg_ago=srv.ACTIVE_WINDOW_SEC + 60)
+    app.start_scheduler()
+    assert wait_usage(app, timeout=0.6) == []
+
+
+def test_active_probe_waits_after_start_and_can_be_disabled(client, app, tmp_path):
+    _active_setup(app, tmp_path, last_msg_ago=60)
+    app.started_at = srv.now_i()                             # 방금 기동 - 5분간 금지
+    app.start_scheduler()
+    assert wait_usage(app, timeout=0.6) == []
+    code, out = client.post("/api/settings", {"active_probe": False})
+    assert code == 200 and out["settings"]["active_probe"] is False
+    app.started_at = srv.now_i() - srv.ACTIVE_PROBE_SEC - 5
+    assert wait_usage(app, timeout=0.6) == []                # 꺼져 있으면 안 쏜다
+    code, _ = client.post("/api/settings", {"active_probe": "yes"})
+    assert code == 400

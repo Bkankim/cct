@@ -538,6 +538,8 @@ function syncSettings(){
   });
   var sn = el('sel-notify');
   if(sn && document.activeElement!==sn) sn.value = st.notify || 'crit';
+  var ap = el('chk-active-probe');
+  if(ap) ap.checked = st.active_probe !== false;
 }
 function pushThresholds(){
   if(!S) return;
@@ -787,6 +789,13 @@ el('btn-tok-scan').addEventListener('click', function(){
   api('/api/tokens/scan', {}).then(function(){ toast('재스캔 시작 - 디스크 읽기만, 프로브 0회'); return loadTok(); })
     .catch(function(e){ toast('재스캔 실패: '+e.message, true); renderTokMeta(); });
 });
+el('chk-active-probe').addEventListener('change', function(){
+  var v = this.checked;
+  api('/api/settings', {active_probe: v}).then(function(r){
+    if(r.state){ RAW = r.state; S = toView(r.state); }
+    toast(v ? '세션 중 5분 조회 켬 - 조회가 사용량을 조금 소비' : '세션 중 5분 조회 끔');
+  }).catch(function(e){ toast('설정 실패: '+e.message, true); syncSettings(); });
+});
 el('in-warn').addEventListener('blur', pushThresholds);
 el('in-crit').addEventListener('blur', pushThresholds);
 el('sel-notify').addEventListener('change', function(){
@@ -861,10 +870,19 @@ function detTiles(a){
     : tile('5h 도달 예상', '-', '', '이 속도면 초기화 전에 닿지 않거나 조회 기록 부족');
   return '<div class="dt-tiles">'
     + utilTile('5시간', a && a.w5, false) + utilTile('7일', a && a.w7, true) + utilTile('7일 Opus', a && a.wf, true)
-    + etaTile
-    + tile('최근 '+DET_DAYS+'일 API 환산', sum ? usd(sum.cost) : '-', '',
-           sum ? '요청 '+sum.requests+' · 세션 '+sum.sessions+' · 이 맥에서 쓴 몫' : '불러오는 중')
+    + etaTile + planTile(sum)
     + '</div>';
+}
+// 이번 달 API 환산과 월 구독료 대비 배수. 구독료는 계정별 설정(서버 state)에 둔다.
+function planTile(sum){
+  var p = DET && DET.plan;
+  if(!p) return tile('이번 달 API 환산', '-', '', '불러오는 중');
+  var mult = p.multiple===null || p.multiple===undefined ? '' : ' · 구독료 대비 <b>'+p.multiple.toFixed(p.multiple<1 ? 2 : 1)+'배</b>';
+  var form = '<form class="dt-plan"><span>월 구독료 $</span><input type="number" min="1" max="10000" step="1" value="'+(p.usd||'')+'" placeholder="미입력" aria-label="월 구독료(USD)">'
+    + '<button class="btn sm" type="submit">저장</button></form>';
+  return tile('이번 달 API 환산', usd(p.month_cost), '',
+    (p.usd ? '구독료 $'+p.usd+mult : '구독료를 입력하면 배수를 보여줍니다')
+    + (sum ? '<br>최근 '+DET_DAYS+'일 요청 '+sum.requests+' · 세션 '+sum.sessions : '') + form);
 }
 // 사용률 선 + 모델별 토큰 막대 + 외부 사용 음영 + 한도 도달 점
 function detChart(){
@@ -1006,6 +1024,7 @@ function detInsights(){
 }
 function renderDetail(){
   var host = el('detail'); if(!DET_LABEL) return;
+  if(host.contains(document.activeElement) && document.activeElement.tagName==='INPUT') return;   // 입력 중엔 다시 그리지 않는다
   var a = acc(DET_LABEL);
   if(!DET){ host.innerHTML = detHead(a)+'<p class="hint dt-loading">불러오는 중…</p>'; return; }
   var seg = '<span class="dt-seg"><button class="btn sm'+(DET_RANGE===24?' on':'')+'" data-range="24">24시간</button>'
@@ -1037,6 +1056,17 @@ el('detail').addEventListener('click', function(e){
       .catch(function(err){ DET_REQ[sid] = []; toast('요청 목록 실패: '+err.message, true); renderDetail(); });
   }
   renderDetail();
+});
+el('detail').addEventListener('submit', function(e){
+  if(!e.target.classList.contains('dt-plan')) return;
+  e.preventDefault();
+  var raw = e.target.querySelector('input').value.trim(), v = raw==='' ? null : +raw;
+  if(v!==null && !(v>0 && v<=10000)){ toast('구독료는 1-10000 사이 숫자', true); return; }
+  var l = DET_LABEL;
+  document.activeElement.blur();
+  api('/api/settings', {plan_usd: {label: l, usd: v}})
+    .then(function(){ toast(l+' 월 구독료 '+(v===null ? '해제' : '$'+v)); return loadDetail(); })
+    .catch(function(err){ toast('구독료 저장 실패: '+err.message, true); });
 });
 // 카드 빈 곳(버튼·메뉴·폼 제외)을 누르면 상세로
 el('cards').addEventListener('click', function(e){

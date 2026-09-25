@@ -3,7 +3,7 @@
 #   stdin : Claude Code SessionStart 훅 입력 JSON (session_id, source, ...)
 #   env   : CCT_LABEL (cct 가 claude 를 띄울 때 넘긴 라벨)
 #   출력  : ${CCT_SESSIONS_FILE:-~/.claude/cct-sessions.jsonl} 에
-#           {"ts":<epoch>,"session_id":"...","label":"...","source":"..."} 추가 (mode 600)
+#           {"ts":<epoch>,"session_id":"...","label":"...","source":"...","cwd":"..."} 추가 (mode 600)
 # 대시보드가 이 기록으로 대화 기록(jsonl)의 메시지를 계정별로 나눈다.
 # stdout 은 claude 컨텍스트로 들어가므로 아무것도 출력하지 않고, 실패해도 세션을 막지 않게 항상 0.
 
@@ -16,15 +16,18 @@ field() {  # 평탄한 "key":"value" 문자열 필드만 추출 (jq 의존 없�
 
 sid="$(field session_id)"
 src="$(field source)"
+cwd="$(field cwd)"
 
 # 값은 JSON 에 그대로 박으므로 형식을 좁혀서만 받는다. 하나라도 어긋나면 기록하지 않는다.
 case "${CCT_LABEL:-}" in ""|*[!a-z0-9_]*) exit 0 ;; esac
 case "$sid" in ""|*[!A-Za-z0-9-]*) exit 0 ;; esac
 case "$src" in *[!a-z_]*) exit 0 ;; esac
+# cwd 는 경로라 문자 집합을 좁힐 수 없다. JSON 이스케이프(\)가 섞였으면 되살릴 수 없으니 비운다.
+case "$cwd" in *\\*) cwd="" ;; esac
 
 {
   umask 077
-  printf '{"ts":%s,"session_id":"%s","label":"%s","source":"%s"}\n' \
-    "$(date +%s)" "$sid" "$CCT_LABEL" "$src" >> "$file"
+  printf '{"ts":%s,"session_id":"%s","label":"%s","source":"%s","cwd":"%s"}\n' \
+    "$(date +%s)" "$sid" "$CCT_LABEL" "$src" "$cwd" >> "$file"
 } 2>/dev/null
 exit 0
