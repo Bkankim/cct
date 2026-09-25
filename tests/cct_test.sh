@@ -166,6 +166,14 @@ test_session_hook(){
   chk "한 줄" "1" "$(wc -l < "$CCT_SESSIONS_FILE" 2>/dev/null | tr -d ' ')"
   chk "파일 mode 600" "600" "$(wallet_mode "$CCT_SESSIONS_FILE" 2>/dev/null)"
   chk_not_has "토큰 미기록" "sk-hook-secret" "$(cat "$CCT_SESSIONS_FILE" 2>/dev/null)"
+  chk_has "cwd 기록" '"cwd":"/work/proj"' "$(cat "$CCT_SESSIONS_FILE" 2>/dev/null)"
+
+  echo "-- JSON 에 안전하게 못 싣는 cwd(이스케이프 포함)는 비우고 기록은 남긴다"
+  rm -f "$CCT_SESSIONS_FILE"
+  printf '%s' '{"session_id":"0b1c2d3e-aaaa-4bbb-8ccc-1234567890ab","cwd":"/w/a\"b","source":"resume"}' \
+    | CCT_LABEL=good bash "$hook"
+  chk_has "이스케이프 cwd 는 빈 값" '"cwd":""' "$(cat "$CCT_SESSIONS_FILE" 2>/dev/null)"
+  chk "기록은 유효한 JSON" "ok" "$(python3 -c 'import json,sys; [json.loads(l) for l in open(sys.argv[1])]; print("ok")' "$CCT_SESSIONS_FILE" 2>&1)"
 
   echo "-- 라벨 없음·형식 오류·쓰기 실패는 기록 없이 rc=0"
   rm -f "$CCT_SESSIONS_FILE"

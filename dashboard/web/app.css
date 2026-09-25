@@ -453,3 +453,6 @@ tr.dt-sub td{background:var(--bg);padding:0}
 .tip{position:fixed;pointer-events:none;background:var(--surface-3);border:1px solid var(--line-strong);border-radius:6px;padding:7px 9px;font-size:11.5px;color:var(--fg);white-space:nowrap;z-index:20}
 .app[hidden],.tip[hidden]{display:none}
 .dt-empty{fill:var(--fg-dim);font-size:11.5px}
+.dt-plan{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11.5px;color:var(--fg-dim)}
+.dt-plan input{width:76px;height:26px}
+.dt-tile .d b{color:var(--fg);font-weight:600}

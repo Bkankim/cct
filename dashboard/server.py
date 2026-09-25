@@ -308,6 +308,22 @@ PRICING: dict[str, dict[str, float]] = {
 }
 
 
+ACTIVE_PROBE_SEC = 300       # 세션이 도는 계정의 자동 조회 간격(초)
+ACTIVE_WINDOW_SEC = 600      # 마지막 메시지가 이 안이면 "세션 진행 중"
+PLAN_USD_MAX = 10000          # 계정 월 구독료 입력 상한(USD)
+
+
+def valid_plan_usd(v: Any) -> bool:
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and 0 < v <= PLAN_USD_MAX)
+
+
+def month_start(now: int) -> int:
+    """로컬 타임존 기준 이번 달 1일 0시(epoch)."""
+    t = time.localtime(now)
+    return int(time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+
+
 TOKENS_SCHEMA = 2
 ACCOUNT_BUCKET_SEC = 900       # 계정 상세 타임라인 막대 1칸(15분)
 WINDOW_5H_SEC = 5 * 3600
@@ -531,6 +547,17 @@ class DashDB:
                 "SELECT at, session, kind, resets_at FROM limit_events"
                 " WHERE session IN (%s) AND at >= ? ORDER BY at" % marks,
                 (*sessions, since)).fetchall()
+
+    def session_last_at(self, sessions: list[str]) -> dict[str, int]:
+        """세션별 마지막 메시지 시각."""
+        if not sessions:
+            return {}
+        marks = ",".join("?" * len(sessions))
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT session, MAX(at) FROM tokens_entries WHERE session IN (%s)"
+                " GROUP BY session" % marks, tuple(sessions)).fetchall()
+        return {sid: int(at) for sid, at in rows if at is not None}
 
     def session_entries(self, sessions: list[str], since: int) -> list[tuple]:
         """세션들의 메시지 행 (at, session, project, model, input, output, cache_5m,
@@ -1246,7 +1273,8 @@ class State:
         self.data: dict[str, Any] = {
             "accounts": {},
             "settings": {"auto_min": auto_min, "alert_warn": ALERT_WARN_DEFAULT,
-                         "alert_crit": ALERT_CRIT_DEFAULT, "notify": NOTIFY_DEFAULT},
+                         "alert_crit": ALERT_CRIT_DEFAULT, "notify": NOTIFY_DEFAULT,
+                         "plan_usd": {}, "active_probe": True},
             "alerts": {"active": {}, "events": []},
             "budget": {"day": today_str(), "usage_probes": 0, "fallback_probes": 0,
                        "check_probes": 0},
@@ -1278,6 +1306,13 @@ class State:
                 notify = raw["settings"].get("notify")
                 if notify in NOTIFY_LEVELS:
                     self.data["settings"]["notify"] = notify
+                if isinstance(raw["settings"].get("active_probe"), bool):
+                    self.data["settings"]["active_probe"] = raw["settings"]["active_probe"]
+                plans = raw["settings"].get("plan_usd")
+                if isinstance(plans, dict):
+                    self.data["settings"]["plan_usd"] = {
+                        k: v for k, v in plans.items()
+                        if isinstance(k, str) and LABEL_RE.match(k) and valid_plan_usd(v)}
             if isinstance(raw.get("alerts"), dict):
                 active = raw["alerts"].get("active")
                 events = raw["alerts"].get("events")
@@ -1355,7 +1390,21 @@ class State:
 
     def settings_view(self) -> dict:
         with self._lock:
-            return dict(self.data["settings"])
+            view = dict(self.data["settings"])
+            view["plan_usd"] = dict(view.get("plan_usd") or {})
+            return view
+
+    def plan_usd(self, label: str) -> float | None:
+        with self._lock:
+            return (self.data["settings"].get("plan_usd") or {}).get(label)
+
+    def set_plan_usd(self, label: str, usd: float | None) -> None:
+        with self._lock:
+            plans = self.data["settings"].setdefault("plan_usd", {})
+            if usd is None:
+                plans.pop(label, None)
+            else:
+                plans[label] = usd
 
     def set_setting(self, key: str, value: Any) -> None:
         with self._lock:
@@ -1516,6 +1565,10 @@ class App:
     def _sched_loop(self) -> None:
         # wait 가 먼저 오므로 기동 직후에는 어떤 프로브도 실행되지 않는다.
         while not self._stop.wait(self._auto_tick):
+            try:
+                self._active_tick()
+            except Exception as exc:                      # 스케줄러는 죽지 않는다
+                log.warning("활성 조회 실패: %s", type(exc).__name__)
             nxt = self.next_auto_at
             if not nxt or time.time() < nxt:
                 continue
@@ -1526,6 +1579,32 @@ class App:
                 log.warning("자동갱신 실패: %s", type(exc).__name__)
             finally:
                 self.next_auto_at = self._compute_next(now_i())
+
+    def _active_tick(self) -> None:
+        """세션이 도는 계정만 ACTIVE_PROBE_SEC 간격으로 조회한다(전체 자동 갱신과 별개).
+
+        기동 직후 금지 규칙은 그대로 - 기동 뒤 ACTIVE_PROBE_SEC 동안은 쏘지 않는다.
+        """
+        now = now_i()
+        if not self.sessions_file or not self.state.settings_view().get("active_probe", True):
+            return
+        if now - self.started_at < ACTIVE_PROBE_SEC:
+            return
+        scanner = self.scanner
+        if scanner is not None and (scanner.scanned_at is None
+                                    or now - scanner.scanned_at >= ACTIVE_PROBE_SEC):
+            scanner.kick(force=True)      # 활동 감지가 10분 재스캔 주기에 묶이지 않게
+        marks = load_sessions(self.sessions_file)
+        labels = set()
+        for sid, at in self.db.session_last_at(list(marks)).items():
+            if now - at <= ACTIVE_WINDOW_SEC:
+                label = label_at(marks[sid], at)
+                if label:
+                    labels.add(label)
+        due = sorted(l for l in labels
+                     if time.time() - self._last_probe.get(l, 0.0) >= ACTIVE_PROBE_SEC)
+        if due:
+            self._run_refresh(due)
 
     # -- 읽기 스냅샷(status/doctor/ls, 5초 캐시)
     def snapshot(self, force: bool = False) -> tuple[dict, dict, list]:
@@ -1886,6 +1965,23 @@ class App:
             self.state.set_setting("alert_warn", warn)
             self.state.set_setting("alert_crit", crit)
             touched = True
+        if "active_probe" in body:
+            if not isinstance(body.get("active_probe"), bool):
+                return self._err(400, "bad_request", "active_probe 는 true/false 여야 합니다")
+            self.state.set_setting("active_probe", body["active_probe"])
+            touched = True
+        if "plan_usd" in body:
+            plan = body.get("plan_usd")
+            if not isinstance(plan, dict):
+                return self._err(400, "bad_request", "plan_usd 는 {label, usd} 객체여야 합니다")
+            label, usd = plan.get("label"), plan.get("usd")
+            if not isinstance(label, str) or not LABEL_RE.match(label):
+                return self._err(400, "bad_label", "label 형식이 올바르지 않습니다")
+            if usd is not None and not valid_plan_usd(usd):
+                return self._err(400, "bad_request", "usd 는 0 초과 %d 이하 숫자여야 합니다"
+                                 % PLAN_USD_MAX)
+            self.state.set_plan_usd(label, usd)
+            touched = True
         if "notify" in body:
             notify = body.get("notify")
             if notify not in NOTIFY_LEVELS:
@@ -1953,13 +2049,19 @@ class App:
 
     def _account_payload(self, label: str, days: int) -> dict:
         since = now_i() - days * 86400
+        month0 = month_start(now_i())
         marks = load_sessions(self.sessions_file) if self.sessions_file else {}
         mine = [sid for sid, m in marks.items() if any(lbl == label for _, lbl in m)]
         tracking_since = min((m[0][0] for m in marks.values() if m), default=None)
         msgs = []
+        month_cost = 0.0
         for (at, sid, project, model, i, o, c5m, c1h, cr,
-             cost) in self.db.session_entries(mine, since):
+             cost) in self.db.session_entries(mine, min(since, month0)):
             if label_at(marks[sid], at) != label:
+                continue
+            if at >= month0:
+                month_cost += float(cost or 0.0)
+            if at < since:
                 continue
             msgs.append({"at": at, "session": sid, "project": project or "-",
                          "model": model, "input": int(i or 0), "output": int(o or 0),
@@ -1997,6 +2099,7 @@ class App:
             limits.append({"at": at, "session": sid, "kind": kind, "resets_at": resets})
             if sid in sessions:
                 sessions[sid]["limit_errors"] += 1
+        plan = self.state.plan_usd(label)
         history = self.db.label_history(label, since)
         windows = account_windows(history, msgs, limits, now_i())
         buckets: dict[int, dict] = {}
@@ -2016,6 +2119,8 @@ class App:
                 "insights": account_insights(windows, summary, history, now_i(),
                                              tracking_since),
                 "tracking_since": tracking_since,
+                "plan": {"usd": plan, "month_cost": month_cost,
+                         "multiple": month_cost / plan if plan else None},
                 "bucket_sec": ACCOUNT_BUCKET_SEC,
                 "buckets": sorted(buckets.values(), key=lambda b: b["at"])}
 

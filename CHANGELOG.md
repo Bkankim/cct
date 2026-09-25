@@ -7,8 +7,8 @@
   `cct refresh` with no active label clear it.
 - New `cct-session-hook.sh` (installed to `~/.claude/`, mode `700`): a Claude Code
   SessionStart hook that appends `{ts, session_id, label, source}` to
-  `~/.claude/cct-sessions.jsonl` (mode `600`). No token or conversation content, no
-  stdout, always exit 0.
+  `~/.claude/cct-sessions.jsonl` (mode `600`), plus `cwd` when it can be written back
+  as JSON safely. No token or conversation content, no stdout, always exit 0.
 - `install.sh` registers the hook in `~/.claude/settings.json` idempotently, keeping
   existing settings. Opt out with `CCT_NO_SESSION_HOOK=1`.
 - Dashboard: clicking an account card opens `#/account/<label>` backed by
@@ -16,6 +16,11 @@
   external-usage estimate, 15-minute token timeline, sessions and requests, model and
   project breakdowns. The token DB schema gains `at`/`session`/`project` and
   rate-limit events; existing DBs are rescanned once.
+- Dashboard: per-account monthly subscription price (`plan_usd` setting, entered on the
+  detail page) shows this month's API-equivalent cost as a multiple of the plan.
+- Dashboard: accounts with a running session (last message within 10 minutes) are
+  probed every 5 minutes, independent of the global auto-refresh; never within 5 minutes
+  of server start. Toggle `active_probe` in the settings menu.
 - `cct doctor` accepts other `NAME=value` env lines in the wallet and counts them as
   `other key(s)` instead of failing.
 
