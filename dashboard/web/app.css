@@ -403,3 +403,53 @@ footer{display:flex;flex-wrap:wrap;gap:5px 16px;justify-content:space-between;pa
 /* 칩 배경은 표면과 같은 톤으로 한 단계만 */
 .tchip{background:transparent;border-color:var(--line)}
 @media (max-width:640px){.m{grid-template-columns:22px 42px minmax(0,1fr) 126px;column-gap:7px}}
+
+/* ── 계정 상세 (#/account/<라벨>) ─────────────────────────────────── */
+:root{ --m-opus:#8FCBD5; --m-sonnet:#B39DDB; --m-haiku:#6F8F9B; --ext:rgba(217,164,65,.16); }
+.acct[data-l]{cursor:pointer}
+.acct[data-l]:hover{border-color:var(--line-strong)}
+a.lbl{color:inherit;text-decoration:none}
+a.lbl:hover{color:var(--accent)}
+.dt-top{gap:10px 14px}
+.dt-back{color:var(--fg-2);text-decoration:none;font-size:12.5px;white-space:nowrap}
+.dt-back:hover{color:var(--fg)}
+.dt-acct{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;flex:1;min-width:0}
+.dt-acct h1{font:600 18px/1 var(--mono);letter-spacing:-.02em}
+.dt-meta{color:var(--fg-dim);font-size:12px}
+.dt-meta b{color:var(--fg-2);font-weight:500;font-family:var(--mono);font-size:11.5px}
+.dt-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;background:var(--line-soft);border:1px solid var(--line);border-radius:var(--r-panel);overflow:hidden}
+.dt-tile{background:var(--surface);padding:11px 13px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.dt-tile .k,.dt-card .k{color:var(--fg-dim);font-size:11.5px}
+.dt-tile .v{font:italic 500 25px/1 var(--snd);letter-spacing:-.01em}
+.dt-tile .v small{font:400 12px var(--font);color:var(--fg-dim);margin-left:3px}
+.dt-tile .d,.dt-card .d{color:var(--fg-2);font-size:11.5px}
+.dt-bar{height:5px;background:var(--surface-3);border-radius:var(--r-bar);overflow:hidden}
+.dt-bar.big{height:8px}
+.dt-bar i{display:block;height:100%;border-radius:var(--r-bar)}
+.dt-seg{display:inline-flex;gap:4px}
+.dt-seg .btn.on{color:var(--accent);border-color:var(--accent-line);background:var(--accent-tint)}
+.dt-legend{padding:8px 13px 0;margin-top:0}
+.dt-legend span{display:inline-flex;align-items:center;gap:5px}
+.sw{width:10px;height:10px;border-radius:2px;display:inline-block}
+.dt-scroll{overflow-x:auto}
+.dt-table td.tm{max-width:none}
+.dt-table td.ok{color:var(--ok)} .dt-table td.warn{color:var(--warn)} .dt-table td.bad{color:var(--bad)} .dt-table .dim{color:var(--fg-dim)}
+.dt-ses tr.dt-row{cursor:pointer}
+.dt-ses tr.dt-row:hover td{background:var(--surface-2)}
+.caret{display:inline-block;width:11px;color:var(--fg-dim);transition:transform var(--t)}
+tr.open .caret{transform:rotate(90deg)}
+tr.dt-sub td{background:var(--bg);padding:0}
+.dt-req{padding:4px 10px 10px 26px;max-height:340px;overflow:auto}
+.dt-mix{display:inline-flex;width:110px;height:6px;border-radius:3px;overflow:hidden;background:var(--surface-3);vertical-align:middle}
+.dt-mix i{display:block;height:100%}
+.dt-cols{display:grid;gap:14px}
+.dt-hb{display:grid;grid-template-columns:minmax(80px,140px) 1fr 64px;gap:10px;align-items:center;padding:4px 0;font-size:12.5px}
+.dt-hb .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-2)}
+.dt-hb .val{text-align:right;font-family:var(--mono);font-size:12px}
+.dt-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.dt-card{background:var(--surface-2);border:1px solid var(--line-soft);border-radius:8px;padding:11px 13px;display:flex;flex-direction:column;gap:5px}
+.dt-card .v{font:italic 500 21px/1.1 var(--snd)}
+.dt-foot,.dt-loading{padding:0 2px}
+.tip{position:fixed;pointer-events:none;background:var(--surface-3);border:1px solid var(--line-strong);border-radius:6px;padding:7px 9px;font-size:11.5px;color:var(--fg);white-space:nowrap;z-index:20}
+.app[hidden],.tip[hidden]{display:none}
+.dt-empty{fill:var(--fg-dim);font-size:11.5px}

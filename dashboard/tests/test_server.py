@@ -864,7 +864,7 @@ def test_tokens_endpoints(client, app, tmp_path):
     assert code == 400
     root = tmp_path / "projects"
     make_jsonl(root / "s.jsonl",
-               [entry("2026-09-16T01:00:00Z", "claude-known-1", mid="a", rid="r1")])
+               [entry(iso(srv.now_i() - 3600), "claude-known-1", mid="a", rid="r1")])
     app.scanner = srv.TokenScanner(app.db, root)
     code, out = client.post("/api/tokens/scan")
     assert code == 200 and out["ok"] is True
@@ -988,3 +988,261 @@ def test_providers_code_route(client, app):
     assert code == 200
     provs = {x["id"]: x for x in body["state"]["providers"]}
     assert provs["xai"]["connected"] is True
+
+
+# ---------------------------------------------------------------- 계정별 상세 (0.4.0)
+# 세션 훅(cct-session-hook.sh)이 남긴 {ts, session_id, label} 로 메시지를 계정에 귀속한다.
+
+def iso(epoch: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(epoch))
+
+
+def write_sessions(path: Path, rows: list) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def scan_into(app, root: Path) -> None:
+    app.scanner = srv.TokenScanner(app.db, root)
+    app.scanner.kick(force=True)
+    wait_scan(app.scanner)
+
+
+def test_account_attributes_sessions_by_hook_log(client, app, tmp_path, pricing):
+    t0 = srv.now_i() - 3600
+    root = tmp_path / "projects"
+    make_jsonl(root / "p1" / "s-gv.jsonl", [
+        entry(iso(t0 + 60), "claude-known-1", i=100, o=50, mid="a", rid="1",
+              sessionId="s-gv", cwd="/work/Hindsight-Crew"),
+        entry(iso(t0 + 120), "claude-known-1", i=200, o=10, mid="b", rid="2",
+              sessionId="s-gv", cwd="/work/Hindsight-Crew"),
+    ])
+    make_jsonl(root / "p2" / "s-pro5.jsonl", [
+        entry(iso(t0 + 60), "claude-known-1", i=999, o=999, mid="c", rid="3",
+              sessionId="s-pro5", cwd="/work/cct"),
+    ])
+    make_jsonl(root / "p3" / "s-none.jsonl", [
+        entry(iso(t0 + 60), "claude-known-1", i=777, o=777, mid="d", rid="4",
+              sessionId="s-none", cwd="/work/vault"),
+    ])
+    sessions = tmp_path / "cct-sessions.jsonl"
+    write_sessions(sessions, [
+        {"ts": t0, "session_id": "s-gv", "label": "gv", "source": "startup"},
+        {"ts": t0, "session_id": "s-pro5", "label": "pro5", "source": "startup"},
+    ])
+    app.sessions_file = sessions
+    scan_into(app, root)
+
+    code, body = client.get("/api/account?label=gv&days=7")
+    assert code == 200 and body["ok"] is True and body["label"] == "gv"
+    assert [s["session"] for s in body["sessions"]] == ["s-gv"]
+    s = body["sessions"][0]
+    assert s["project"] == "Hindsight-Crew"
+    assert s["requests"] == 2 and s["input"] == 300 and s["output"] == 60
+    assert s["start"] == t0 + 60 and s["end"] == t0 + 120
+    assert s["cost"] == pytest.approx((300 * 3.0 + 60 * 15.0) / 1e6)
+
+
+def test_account_resume_switch_and_breakdowns(client, app, tmp_path, pricing):
+    t0 = srv.now_i() - 3600
+    root = tmp_path / "projects"
+    make_jsonl(root / "p" / "s-x.jsonl", [
+        entry(iso(t0 + 60), "claude-known-1", i=100, o=0, mid="a", rid="1",
+              sessionId="s-x", cwd="/w/alpha"),
+        entry(iso(t0 + 200), "claude-known-2", i=100, o=0, mid="b", rid="2",
+              sessionId="s-x", cwd="/w/alpha"),             # pro5 로 이어 연 뒤
+    ])
+    make_jsonl(root / "p" / "s-y.jsonl", [
+        entry(iso(t0 + 300), "claude-known-2", i=10, o=0, cr=1000, mid="c", rid="3",
+              sessionId="s-y", cwd="/w/beta"),
+    ])
+    sessions = tmp_path / "cct-sessions.jsonl"
+    write_sessions(sessions, [
+        {"ts": t0, "session_id": "s-x", "label": "gv", "source": "startup"},
+        {"ts": t0 + 100, "session_id": "s-x", "label": "pro5", "source": "resume"},
+        {"ts": t0 + 250, "session_id": "s-y", "label": "gv", "source": "startup"},
+    ])
+    app.sessions_file = sessions
+    scan_into(app, root)
+
+    _, gv = client.get("/api/account?label=gv")
+    _, pro5 = client.get("/api/account?label=pro5")
+    assert gv["summary"]["requests"] == 2 and pro5["summary"]["requests"] == 1
+    assert gv["summary"]["sessions"] == 2
+    assert gv["summary"]["input"] == 110 and gv["summary"]["cache_read"] == 1000
+    assert {m["model"]: m["requests"] for m in gv["models"]} == {
+        "claude-known-1": 1, "claude-known-2": 1}
+    assert {p["project"]: p["requests"] for p in gv["projects"]} == {"alpha": 1, "beta": 1}
+    assert gv["models"][0]["cost"] >= gv["models"][-1]["cost"]      # 비용 큰 순
+
+
+def test_account_bad_label_and_no_log(client, app):
+    code, body = client.get("/api/account?label=BAD!")
+    assert code == 400 and body["error"]["code"] == "bad_label"
+    code, body = client.get("/api/account?label=gv")                # 훅 기록 없음
+    assert code == 200 and body["sessions"] == [] and body["summary"]["requests"] == 0
+
+
+def test_account_rate_limit_events(client, app, tmp_path, pricing):
+    t0 = srv.now_i() - 3600
+    root = tmp_path / "projects"
+    make_jsonl(root / "p" / "s-gv.jsonl", [
+        entry(iso(t0 + 60), "claude-known-1", mid="a", rid="1", sessionId="s-gv", cwd="/w/a"),
+        entry(iso(t0 + 90), "<synthetic>", i=0, o=0, mid="e1", rid="e1", sessionId="s-gv",
+              cwd="/w/a", isApiErrorMessage=True, error="rate_limit",
+              quotaLimits={"status": "rejected", "rateLimitType": "five_hour",
+                           "resetsAt": t0 + 7200}),
+    ])
+    make_jsonl(root / "p" / "s-other.jsonl", [
+        entry(iso(t0 + 95), "<synthetic>", i=0, o=0, mid="e2", rid="e2", sessionId="s-o",
+              cwd="/w/a", isApiErrorMessage=True, error="rate_limit",
+              quotaLimits={"status": "rejected", "rateLimitType": "seven_day",
+                           "resetsAt": t0 + 9000}),
+    ])
+    sessions = tmp_path / "cct-sessions.jsonl"
+    write_sessions(sessions, [
+        {"ts": t0, "session_id": "s-gv", "label": "gv", "source": "startup"},
+        {"ts": t0, "session_id": "s-o", "label": "pro5", "source": "startup"},
+    ])
+    app.sessions_file = sessions
+    scan_into(app, root)
+    _, gv = client.get("/api/account?label=gv")
+    assert gv["limits"] == [{"at": t0 + 90, "session": "s-gv", "kind": "five_hour",
+                             "resets_at": t0 + 7200}]
+    assert gv["sessions"][0]["limit_errors"] == 1
+    assert gv["summary"]["requests"] == 1                     # 에러 줄은 토큰 집계 제외
+
+
+def usage5(u5, r5, u7=0.5):
+    return {"state": "ok", "windows": {"5h": {"utilization": u5, "reset": r5},
+                                       "7d": {"utilization": u7, "reset": r5 + 86400}}}
+
+
+def test_account_windows_and_timeline(client, app, tmp_path, pricing):
+    now = srv.now_i()
+    r_old, r_cur = now - 3600, now + 4 * 3600 + 1800     # 지난 창(끝남) / 진행 중 창(겹치지 않음)
+    root = tmp_path / "projects"
+    make_jsonl(root / "p" / "s.jsonl", [
+        entry(iso(r_old - 4000), "claude-known-1", i=1000, o=0, mid="a", rid="1",
+              sessionId="s", cwd="/w/a"),
+        entry(iso(r_old - 3000), "claude-known-1", i=1000, o=0, mid="b", rid="2",
+              sessionId="s", cwd="/w/a"),
+        entry(iso(now - 600), "claude-known-2", i=500, o=0, mid="c", rid="3",
+              sessionId="s", cwd="/w/a"),
+        entry(iso(r_old - 2000), "<synthetic>", i=0, o=0, mid="e", rid="e",
+              sessionId="s", cwd="/w/a", isApiErrorMessage=True, error="rate_limit",
+              quotaLimits={"rateLimitType": "five_hour", "resetsAt": r_old}),
+    ])
+    sessions = tmp_path / "cct-sessions.jsonl"
+    write_sessions(sessions, [{"ts": r_old - 18000, "session_id": "s", "label": "gv",
+                               "source": "startup"}])
+    app.sessions_file = sessions
+    for at, u in ((r_old - 5000, 0.10), (r_old - 2500, 1.0), (r_old - 100, 1.0)):
+        app.db.record_usage("gv", usage5(u, r_old), at=at)
+    app.db.record_usage("gv", usage5(0.30, r_cur), at=now - 60)
+    app.db.record_usage("pro5", usage5(0.99, r_cur), at=now - 60)   # 다른 계정은 무관
+    scan_into(app, root)
+
+    _, body = client.get("/api/account?label=gv&days=2")
+    wins = body["windows"]
+    assert [w["reset"] for w in wins] == [r_cur, r_old]              # 최근 창 먼저
+    cur, old = wins
+    assert cur["start"] == r_cur - 18000 and cur["active"] is True
+    assert cur["peak"] == pytest.approx(0.30) and cur["hit_at"] is None
+    assert cur["requests"] == 1 and cur["input"] == 500
+    assert old["peak"] == pytest.approx(1.0) and old["active"] is False
+    assert old["hit_at"] == r_old - 2500           # 100% 기록과 첫 한도 에러 중 이른 쪽
+    assert old["requests"] == 2 and old["sessions"] == 1
+
+    assert [h[0] for h in body["history"]] == [r_old - 5000, r_old - 2500, r_old - 100,
+                                               now - 60]
+    buckets = body["buckets"]
+    assert body["bucket_sec"] == 900
+    assert sum(b["tokens"] for b in buckets) == 2500
+    assert all(b["at"] % 900 == 0 for b in buckets)
+    assert {m for b in buckets for m in b["models"]} == {"claude-known-1", "claude-known-2"}
+
+
+def test_account_insights(client, app, tmp_path, pricing):
+    now = srv.now_i()
+    ra, rb, rc = now - 30 * 3600, now - 20 * 3600, now + 3 * 3600    # 끝난 창 2개 + 진행 중
+    root = tmp_path / "projects"
+    make_jsonl(root / "p" / "s.jsonl", [
+        entry(iso(ra - 100), "claude-known-1", i=1000, o=0, mid="a", rid="1",
+              sessionId="s", cwd="/w/a"),                         # A: 1000토큰 -> 10%
+        entry(iso(rb - 100), "claude-known-1", i=1000, o=0, mid="b", rid="2",
+              sessionId="s", cwd="/w/a"),                         # B: 1000토큰 -> 30%
+        entry(iso(now - 700), "claude-known-1", i=0, o=0, cr=3000, mid="c", rid="3",
+              sessionId="s", cwd="/w/a"),
+    ])
+    write_sessions(tmp_path / "s.jsonl", [{"ts": now - 40 * 3600, "session_id": "s",
+                                           "label": "gv", "source": "startup"}])
+    app.sessions_file = tmp_path / "s.jsonl"
+    app.db.record_usage("gv", usage5(0.10, ra), at=ra - 50)
+    app.db.record_usage("gv", usage5(0.30, rb), at=rb - 50)
+    app.db.record_usage("gv", usage5(0.20, rc), at=now - 1200)
+    app.db.record_usage("gv", usage5(0.40, rc), at=now - 600)
+    scan_into(app, root)
+
+    _, body = client.get("/api/account?label=gv&days=3")
+    ins = body["insights"]
+    assert ins["tokens_per_pct"] == pytest.approx(100.0)           # 가장 순수한 창(A) 기준
+    wins = {w["reset"]: w for w in body["windows"]}
+    assert wins[ra]["external_pct"] == pytest.approx(0.0)
+    assert wins[rb]["external_pct"] == pytest.approx(20.0)         # 30% 중 10% 만 로컬
+    assert ins["external_share"] == pytest.approx(20.0 / 40.0)     # 끝난 창 기준
+    assert ins["eta_5h"] == now - 600 + 1800                       # 최근 두 점 기울기
+    assert ins["cache_read_share"] == pytest.approx(3000 / 5000)
+    assert ins["limit_hits"] == 0
+
+
+def test_account_session_requests(client, app, tmp_path, pricing):
+    t0 = srv.now_i() - 3600
+    root = tmp_path / "projects"
+    make_jsonl(root / "p" / "s.jsonl", [
+        entry(iso(t0 + 60), "claude-known-1", i=10, o=5, cc=(100, 0), cr=1000, mid="a",
+              rid="1", sessionId="s", cwd="/w/a"),
+        entry(iso(t0 + 120), "claude-known-1", i=20, o=6, mid="b", rid="2",
+              sessionId="s", cwd="/w/a"),
+    ])
+    write_sessions(tmp_path / "s.jsonl", [
+        {"ts": t0, "session_id": "s", "label": "gv", "source": "startup"},
+        {"ts": t0 + 90, "session_id": "s", "label": "pro5", "source": "resume"}])
+    app.sessions_file = tmp_path / "s.jsonl"
+    scan_into(app, root)
+    code, body = client.get("/api/account?label=gv&session=s")
+    assert code == 200
+    assert body["requests"] == [{"at": t0 + 60, "model": "claude-known-1", "input": 10,
+                                 "output": 5, "cache_create": 100, "cache_read": 1000,
+                                 "cost": pytest.approx((10 * 3 + 5 * 15 + 100 * 3.75
+                                                        + 1000 * 0.3) / 1e6)}]
+    code, body = client.get("/api/account?label=gv&session=bad/../x")
+    assert code == 400
+
+
+def test_account_window_without_local_use_is_all_external(client, app, tmp_path):
+    now = srv.now_i()
+    r = now + 3600
+    write_sessions(tmp_path / "s.jsonl", [{"ts": now - 6 * 3600, "session_id": "other",
+                                           "label": "gv", "source": "startup"}])
+    app.sessions_file = tmp_path / "s.jsonl"                        # 훅은 설치돼 있음
+    app.db.record_usage("pro5", usage5(0.23, r), at=now - 5400)
+    app.db.record_usage("pro5", usage5(1.0, r), at=now - 600)
+    _, body = client.get("/api/account?label=pro5")
+    assert body["insights"]["tokens_per_pct"] is None              # 보정할 로컬 창 없음
+    assert body["windows"][0]["external_pct"] == pytest.approx(100.0)
+
+
+def test_account_windows_before_hook_are_unknown(client, app, tmp_path):
+    now = srv.now_i()
+    r_old, r_cur = now - 20 * 3600, now + 3600
+    write_sessions(tmp_path / "s.jsonl", [{"ts": now - 16200, "session_id": "s",
+                                           "label": "gv", "source": "startup"}])
+    app.sessions_file = tmp_path / "s.jsonl"
+    app.db.record_usage("gv", usage5(0.40, r_old), at=r_old - 100)   # 훅 기록 전 창
+    app.db.record_usage("gv", usage5(0.10, r_cur), at=now - 60)
+    _, body = client.get("/api/account?label=gv")
+    wins = {w["reset"]: w for w in body["windows"]}
+    assert wins[r_old]["external_pct"] is None                       # 귀속 불가 - 추정 안 함
+    assert wins[r_cur]["external_pct"] == pytest.approx(10.0)
+    assert body["tracking_since"] == now - 16200
+    assert body["insights"]["external_share"] is None
