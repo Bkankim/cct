@@ -142,4 +142,4 @@ uv run --with pytest pytest tests -q
 
 ## 문서
 
-설계 배경과 작업 이력은 [PLAN.md](PLAN.md) 에 있다. 초기 목업은 [mockup/](mockup/) 에 남겨 두었다.
+설계 배경과 작업 이력은 [PLAN.md](PLAN.md) 에 있다.
