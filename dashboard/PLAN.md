@@ -19,7 +19,7 @@
 
 - 설치본 `~/.claude/cct.sh` 와 리포 `~/cct/cct.sh` 는 바이트 동일(`diff -q` 확인). 리포: github.com/Bkankim/cct (공개). 1911줄, bash/zsh 겸용, macOS/Linux/WSL2.
 - 지갑 `~/.claude/tokens.env` (mode 600). 형식 `CCT_TOKEN_<대문자라벨>=<setup-token>` 한 줄씩, `#cctlabel:CCT_TOKEN_X=x` 주석으로 원본 라벨 보존. 활성 라벨 파일 `~/.claude/cct-active`. 잠금 디렉터리 `tokens.env.lock/`(owner 파일에 pid epoch), 백업 `tokens.env.bak`.
-- 현재 6계정 등록, 활성 `gv`, 기본 `gv`, sticky enabled, Claude Code 2.1.270, claude 바이너리 `/Users/bkan/.local/bin/claude`.
+- 현재 6계정 등록, 활성 `main`, 기본 `main`, sticky enabled, Claude Code 2.1.270, claude 바이너리 `/Users/bkan/.local/bin/claude`.
 - 라벨 규칙 `[a-z0-9_]+`. 예약어(`_cct_reserved_label`): help ls list add run rm rename status doctor check fp who usage off active refresh. 새 서브커맨드를 넣으면 이 목록·`cct()` 디스패치·`_cct_help`·README(ko/en) 표·CHANGELOG 를 같이 고친다.
 - 출력 형식(파싱 대상):
   - `cct status`: `key: value` 줄. 키 = wallet, mode, accounts, active, default, sticky, claude, claude-version. rc 0, 인자 있으면 2.
@@ -93,13 +93,13 @@ bk-pc 브라우저 ──https(tailnet only)──▶ tailscale serve :8444 ─�
 - rc 규약은 기존과 동일(사용법·라벨 오류 2, 그 외 0). 토큰없음·응답실패는 `state` 로 표현하고 rc 0.
 
 ```json
-{"label":"gv","state":"ok","org":"org_9f2a","now":1789400000,
+{"label":"main","state":"ok","org":"org_9f2a","now":1789400000,
  "probe":{"premium_model":"claude-fable-5","premium_http":200,"denied":null,"fallback":false},
  "windows":{
    "5h":{"utilization":0.06,"reset":1789415400,"status":"allowed"},
    "7d":{"utilization":0.36,"reset":1789657200,"status":"allowed"},
    "7d_oi":{"utilization":0.71,"reset":1789657200,"status":"allowed"}}}
-{"label":"pro4","state":"ok","org":"org_4c1e","now":1789400000,
+{"label":"alt4","state":"ok","org":"org_4c1e","now":1789400000,
  "probe":{"premium_model":"claude-fable-5","premium_http":429,"denied":"429","fallback":true},
  "windows":{"5h":{...},"7d":{...},"7d_oi":null}}
 {"label":"team","state":"no_response","org":null,"now":1789400000,"probe":{...,"premium_http":401,"denied":"401","fallback":true},"windows":null}
@@ -122,7 +122,7 @@ bk-pc 브라우저 ──https(tailnet only)──▶ tailscale serve :8444 ─�
 |---|---|---|---|
 | GET / | `web/index.html` 정적 | - | 캐시 금지 헤더 |
 | GET /api/state | 전체 상태(캐시) | 없음(status/doctor/ls 는 5초 캐시로 오프라인 호출) | 프로브 유발 금지 |
-| POST /api/refresh `{"label":"gv"}` 또는 `{"all":true}` | usage 프로브 | `usage --json <라벨>` 라벨별 병렬(최대 6 워커) | 같은 라벨 60초 내 재요청은 429 `too_soon`. 진행 중이면 409 |
+| POST /api/refresh `{"label":"main"}` 또는 `{"all":true}` | usage 프로브 | `usage --json <라벨>` 라벨별 병렬(최대 6 워커) | 같은 라벨 60초 내 재요청은 429 `too_soon`. 진행 중이면 409 |
 | POST /api/check `{"label"}` | 토큰 점검 | `check <라벨>` rc → valid/invalid/missing | 실호출. 결과·시각 저장 |
 | POST /api/fp `{"label"}` | 지문 (선택) | `fp <라벨>` 파싱 또는 usage 결과에서 파생 | 파생으로 대체 가능 |
 | POST /api/use `{"label"}` | 활성 전환 | `use <라벨>` | 응답에 `hint: "열린 터미널은 cct refresh"` |
@@ -138,16 +138,16 @@ bk-pc 브라우저 ──https(tailnet only)──▶ tailscale serve :8444 ─�
 ```json
 {
  "server":{"version":"0.1.0","started_at":1789.., "bind":"127.0.0.1:8790","fake":false,"cct_path":"~/.claude/cct.sh"},
- "status":{"wallet":"~/.claude/tokens.env","mode":"600","accounts":6,"active":"gv","default":"gv","sticky":"enabled","claude":"/Users/bkan/.local/bin/claude","claude_version":"2.1.270"},
+ "status":{"wallet":"~/.claude/tokens.env","mode":"600","accounts":6,"active":"main","default":"main","sticky":"enabled","claude":"/Users/bkan/.local/bin/claude","claude_version":"2.1.270"},
  "doctor":{"at":1789..,"rc":0,"items":[{"lv":"PASS","msg":"wallet: readable regular file, mode 600"}]},
- "accounts":[{"label":"gv","has_token":true,"active":true,"default":true,
+ "accounts":[{"label":"main","has_token":true,"active":true,"default":true,
    "usage":{ ...4.1 의 객체 그대로... },"usage_at":1789..,
    "check":{"result":"valid","at":1789..} }],
- "live":{"at":1789..,"stale":false,"label_guess":"gv","model":"Opus 5","context_pct":19,"cost_usd":10.76,
+ "live":{"at":1789..,"stale":false,"label_guess":"main","model":"Opus 5","context_pct":19,"cost_usd":10.76,
    "five_hour":{"used_percentage":6,"resets_at":1789415400},"seven_day":{"used_percentage":36,"resets_at":1789657200}},
  "budget":{"day":"2026-09-15","usage_probes":14,"check_probes":1,"est_tokens":449,"auto_min":30,"floor_min":15,"next_auto_at":1789..},
  "refreshing":false,
- "log":[{"at":1789..,"cmd":"cct usage --json gv","rc":0,"ms":4180}]
+ "log":[{"at":1789..,"cmd":"cct usage --json main","rc":0,"ms":4180}]
 }
 ```
 

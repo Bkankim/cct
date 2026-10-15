@@ -278,7 +278,7 @@ WALLET="$DEST/tokens.env"
 if [ ! -e "$WALLET" ] && [ ! -L "$WALLET" ]; then
   (
     umask 077
-    printf '# Claude Code 계정 토큰  (평문! chmod 600 · git 금지)\n# 등록: cct add <라벨>   예: cct add gv / cct add pro1\n' > "$WALLET"
+    printf '# Claude Code 계정 토큰  (평문! chmod 600 · git 금지)\n# 등록: cct add <라벨>   예: cct add main / cct add alt1\n' > "$WALLET"
   )
   chmod 600 "$WALLET"
   echo "✓ tokens.env 템플릿 생성"
@@ -354,7 +354,7 @@ done
 
 echo
 echo "휴대용 Claude 계정 지갑 설치 완료. 새 터미널을 열거나:  source ~/.claude/cct.sh"
-echo "계정 등록:  cct add gv   →   cct add pro1 ...   ('claude setup-token' 으로 발급)"
+echo "계정 등록:  cct add main   →   cct add alt1 ...   ('claude setup-token' 으로 발급)"
 echo "계정 선택:  cct <계정명>   — 등록한 계정을 OAuth 재로그인 없이 수동 전환"
 echo "상태/진단:  cct status  /  cct doctor"
 echo "확인:       cct ls  /  cct check  /  cct fp  /  cct help"

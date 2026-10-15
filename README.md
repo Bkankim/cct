@@ -48,7 +48,7 @@ cct personal                  # personal 계정으로 전환
 
 | 명령 | 동작 |
 |---|---|
-| `cct [claude 인자...]` | 활성(sticky) 라벨로 실행. 활성 라벨이 없으면 `CCT_DEFAULT_LABEL`(기본 `gv`) |
+| `cct [claude 인자...]` | 활성(sticky) 라벨로 실행. 활성 라벨이 없으면 `CCT_DEFAULT_LABEL`(기본 `main`) |
 | `cct <라벨> [claude 인자...]` | 해당 계정으로 실행하고 Claude 인자를 그대로 전달 |
 | `cct run <라벨> [claude 인자...]` | `rm` 같은 예약어 라벨도 충돌 없이 실행 |
 | `cct use <라벨>` | claude를 띄우지 않고 활성 라벨만 전환 |
@@ -78,7 +78,7 @@ cct personal                  # personal 계정으로 전환
 |---|---|---|
 | `CCT_STICKY` | `1` | 선택한 계정을 현재 셸과 활성 파일(mode `600`)에 기억해 이후 `claude`와 새 터미널도 같은 계정을 쓴다. `0`이면 저장하지 않는다 |
 | `CCT_ACTIVE_FILE` | `tokens.env` 옆 `cct-active` | 활성 라벨 파일 경로 |
-| `CCT_DEFAULT_LABEL` | `gv` | 활성 라벨이 없을 때 쓰는 라벨 |
+| `CCT_DEFAULT_LABEL` | `main` | 활성 라벨이 없을 때 쓰는 라벨 |
 | `CCT_SKIP_PERMS` | `1` | claude를 `--dangerously-skip-permissions`로 실행 |
 | `CCT_CLAUDE_FLAGS` | 없음 | claude에 추가로 넘길 플래그 (공백 구분) |
 | `CCT_DISABLE_WEB_FEATURES` | `1` | Advisor·텔레메트리·에러 리포팅 등 비필수 웹 호출 차단. 자동업데이트는 유지 |

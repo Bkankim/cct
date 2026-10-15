@@ -685,7 +685,7 @@ test_extra(){
 
   echo "-- bash set -u smoke: bare cct and cct check do not read unbound positional args"
   sbz="$(mktemp -d)"; mk_shim "$sbz/bin"
-  printf 'CCT_TOKEN_GV=sk-uenv\n' > "$sbz/u.env"
+  printf 'CCT_TOKEN_MAIN=sk-uenv\n' > "$sbz/u.env"
   out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/u.env" bash -uc ". '$REPO/cct.sh'; cct" 2>&1)"; rc=$?
   chk "bash set -u: bare cct -> 0" "0" "$rc"
   chk_has "bash set -u: bare cct injects default-label token" "tok=[sk-uenv]" "$out"
@@ -739,7 +739,7 @@ SHIM
   if command -v zsh >/dev/null 2>&1; then
     echo "-- zsh smoke: cct.sh sources and runs under zsh (exercises zsh-only branches)"
     sbz="$(mktemp -d)"; mk_shim "$sbz/bin"
-    printf 'CCT_TOKEN_GV=sk-z0\n' > "$sbz/t.env"
+    printf 'CCT_TOKEN_MAIN=sk-z0\n' > "$sbz/t.env"
     chk "zsh -n parses cct.sh" "0" "$(zsh -n "$REPO/cct.sh" >/dev/null 2>&1; echo $?)"
     out="$(PATH="$sbz/bin:$PATH" CCT_ENV_FILE="$sbz/t.env" CCT_CLAUDE_FLAGS='--za --zb' zsh -c "set +u; . '$REPO/cct.sh'; cct" 2>&1)"
     chk_has "zsh: skip-perms flag present" "--dangerously-skip-permissions" "$out"
@@ -1862,7 +1862,7 @@ SHIM
   case "$cap" in *fixture-token*) after=exposed ;; *) after=hidden ;; esac
   chk "fixture output contains no token" "hidden" "$after"
   chk "fixture wallet mode 600" "600" "$(wallet_mode "$fixture_target/home/.claude/tokens.env")"
-  chk "fixture contains only gv account" "gv" \
+  chk "fixture contains only main account" "main" \
     "$(awk -F= '/^CCT_TOKEN_/ {sub(/^CCT_TOKEN_/, "", $1); print tolower($1)}' "$fixture_target/home/.claude/tokens.env")"
   chk "fixture fake Claude executable" "yes" "$([ -x "$fixture_target/bin/claude" ] && echo yes || echo no)"
   chk "fixture creates only allowed files" $'bin/claude\nhome/.claude/tokens.env' \
@@ -1877,7 +1877,7 @@ SHIM
   chk "fixture F3 version flow -> 0" "0" "$rc"
   chk_has "fixture detects --version after default launcher flag" \
     "Claude Code fixture 1.2.3" "$cap"
-  chk_not_has "fixture version flow never prints credential" "fixture-token-gv" "$cap"
+  chk_not_has "fixture version flow never prints credential" "fixture-token-main" "$cap"
   cap="$(
     HOME="$fixture_target/home" PATH="$fixture_target/bin:/usr/bin:/bin" \
       CCT_ENV_FILE="$fixture_target/home/.claude/tokens.env" CCT_STICKY=0 \
@@ -1887,7 +1887,7 @@ SHIM
   chk_has "fixture non-version flow keeps argv" \
     "CLAUDE args=[--dangerously-skip-permissions --model sonnet]" "$cap"
   chk_has "fixture non-version flow reports auth presence only" "auth=[set]" "$cap"
-  chk_not_has "fixture non-version flow never prints credential" "fixture-token-gv" "$cap"
+  chk_not_has "fixture non-version flow never prints credential" "fixture-token-main" "$cap"
   bash "$REPO/tests/cct_test.sh" fixture "$fixture_target" >/dev/null 2>&1
   chk "fixture refuses existing target -> 2" "2" "$?"
   chk "fixture creates no active file" "no" "$([ -e "$fixture_target/home/.claude/cct-active" ] && echo yes || echo no)"
@@ -2298,7 +2298,7 @@ test_runtime_regressions(){
   mk_shim "$sb/bin"
 
   echo "-- Bash 3 nounset: empty launcher flags remain a valid argv"
-  printf '%s\n' 'CCT_TOKEN_GV=runtime-gv-secret' > "$sb/tokens.env"
+  printf '%s\n' 'CCT_TOKEN_MAIN=runtime-main-secret' > "$sb/tokens.env"
   chmod 600 "$sb/tokens.env"
   out="$(PATH="$sb/bin:$PATH" CCT_ENV_FILE="$sb/tokens.env" \
     CCT_SKIP_PERMS=0 CCT_STICKY=0 \
@@ -3283,8 +3283,8 @@ make_fixture(){
   ( umask 077
     mkdir -p "$target/home/.claude" "$target/bin" || exit 1
     printf '%s\n' \
-      'CCT_TOKEN_GV=fixture-token-gv' \
-      '#cctlabel:CCT_TOKEN_GV=gv' > "$target/home/.claude/tokens.env" || exit 1
+      'CCT_TOKEN_MAIN=fixture-token-main' \
+      '#cctlabel:CCT_TOKEN_MAIN=main' > "$target/home/.claude/tokens.env" || exit 1
     chmod 600 "$target/home/.claude/tokens.env" || exit 1
     cat > "$target/bin/claude" <<'SHIM'
 #!/usr/bin/env bash

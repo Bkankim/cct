@@ -26,7 +26,7 @@
 #   CCT_SKIP_PERMS=0     → --dangerously-skip-permissions 끄기 (기본 1=켜짐)
 #   CCT_CLAUDE_FLAGS     → claude 에 추가로 넘길 플래그(공백 구분)
 #   CCT_DISABLE_WEB_FEATURES=0 → 라벨 실행에서도 Advisor/텔레메트리 등 비필수 웹 호출 허용 (기본 1=차단, 자동업데이트는 유지)
-#   CCT_DEFAULT_LABEL=gv → 라벨 없는 'cct' 가 쓸 기본 setup-token 라벨 (기본 gv)
+#   CCT_DEFAULT_LABEL=main → 라벨 없는 'cct' 가 쓸 기본 setup-token 라벨 (기본 main)
 #   CCT_STICKY=0         → sticky 끄기 (기존 inline 주입, 셸/디스크 미변경)
 #   CCT_ACTIVE_FILE      → 활성 프로필 저장 경로 (기본 tokens.env 옆 cct-active)
 #   CCT_FIX_ONBOARDING=0 → 실행 전 hasCompletedOnboarding 자동 보정 끄기
@@ -36,7 +36,7 @@
 #
 # 호환성 메모(BREAKING) — 자세한 내용은 CHANGELOG.md:
 #   - cct check 가 실패 시 비제로 종료코드를 반환(이전엔 항상 0).
-#   - 라벨 없는 cct 는 키체인 폴백 없이 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv)의 setup-token 으로 실행.
+#   - 라벨 없는 cct 는 키체인 폴백 없이 기본 라벨(CCT_DEFAULT_LABEL, 기본 main)의 setup-token 으로 실행.
 #   - 기본이 sticky: cct <라벨> 가 활성 프로필을 저장+현재 셸 export 하고, 새 셸도 source 시 자동 로드.
 #     그냥 claude / cc / 새 터미널도 마지막 선택 계정을 유지(cct <다른라벨>/cct off 전까지). 끄려면 CCT_STICKY=0.
 #   - cct add 는 라벨 문자셋([a-z0-9_][a-z0-9_]*)·예약어를 검사한다.
@@ -786,7 +786,7 @@ _cct_wallet_rename_account() {
 
 _cct_add_internal() {
   local label key tok dupkey existing_label ans action _cct_wallet_token
-  [ "$#" -eq 1 ] || { echo "사용법: cct add <라벨>    예: cct add pro1"; return 2; }
+  [ "$#" -eq 1 ] || { echo "사용법: cct add <라벨>    예: cct add alt1"; return 2; }
   label="$1"
   # 입력 검증을 토큰 붙여넣기 전에 먼저 (실패 시 헛수고 방지)
   _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음. 다른 이름을 쓰세요." >&2; return 2; }
@@ -839,7 +839,7 @@ _cct_add_internal() {
 _cct_add() {
   local label="${1-}" rc
   [ "$#" -eq 1 ] || {
-    echo "사용법: cct add <라벨>    예: cct add pro1"
+    echo "사용법: cct add <라벨>    예: cct add alt1"
     return 2
   }
   # Both tools are required; the fallback is not an if-then-else branch.
@@ -853,7 +853,7 @@ _cct_add() {
     CCT_ENV_FILE="$CCT_ENV_FILE" \
     CCT_ACTIVE_FILE="${CCT_ACTIVE_FILE:-}" \
     CCT_STICKY="${CCT_STICKY:-1}" \
-    CCT_DEFAULT_LABEL="${CCT_DEFAULT_LABEL:-gv}" \
+    CCT_DEFAULT_LABEL="${CCT_DEFAULT_LABEL:-main}" \
     CCT_DISABLE_WEB_FEATURES="${CCT_DISABLE_WEB_FEATURES:-1}" \
     /bin/bash --noprofile --norc -c \
       '. "$1"; _cct_add_internal "$2"' cct-add "$_CCT_SCRIPT_FILE" "$label"
@@ -1252,7 +1252,7 @@ _cct_help() {
     "한 번 등록한 장기 setup-token으로 사용자가 계정을 명시 전환합니다." \
     "프록시·오케스트레이터·자동 라우터가 아니며 macOS/Linux/WSL2에서 동작합니다." \
     "" \
-    "  cct [claude 인자...]        활성(sticky) 라벨로 실행 — 없으면 CCT_DEFAULT_LABEL(기본 gv)" \
+    "  cct [claude 인자...]        활성(sticky) 라벨로 실행 — 없으면 CCT_DEFAULT_LABEL(기본 main)" \
     "  cct <라벨> [claude 인자...] 해당 계정을 명시 선택하고 Claude 인자를 전달" \
     "  cct run <라벨> [...]        예약어 라벨도 명시 실행       예: cct run rm --version" \
     "  cct ls | cct list           등록 계정 목록 (토큰 값 미표시)" \
@@ -1280,7 +1280,7 @@ _cct_help() {
     "수명:     setup-token은 long-lived지만 고정 수명·영구성을 보장하지 않으며 정책에 따라 재발급 필요." \
     "sticky:   cct <라벨> 선택을 현재 셸과 cct-active에 기억. cct off로 해제." \
     "" \
-    "환경변수: CCT_SKIP_PERMS=0  CCT_CLAUDE_FLAGS='...'  CCT_DEFAULT_LABEL=gv  CCT_STICKY=0" \
+    "환경변수: CCT_SKIP_PERMS=0  CCT_CLAUDE_FLAGS='...'  CCT_DEFAULT_LABEL=main  CCT_STICKY=0" \
     "          CCT_DISABLE_WEB_FEATURES=0  CCT_ENV_FILE=...  CCT_ACTIVE_FILE=...  CCT_FIX_ONBOARDING=0" \
     "          CCT_GJC_WARN=0 (gjc 잔존 자격증명 경고 끄기)" \
     "호환성/BREAKING 변경은 CHANGELOG.md 참고."
@@ -1519,7 +1519,7 @@ _cct_refresh() {  # 디스크의 활성 라벨을 현재 셸 env 에 재적용 �
 _cct_active_show() {  # 현재 활성 프로필 표시
   local a; a="$(_cct_active_label)"
   if [ -n "$a" ]; then echo "활성 프로필: $a   (해제: cct off)"
-  else echo "활성 프로필 없음 — cct <라벨> 로 선택 (기본 ${CCT_DEFAULT_LABEL:-gv})"; fi
+  else echo "활성 프로필 없음 — cct <라벨> 로 선택 (기본 ${CCT_DEFAULT_LABEL:-main})"; fi
 }
 
 _cct_account_exists() {
@@ -1591,7 +1591,7 @@ _cct_status() {
   if [ -z "$active" ]; then
     active="invalid"
   fi
-  default_label="${CCT_DEFAULT_LABEL:-gv}"
+  default_label="${CCT_DEFAULT_LABEL:-main}"
   _cct_label_is_valid "$default_label" || default_label="invalid"
   if [ "${CCT_STICKY:-1}" = "0" ]; then sticky="disabled"; else sticky="enabled"; fi
   cb="$(_cct_claude_binary)"
@@ -1781,7 +1781,7 @@ _cct_doctor() {
     fi
   fi
 
-  default_label="${CCT_DEFAULT_LABEL:-gv}"
+  default_label="${CCT_DEFAULT_LABEL:-main}"
   if ! _cct_label_is_valid "$default_label"; then
     echo "FAIL default: malformed label"
     failed=1
@@ -2061,10 +2061,10 @@ cct() {
     off)      shift; [ "$#" -eq 0 ] || { echo "사용법: cct off" >&2; return 2; }; _cct_off; return ;;
     active)   shift; [ "$#" -eq 0 ] || { echo "사용법: cct active" >&2; return 2; }; _cct_active_show; return ;;
     refresh)  shift; [ "$#" -eq 0 ] || { echo "사용법: cct refresh" >&2; return 2; }; _cct_refresh; return ;;
-    ""|-*)    # 라벨 없는 실행: sticky 활성 프로필 → 없으면 기본 라벨(CCT_DEFAULT_LABEL, 기본 gv).
+    ""|-*)    # 라벨 없는 실행: sticky 활성 프로필 → 없으면 기본 라벨(CCT_DEFAULT_LABEL, 기본 main).
               # 키체인 폴백 금지. 남은 인자($@)는 그대로 claude 플래그로 전달(shift 안 함).
               [ "${CCT_STICKY:-1}" = "0" ] || label="$(_cct_active_label)"
-              [ -n "$label" ] || label="${CCT_DEFAULT_LABEL:-gv}"
+              [ -n "$label" ] || label="${CCT_DEFAULT_LABEL:-main}"
               _cct_validate_label "$label" || { echo "❌ 라벨 '$label' 가 유효하지 않음 (CCT_DEFAULT_LABEL/활성 프로필 확인)." >&2; return 2; } ;;
     *)        label="$1"; shift
               _cct_reserved_label "$label" && { echo "❌ '$label' 는 예약어(서브커맨드)라 라벨로 쓸 수 없음." >&2; return 2; }

@@ -108,12 +108,12 @@ def calls_of(app, name: str) -> list[dict]:
 def test_parse_status():
     text = (
         "wallet: /Users/x/.claude/tokens.env\nmode: 600\naccounts: 7\n"
-        "active: gv\ndefault: gv\nsticky: enabled\n"
+        "active: main\ndefault: main\nsticky: enabled\n"
         "claude: /Users/x/.local/bin/claude\nclaude-version: 2.1.270\n"
     )
     out = srv.parse_status(text)
     assert out["accounts"] == 7
-    assert out["active"] == "gv"
+    assert out["active"] == "main"
     assert out["claude_version"] == "2.1.270"
     assert out["mode"] == "600"
 
@@ -127,27 +127,27 @@ def test_parse_doctor():
 
 def test_parse_ls_variants():
     text = (
-        "  cct gv   ← 활성\n"
-        "  cct pro4\n"
+        "  cct main   ← 활성\n"
+        "  cct alt4\n"
         "  cct spare   (비어있음)\n"
         "  cct empty_active   (비어있음)   ← 활성\n"
         "  \x1b[31mcct colored\x1b[0m\n"
         "쓰레기 줄\n"
     )
     entries = srv.parse_ls(text)
-    assert [e["label"] for e in entries] == ["gv", "pro4", "spare", "empty_active", "colored"]
+    assert [e["label"] for e in entries] == ["main", "alt4", "spare", "empty_active", "colored"]
     assert entries[0]["active"] is True and entries[0]["has_token"] is True
     assert entries[2]["has_token"] is False and entries[2]["active"] is False
     assert entries[3]["has_token"] is False and entries[3]["active"] is True
 
 
 def test_parse_usage_line_ok_and_error():
-    line = '{"label":"gv","state":"ok","org":"org_9f2a","now":1,"probe":null,"windows":null}'
-    assert srv.parse_usage_line(line, "gv")["state"] == "ok"
-    assert srv.parse_usage_line("구독 사용량 안내\n", "gv")["state"] == "parse_error"
-    assert srv.parse_usage_line("", "gv")["state"] == "parse_error"
-    assert srv.parse_usage_line("[1,2]", "gv")["state"] == "parse_error"
-    assert srv.parse_usage_line('{"label":"gv"}', "gv")["windows"] is None
+    line = '{"label":"main","state":"ok","org":"org_9f2a","now":1,"probe":null,"windows":null}'
+    assert srv.parse_usage_line(line, "main")["state"] == "ok"
+    assert srv.parse_usage_line("구독 사용량 안내\n", "main")["state"] == "parse_error"
+    assert srv.parse_usage_line("", "main")["state"] == "parse_error"
+    assert srv.parse_usage_line("[1,2]", "main")["state"] == "parse_error"
+    assert srv.parse_usage_line('{"label":"main"}', "main")["windows"] is None
 
 
 def test_mask():
@@ -174,16 +174,16 @@ def test_resolve_static_blocks_traversal(tmp_path):
 def test_state_file_mode_600_and_reload(tmp_path):
     path = tmp_path / "state.json"
     state = srv.State(path)
-    state.set_check("gv", "valid")
+    state.set_check("main", "valid")
     state.bump_usage(2, 1)
-    state.log_add("cct usage --json gv", 0, 4180)
+    state.log_add("cct usage --json main", 0, 4180)
     state.save()
     assert (path.stat().st_mode & 0o777) == 0o600
     again = srv.State(path)
-    assert again.account("gv")["check"]["result"] == "valid"
+    assert again.account("main")["check"]["result"] == "valid"
     assert again.budget_view(30, None)["usage_probes"] == 2
     assert again.budget_view(30, None)["est_tokens"] == 2 * 32 + 1
-    assert again.log_view()[0]["cmd"] == "cct usage --json gv"
+    assert again.log_view()[0]["cmd"] == "cct usage --json main"
 
 
 def test_state_rejects_below_floor_auto_min_on_load(tmp_path):
@@ -214,7 +214,7 @@ def test_api_state_schema(client, app):
     assert body["doctor"]["rc"] == 0
     assert body["doctor"]["items"][1]["msg"] == "structure: 7 account(s), annotations valid"
     assert [a["label"] for a in body["accounts"]] == [
-        "gv", "pro4", "pro5", "max1", "pro4b", "team", "spare"]
+        "main", "alt4", "alt5", "alt2", "alt4b", "team", "spare"]
     first = body["accounts"][0]
     assert sorted(first) == ["active", "check", "default", "has_token", "label",
                              "usage", "usage_at"]
@@ -250,8 +250,8 @@ def test_snapshot_cache_limits_cct_calls(client, app):
 
 @pytest.mark.parametrize("path,body", [
     ("/api/add", {"label": "newone", "token": FAKE_TOKEN}),
-    ("/api/rm", {"label": "pro5"}),
-    ("/api/rename", {"old": "pro5", "new": "pro6"}),
+    ("/api/rm", {"label": "alt5"}),
+    ("/api/rename", {"old": "alt5", "new": "alt6"}),
 ])
 def test_write_gate_403(client, app, path, body):
     code, out = client.post(path, body)
@@ -261,7 +261,7 @@ def test_write_gate_403(client, app, path, body):
 
 
 def test_read_endpoints_need_no_write_header(client):
-    assert client.post("/api/use", {"label": "pro5"})[0] == 200
+    assert client.post("/api/use", {"label": "alt5"})[0] == 200
     assert client.post("/api/off")[0] == 200
     assert client.post("/api/settings", {"auto_min": 15})[0] == 200
 
@@ -283,12 +283,12 @@ def test_add_passes_token_only_on_stdin(client, app, tmp_path):
 
 
 def test_add_overwrite_needs_second_stdin_line(client, app):
-    code, out = client.post("/api/add", {"label": "gv", "token": FAKE_TOKEN}, WRITE)
+    code, out = client.post("/api/add", {"label": "main", "token": FAKE_TOKEN}, WRITE)
     assert code == 409 and out["error"]["code"] == "cct_failed"
     assert calls_of(app, "add")[-1]["stdin"] == FAKE_TOKEN + "\n"
 
     code, out = client.post("/api/add",
-                            {"label": "gv", "token": FAKE_TOKEN, "overwrite": True}, WRITE)
+                            {"label": "main", "token": FAKE_TOKEN, "overwrite": True}, WRITE)
     assert code == 200
     assert calls_of(app, "add")[-1]["stdin"] == FAKE_TOKEN + "\ny\n"
 
@@ -302,36 +302,36 @@ def test_add_rejects_bad_label_and_empty_token(client):
 # ---------------------------------------------------------------- 프로브
 
 def test_refresh_single_then_too_soon(client, app):
-    code, out = client.post("/api/refresh", {"label": "gv"})
+    code, out = client.post("/api/refresh", {"label": "main"})
     assert code == 200
-    assert out["refreshed"] == ["gv"]
-    account = [a for a in out["state"]["accounts"] if a["label"] == "gv"][0]
+    assert out["refreshed"] == ["main"]
+    account = [a for a in out["state"]["accounts"] if a["label"] == "main"][0]
     assert account["usage"]["state"] == "ok"
     assert account["usage"]["windows"]["7d_oi"]["utilization"] == 0.71
     assert account["usage_at"] is not None
     assert out["state"]["budget"]["usage_probes"] == 1
     assert out["state"]["budget"]["est_tokens"] == 32
 
-    code, out = client.post("/api/refresh", {"label": "gv"})
+    code, out = client.post("/api/refresh", {"label": "main"})
     assert code == 429 and out["error"]["code"] == "too_soon"
 
 
 def test_refresh_all_counts_budget_and_fallback(client, app):
     code, out = client.post("/api/refresh", {"all": True})
     assert code == 200
-    assert sorted(out["refreshed"]) == ["gv", "max1", "pro4", "pro4b", "pro5", "team"]
+    assert sorted(out["refreshed"]) == ["alt2", "alt4", "alt4b", "alt5", "main", "team"]
     budget = out["state"]["budget"]
     assert budget["usage_probes"] == 6                 # spare 는 토큰이 없어 제외
-    assert budget["est_tokens"] == 6 * 32 + 2          # pro4·team 폴백 1토큰씩
+    assert budget["est_tokens"] == 6 * 32 + 2          # alt4·team 폴백 1토큰씩
     states = {a["label"]: (a["usage"] or {}).get("state") for a in out["state"]["accounts"]}
     assert states["team"] == "no_response"
     assert states["spare"] is None
-    assert states["max1"] == "ok"
+    assert states["alt2"] == "ok"
 
 
 def test_refresh_rebases_reset_to_future(client):
-    _, out = client.post("/api/refresh", {"label": "gv"})
-    account = [a for a in out["state"]["accounts"] if a["label"] == "gv"][0]
+    _, out = client.post("/api/refresh", {"label": "main"})
+    account = [a for a in out["state"]["accounts"] if a["label"] == "main"][0]
     assert account["usage"]["windows"]["5h"]["reset"] > time.time()
 
 
@@ -343,7 +343,7 @@ def test_refresh_unknown_and_no_token(client):
 
 
 def test_check_endpoint(client, app):
-    code, out = client.post("/api/check", {"label": "gv"})
+    code, out = client.post("/api/check", {"label": "main"})
     assert code == 200 and out["result"] == "valid"
     assert out["state"]["budget"]["check_probes"] == 1
     assert out["state"]["budget"]["est_tokens"] == 1
@@ -355,23 +355,23 @@ def test_check_endpoint(client, app):
 
 def test_fp_derives_duplicates(client):
     client.post("/api/refresh", {"all": True})
-    code, out = client.post("/api/fp", {"label": "pro4"})
+    code, out = client.post("/api/fp", {"label": "alt4"})
     assert code == 200
     assert out["fp"]["org"] == "org_4c1e"
-    assert out["fp"]["dups"] == ["pro4b"]
+    assert out["fp"]["dups"] == ["alt4b"]
     assert client.post("/api/fp", {"label": "spare"})[1]["error"]["code"] == "no_usage"
 
 
 # ---------------------------------------------------------------- 전환·쓰기
 
 def test_use_and_off(client, app):
-    code, out = client.post("/api/use", {"label": "pro5"})
+    code, out = client.post("/api/use", {"label": "alt5"})
     assert code == 200
     assert out["hint"] == "열린 터미널은 cct refresh"
-    assert out["state"]["status"]["active"] == "pro5"
-    assert [a["active"] for a in out["state"]["accounts"] if a["label"] == "pro5"] == [True]
+    assert out["state"]["status"]["active"] == "alt5"
+    assert [a["active"] for a in out["state"]["accounts"] if a["label"] == "alt5"] == [True]
     # sticky 가 꺼진 clean env 로는 use 가 rc 1 이므로 이 호출만 CCT_STICKY=1 을 쓴다.
-    assert calls_of(app, "use")[-1]["args"] == ["use", "pro5"]
+    assert calls_of(app, "use")[-1]["args"] == ["use", "alt5"]
 
     code, out = client.post("/api/off")
     assert code == 200
@@ -386,26 +386,26 @@ def test_use_without_token_fails(client):
 
 
 def test_rm_and_rename(client, app):
-    client.post("/api/refresh", {"label": "pro5"})
-    code, out = client.post("/api/rm", {"label": "pro5"}, WRITE)
+    client.post("/api/refresh", {"label": "alt5"})
+    code, out = client.post("/api/rm", {"label": "alt5"}, WRITE)
     assert code == 200
-    assert "pro5" not in [a["label"] for a in out["state"]["accounts"]]
-    assert app.state.account("pro5") == {}          # 캐시된 usage 도 같이 지운다
+    assert "alt5" not in [a["label"] for a in out["state"]["accounts"]]
+    assert app.state.account("alt5") == {}          # 캐시된 usage 도 같이 지운다
 
-    code, out = client.post("/api/rename", {"old": "pro4b", "new": "pro4c"}, WRITE)
+    code, out = client.post("/api/rename", {"old": "alt4b", "new": "alt4c"}, WRITE)
     assert code == 200
     labels = [a["label"] for a in out["state"]["accounts"]]
-    assert "pro4c" in labels and "pro4b" not in labels
+    assert "alt4c" in labels and "alt4b" not in labels
 
     code, out = client.post("/api/rm", {"label": "nope"}, WRITE)
     assert code == 409 and out["error"]["code"] == "cct_failed"
 
 
 def test_rename_keeps_cached_usage(client, app):
-    client.post("/api/refresh", {"label": "gv"})
-    client.post("/api/rename", {"old": "gv", "new": "gv2"}, WRITE)
+    client.post("/api/refresh", {"label": "main"})
+    client.post("/api/rename", {"old": "main", "new": "gv2"}, WRITE)
     assert app.state.account("gv2")["usage"]["label"] == "gv2"
-    assert app.state.account("gv") == {}
+    assert app.state.account("main") == {}
 
 
 # ---------------------------------------------------------------- 설정·스케줄러
@@ -463,7 +463,7 @@ def test_live_whitelist(client):
     assert body["context_pct"] == 62
     assert body["cost_usd"] == 4.18
     assert body["five_hour"]["used_percentage"] == 6
-    assert body["label_guess"] == "gv"
+    assert body["label_guess"] == "main"
     assert body["stale"] is False
 
 
@@ -515,7 +515,7 @@ def test_real_add_uses_zsh_f_and_stdin_only(monkeypatch):
 
     class Proc:
         returncode = 0
-        stdout = "✓ [gv] 등록 완료\n"
+        stdout = "✓ [main] 등록 완료\n"
         stderr = ""
 
     def fake_run(cmd, **kwargs):
@@ -525,10 +525,10 @@ def test_real_add_uses_zsh_f_and_stdin_only(monkeypatch):
 
     monkeypatch.setattr(srv.subprocess, "run", fake_run)
     cct = srv.Cct("/tmp/cct.sh", home="/tmp/fixture-home")
-    cct.add("gv", FAKE_TOKEN, overwrite=True)
+    cct.add("main", FAKE_TOKEN, overwrite=True)
 
     assert seen["cmd"][:4] == ["/bin/zsh", "-f", "-c", 'source "$1"; shift; cct "$@"']
-    assert seen["cmd"][4:] == ["cct-dash", "/tmp/cct.sh", "add", "gv"]
+    assert seen["cmd"][4:] == ["cct-dash", "/tmp/cct.sh", "add", "main"]
     assert FAKE_TOKEN not in " ".join(seen["cmd"])          # argv 에 토큰 없음
     assert seen["kwargs"]["input"] == FAKE_TOKEN + "\ny\n"  # stdin 두 줄(덮어쓰기 y)
     assert "ANTHROPIC_BASE_URL" not in seen["kwargs"]["env"]
@@ -546,12 +546,12 @@ def test_real_timeouts_and_sticky_override(monkeypatch):
     monkeypatch.setattr(srv.subprocess, "run",
                         lambda cmd, **kw: (seen.append((cmd, kw)), Proc())[1])
     cct = srv.Cct("/tmp/cct.sh", home="/tmp/fixture-home")
-    cct.usage("gv")
-    cct.check("gv")
-    cct.use("gv")
+    cct.usage("main")
+    cct.check("main")
+    cct.use("main")
     assert seen[0][1]["timeout"] == srv.TIMEOUT_USAGE == 60
     assert seen[1][1]["timeout"] == srv.TIMEOUT_CHECK == 45
-    assert seen[0][0][-3:] == ["usage", "--json", "gv"]
+    assert seen[0][0][-3:] == ["usage", "--json", "main"]
     # use 만 sticky 를 켠다(clean env 의 0 이면 cct use 가 rc 1).
     assert seen[2][1]["env"]["CCT_STICKY"] == "1"
     assert "CCT_STICKY" not in srv.Cct("/tmp/cct.sh").build_env({"CCT_STICKY": None})
@@ -575,10 +575,10 @@ def test_history_recorded_on_refresh_and_served(client):
     code, body = client.get("/api/history?hours=24")
     assert code == 200 and body["ok"] is True and body["hours"] == 24
     series = body["series"]
-    assert set(series) == {"gv", "pro4", "pro5", "max1", "pro4b", "team"}
+    assert set(series) == {"main", "alt4", "alt5", "alt2", "alt4b", "team"}
     assert "spare" not in series                     # no_token 은 프로브 대상이 아니다
-    last = series["gv"][-1]
-    assert last[2] == pytest.approx(0.36)            # 픽스처 gv 7d utilization
+    last = series["main"][-1]
+    assert last[2] == pytest.approx(0.36)            # 픽스처 main 7d utilization
     assert last[1] == pytest.approx(0.06)
     assert series["team"][-1][1] is None             # no_response 는 값 없이 공백
 
@@ -586,18 +586,18 @@ def test_history_recorded_on_refresh_and_served(client):
 def test_history_downsampled_to_max_points(app):
     now = srv.now_i()
     for i in range(1000):
-        app.db.record_usage("gv", {"state": "ok", "windows": {
+        app.db.record_usage("main", {"state": "ok", "windows": {
             "5h": {"utilization": 0.5}, "7d": {"utilization": 0.5},
             "7d_oi": {"utilization": 0.5}}}, at=now - i * 60)
     series = app.db.history_series(24)
-    assert 0 < len(series["gv"]) <= srv.HIST_MAX_POINTS
+    assert 0 < len(series["main"]) <= srv.HIST_MAX_POINTS
 
 
 def test_history_prunes_old_rows(app):
     old = srv.now_i() - (srv.HIST_RETAIN_DAYS + 5) * 86400
-    app.db.record_usage("gv", {"state": "ok", "windows": {
+    app.db.record_usage("main", {"state": "ok", "windows": {
         "5h": {"utilization": 0.5}}}, at=old)
-    app.db.record_usage("gv", {"state": "ok", "windows": {
+    app.db.record_usage("main", {"state": "ok", "windows": {
         "5h": {"utilization": 0.5}}})
     assert app.db.history_count() == 1
 
@@ -614,70 +614,70 @@ def test_alerts_fire_on_refresh(client):
     code, body = client.get("/api/state")
     assert code == 200
     active = {(a["label"], a["win"]): a for a in body["alerts"]["active"]}
-    assert active[("max1", "7d")]["level"] == "crit"     # status rejected
-    assert active[("max1", "7f")]["level"] == "crit"     # 0.98 >= 90
+    assert active[("alt2", "7d")]["level"] == "crit"     # status rejected
+    assert active[("alt2", "7f")]["level"] == "crit"     # 0.98 >= 90
     assert active[("team", "probe")]["level"] == "crit"  # no_response
-    assert active[("pro4", "5h")]["level"] == "warn"     # 0.82 >= 65
-    assert active[("gv", "7f")]["level"] == "warn"       # 0.71 >= 65
-    assert ("gv", "5h") not in active                    # 0.06
+    assert active[("alt4", "5h")]["level"] == "warn"     # 0.82 >= 65
+    assert active[("main", "7f")]["level"] == "warn"       # 0.71 >= 65
+    assert ("main", "5h") not in active                    # 0.06
     assert ("spare", "probe") not in active              # no_token 은 알림 아님
     events = body["alerts"]["events"]
-    assert any(e["label"] == "max1" and e["level"] == "crit" for e in events)
+    assert any(e["label"] == "alt2" and e["level"] == "crit" for e in events)
     # 정렬: crit 가 warn 보다 앞
     levels = [a["level"] for a in body["alerts"]["active"]]
     assert levels == sorted(levels, key=lambda l: -srv.ALERT_RANK[l])
 
 
 def test_alerts_no_refire_then_clear(client, app):
-    client.post("/api/refresh", {"label": "pro4"})
+    client.post("/api/refresh", {"label": "alt4"})
     n_events = len(app.state.alerts_view(50)["events"])
     assert n_events >= 1
     app._last_probe.clear()
-    client.post("/api/refresh", {"label": "pro4"})       # 같은 수준 유지 - 재발화 없음
+    client.post("/api/refresh", {"label": "alt4"})       # 같은 수준 유지 - 재발화 없음
     assert len(app.state.alerts_view(50)["events"]) == n_events
-    app.fake_cct.usage_lines["pro4"]["windows"]["5h"]["utilization"] = 0.1
+    app.fake_cct.usage_lines["alt4"]["windows"]["5h"]["utilization"] = 0.1
     app._last_probe.clear()
-    client.post("/api/refresh", {"label": "pro4"})       # 임계 아래로 - 해소 이벤트
+    client.post("/api/refresh", {"label": "alt4"})       # 임계 아래로 - 해소 이벤트
     view = app.state.alerts_view(50)
-    assert not any(a["label"] == "pro4" for a in view["active"])
-    assert view["events"][0]["level"] == "ok" and view["events"][0]["label"] == "pro4"
+    assert not any(a["label"] == "alt4" for a in view["active"])
+    assert view["events"][0]["level"] == "ok" and view["events"][0]["label"] == "alt4"
 
 
 def test_alerts_escalation_refires(client, app):
-    client.post("/api/refresh", {"label": "pro4"})       # warn 발화
+    client.post("/api/refresh", {"label": "alt4"})       # warn 발화
     n_events = len(app.state.alerts_view(50)["events"])
-    app.fake_cct.usage_lines["pro4"]["windows"]["5h"]["utilization"] = 0.95
+    app.fake_cct.usage_lines["alt4"]["windows"]["5h"]["utilization"] = 0.95
     app._last_probe.clear()
-    client.post("/api/refresh", {"label": "pro4"})       # warn -> crit 승격 재발화
+    client.post("/api/refresh", {"label": "alt4"})       # warn -> crit 승격 재발화
     view = app.state.alerts_view(50)
     assert len(view["events"]) == n_events + 1
     active = {(a["label"], a["win"]): a for a in view["active"]}
-    assert active[("pro4", "5h")]["level"] == "crit"
+    assert active[("alt4", "5h")]["level"] == "crit"
 
 
 def test_alert_notify_levels_and_no_secret(client, app):
     sent = []
     app.notifier = lambda title, msg: sent.append((title, msg))
-    client.post("/api/refresh", {"label": "pro4"})       # warn - 기본 notify=crit 는 침묵
+    client.post("/api/refresh", {"label": "alt4"})       # warn - 기본 notify=crit 는 침묵
     assert sent == []
-    client.post("/api/refresh", {"label": "max1"})       # crit 2건(7d, 7f) 발송
+    client.post("/api/refresh", {"label": "alt2"})       # crit 2건(7d, 7f) 발송
     assert len(sent) == 2
-    assert all("max1" in msg for _, msg in sent)
+    assert all("alt2" in msg for _, msg in sent)
     assert not any("sk-ant" in title + msg for title, msg in sent)
     code, _ = client.post("/api/settings", {"notify": "warn"})
     assert code == 200
-    client.post("/api/refresh", {"label": "pro4b"})      # warn 도 발송
+    client.post("/api/refresh", {"label": "alt4b"})      # warn 도 발송
     assert len(sent) == 3
     client.post("/api/settings", {"notify": "off"})
-    app.fake_cct.usage_lines["pro5"]["windows"]["5h"]["utilization"] = 0.99
-    client.post("/api/refresh", {"label": "pro5"})
+    app.fake_cct.usage_lines["alt5"]["windows"]["5h"]["utilization"] = 0.99
+    client.post("/api/refresh", {"label": "alt5"})
     assert len(sent) == 3                                # off 면 침묵
 
 
 def test_alerts_persist_across_restart(client, app):
-    client.post("/api/refresh", {"label": "max1"})
+    client.post("/api/refresh", {"label": "alt2"})
     reloaded = srv.State(app.state.path)
-    assert any(k.startswith("max1|") for k in reloaded.data["alerts"]["active"])
+    assert any(k.startswith("alt2|") for k in reloaded.data["alerts"]["active"])
 
 
 def test_settings_alert_thresholds(client, app):
@@ -700,10 +700,10 @@ def test_settings_alert_thresholds(client, app):
 def test_custom_threshold_changes_alerts(client, app):
     code, _ = client.post("/api/settings", {"alert_warn": 30, "alert_crit": 60})
     assert code == 200
-    client.post("/api/refresh", {"label": "gv"})         # 7d 0.36 -> warn, 7f 0.71 -> crit
+    client.post("/api/refresh", {"label": "main"})         # 7d 0.36 -> warn, 7f 0.71 -> crit
     active = {(a["label"], a["win"]): a for a in app.state.alerts_view()["active"]}
-    assert active[("gv", "7d")]["level"] == "warn"
-    assert active[("gv", "7f")]["level"] == "crit"
+    assert active[("main", "7d")]["level"] == "warn"
+    assert active[("main", "7f")]["level"] == "crit"
 
 
 # ---------------------------------------------------------------- 토큰 집계 (0.2.0)
@@ -895,7 +895,7 @@ def test_seed_fake_db_deterministic(app):
     assert payload["enabled"] is False                   # 픽스처 - 재스캔 버튼 숨김
     assert payload["scanned_at"] is not None             # 시드 시각은 meta 폴백으로 노출
     series = app.db.history_series(48)
-    assert "gv" in series and len(series["gv"]) > 10
+    assert "main" in series and len(series["main"]) > 10
     srv.seed_fake_db(app.db, app.fake_cct)               # 재기동 - 토큰은 리셋 후 재시드
     assert app._tokens_payload(30)["total"]["entries"] == 60
 
@@ -1011,15 +1011,15 @@ def scan_into(app, root: Path) -> None:
 def test_account_attributes_sessions_by_hook_log(client, app, tmp_path, pricing):
     t0 = srv.now_i() - 3600
     root = tmp_path / "projects"
-    make_jsonl(root / "p1" / "s-gv.jsonl", [
+    make_jsonl(root / "p1" / "s-main.jsonl", [
         entry(iso(t0 + 60), "claude-known-1", i=100, o=50, mid="a", rid="1",
-              sessionId="s-gv", cwd="/work/Hindsight-Crew"),
+              sessionId="s-main", cwd="/work/Hindsight-Crew"),
         entry(iso(t0 + 120), "claude-known-1", i=200, o=10, mid="b", rid="2",
-              sessionId="s-gv", cwd="/work/Hindsight-Crew"),
+              sessionId="s-main", cwd="/work/Hindsight-Crew"),
     ])
-    make_jsonl(root / "p2" / "s-pro5.jsonl", [
+    make_jsonl(root / "p2" / "s-alt5.jsonl", [
         entry(iso(t0 + 60), "claude-known-1", i=999, o=999, mid="c", rid="3",
-              sessionId="s-pro5", cwd="/work/cct"),
+              sessionId="s-alt5", cwd="/work/cct"),
     ])
     make_jsonl(root / "p3" / "s-none.jsonl", [
         entry(iso(t0 + 60), "claude-known-1", i=777, o=777, mid="d", rid="4",
@@ -1027,15 +1027,15 @@ def test_account_attributes_sessions_by_hook_log(client, app, tmp_path, pricing)
     ])
     sessions = tmp_path / "cct-sessions.jsonl"
     write_sessions(sessions, [
-        {"ts": t0, "session_id": "s-gv", "label": "gv", "source": "startup"},
-        {"ts": t0, "session_id": "s-pro5", "label": "pro5", "source": "startup"},
+        {"ts": t0, "session_id": "s-main", "label": "main", "source": "startup"},
+        {"ts": t0, "session_id": "s-alt5", "label": "alt5", "source": "startup"},
     ])
     app.sessions_file = sessions
     scan_into(app, root)
 
-    code, body = client.get("/api/account?label=gv&days=7")
-    assert code == 200 and body["ok"] is True and body["label"] == "gv"
-    assert [s["session"] for s in body["sessions"]] == ["s-gv"]
+    code, body = client.get("/api/account?label=main&days=7")
+    assert code == 200 and body["ok"] is True and body["label"] == "main"
+    assert [s["session"] for s in body["sessions"]] == ["s-main"]
     s = body["sessions"][0]
     assert s["project"] == "Hindsight-Crew"
     assert s["requests"] == 2 and s["input"] == 300 and s["output"] == 60
@@ -1050,7 +1050,7 @@ def test_account_resume_switch_and_breakdowns(client, app, tmp_path, pricing):
         entry(iso(t0 + 60), "claude-known-1", i=100, o=0, mid="a", rid="1",
               sessionId="s-x", cwd="/w/alpha"),
         entry(iso(t0 + 200), "claude-known-2", i=100, o=0, mid="b", rid="2",
-              sessionId="s-x", cwd="/w/alpha"),             # pro5 로 이어 연 뒤
+              sessionId="s-x", cwd="/w/alpha"),             # alt5 로 이어 연 뒤
     ])
     make_jsonl(root / "p" / "s-y.jsonl", [
         entry(iso(t0 + 300), "claude-known-2", i=10, o=0, cr=1000, mid="c", rid="3",
@@ -1058,37 +1058,37 @@ def test_account_resume_switch_and_breakdowns(client, app, tmp_path, pricing):
     ])
     sessions = tmp_path / "cct-sessions.jsonl"
     write_sessions(sessions, [
-        {"ts": t0, "session_id": "s-x", "label": "gv", "source": "startup"},
-        {"ts": t0 + 100, "session_id": "s-x", "label": "pro5", "source": "resume"},
-        {"ts": t0 + 250, "session_id": "s-y", "label": "gv", "source": "startup"},
+        {"ts": t0, "session_id": "s-x", "label": "main", "source": "startup"},
+        {"ts": t0 + 100, "session_id": "s-x", "label": "alt5", "source": "resume"},
+        {"ts": t0 + 250, "session_id": "s-y", "label": "main", "source": "startup"},
     ])
     app.sessions_file = sessions
     scan_into(app, root)
 
-    _, gv = client.get("/api/account?label=gv")
-    _, pro5 = client.get("/api/account?label=pro5")
-    assert gv["summary"]["requests"] == 2 and pro5["summary"]["requests"] == 1
-    assert gv["summary"]["sessions"] == 2
-    assert gv["summary"]["input"] == 110 and gv["summary"]["cache_read"] == 1000
-    assert {m["model"]: m["requests"] for m in gv["models"]} == {
+    _, main = client.get("/api/account?label=main")
+    _, alt5 = client.get("/api/account?label=alt5")
+    assert main["summary"]["requests"] == 2 and alt5["summary"]["requests"] == 1
+    assert main["summary"]["sessions"] == 2
+    assert main["summary"]["input"] == 110 and main["summary"]["cache_read"] == 1000
+    assert {m["model"]: m["requests"] for m in main["models"]} == {
         "claude-known-1": 1, "claude-known-2": 1}
-    assert {p["project"]: p["requests"] for p in gv["projects"]} == {"alpha": 1, "beta": 1}
-    assert gv["models"][0]["cost"] >= gv["models"][-1]["cost"]      # 비용 큰 순
+    assert {p["project"]: p["requests"] for p in main["projects"]} == {"alpha": 1, "beta": 1}
+    assert main["models"][0]["cost"] >= main["models"][-1]["cost"]      # 비용 큰 순
 
 
 def test_account_bad_label_and_no_log(client, app):
     code, body = client.get("/api/account?label=BAD!")
     assert code == 400 and body["error"]["code"] == "bad_label"
-    code, body = client.get("/api/account?label=gv")                # 훅 기록 없음
+    code, body = client.get("/api/account?label=main")                # 훅 기록 없음
     assert code == 200 and body["sessions"] == [] and body["summary"]["requests"] == 0
 
 
 def test_account_rate_limit_events(client, app, tmp_path, pricing):
     t0 = srv.now_i() - 3600
     root = tmp_path / "projects"
-    make_jsonl(root / "p" / "s-gv.jsonl", [
-        entry(iso(t0 + 60), "claude-known-1", mid="a", rid="1", sessionId="s-gv", cwd="/w/a"),
-        entry(iso(t0 + 90), "<synthetic>", i=0, o=0, mid="e1", rid="e1", sessionId="s-gv",
+    make_jsonl(root / "p" / "s-main.jsonl", [
+        entry(iso(t0 + 60), "claude-known-1", mid="a", rid="1", sessionId="s-main", cwd="/w/a"),
+        entry(iso(t0 + 90), "<synthetic>", i=0, o=0, mid="e1", rid="e1", sessionId="s-main",
               cwd="/w/a", isApiErrorMessage=True, error="rate_limit",
               quotaLimits={"status": "rejected", "rateLimitType": "five_hour",
                            "resetsAt": t0 + 7200}),
@@ -1101,16 +1101,16 @@ def test_account_rate_limit_events(client, app, tmp_path, pricing):
     ])
     sessions = tmp_path / "cct-sessions.jsonl"
     write_sessions(sessions, [
-        {"ts": t0, "session_id": "s-gv", "label": "gv", "source": "startup"},
-        {"ts": t0, "session_id": "s-o", "label": "pro5", "source": "startup"},
+        {"ts": t0, "session_id": "s-main", "label": "main", "source": "startup"},
+        {"ts": t0, "session_id": "s-o", "label": "alt5", "source": "startup"},
     ])
     app.sessions_file = sessions
     scan_into(app, root)
-    _, gv = client.get("/api/account?label=gv")
-    assert gv["limits"] == [{"at": t0 + 90, "session": "s-gv", "kind": "five_hour",
+    _, main = client.get("/api/account?label=main")
+    assert main["limits"] == [{"at": t0 + 90, "session": "s-main", "kind": "five_hour",
                              "resets_at": t0 + 7200}]
-    assert gv["sessions"][0]["limit_errors"] == 1
-    assert gv["summary"]["requests"] == 1                     # 에러 줄은 토큰 집계 제외
+    assert main["sessions"][0]["limit_errors"] == 1
+    assert main["summary"]["requests"] == 1                     # 에러 줄은 토큰 집계 제외
 
 
 def usage5(u5, r5, u7=0.5):
@@ -1134,16 +1134,16 @@ def test_account_windows_and_timeline(client, app, tmp_path, pricing):
               quotaLimits={"rateLimitType": "five_hour", "resetsAt": r_old}),
     ])
     sessions = tmp_path / "cct-sessions.jsonl"
-    write_sessions(sessions, [{"ts": r_old - 18000, "session_id": "s", "label": "gv",
+    write_sessions(sessions, [{"ts": r_old - 18000, "session_id": "s", "label": "main",
                                "source": "startup"}])
     app.sessions_file = sessions
     for at, u in ((r_old - 5000, 0.10), (r_old - 2500, 1.0), (r_old - 100, 1.0)):
-        app.db.record_usage("gv", usage5(u, r_old), at=at)
-    app.db.record_usage("gv", usage5(0.30, r_cur), at=now - 60)
-    app.db.record_usage("pro5", usage5(0.99, r_cur), at=now - 60)   # 다른 계정은 무관
+        app.db.record_usage("main", usage5(u, r_old), at=at)
+    app.db.record_usage("main", usage5(0.30, r_cur), at=now - 60)
+    app.db.record_usage("alt5", usage5(0.99, r_cur), at=now - 60)   # 다른 계정은 무관
     scan_into(app, root)
 
-    _, body = client.get("/api/account?label=gv&days=2")
+    _, body = client.get("/api/account?label=main&days=2")
     wins = body["windows"]
     assert [w["reset"] for w in wins] == [r_cur, r_old]              # 최근 창 먼저
     cur, old = wins
@@ -1176,15 +1176,15 @@ def test_account_insights(client, app, tmp_path, pricing):
               sessionId="s", cwd="/w/a"),
     ])
     write_sessions(tmp_path / "s.jsonl", [{"ts": now - 40 * 3600, "session_id": "s",
-                                           "label": "gv", "source": "startup"}])
+                                           "label": "main", "source": "startup"}])
     app.sessions_file = tmp_path / "s.jsonl"
-    app.db.record_usage("gv", usage5(0.10, ra), at=ra - 50)
-    app.db.record_usage("gv", usage5(0.30, rb), at=rb - 50)
-    app.db.record_usage("gv", usage5(0.20, rc), at=now - 1200)
-    app.db.record_usage("gv", usage5(0.40, rc), at=now - 600)
+    app.db.record_usage("main", usage5(0.10, ra), at=ra - 50)
+    app.db.record_usage("main", usage5(0.30, rb), at=rb - 50)
+    app.db.record_usage("main", usage5(0.20, rc), at=now - 1200)
+    app.db.record_usage("main", usage5(0.40, rc), at=now - 600)
     scan_into(app, root)
 
-    _, body = client.get("/api/account?label=gv&days=3")
+    _, body = client.get("/api/account?label=main&days=3")
     ins = body["insights"]
     assert ins["tokens_per_pct"] == pytest.approx(100.0)           # 가장 순수한 창(A) 기준
     wins = {w["reset"]: w for w in body["windows"]}
@@ -1206,17 +1206,17 @@ def test_account_session_requests(client, app, tmp_path, pricing):
               sessionId="s", cwd="/w/a"),
     ])
     write_sessions(tmp_path / "s.jsonl", [
-        {"ts": t0, "session_id": "s", "label": "gv", "source": "startup"},
-        {"ts": t0 + 90, "session_id": "s", "label": "pro5", "source": "resume"}])
+        {"ts": t0, "session_id": "s", "label": "main", "source": "startup"},
+        {"ts": t0 + 90, "session_id": "s", "label": "alt5", "source": "resume"}])
     app.sessions_file = tmp_path / "s.jsonl"
     scan_into(app, root)
-    code, body = client.get("/api/account?label=gv&session=s")
+    code, body = client.get("/api/account?label=main&session=s")
     assert code == 200
     assert body["requests"] == [{"at": t0 + 60, "model": "claude-known-1", "input": 10,
                                  "output": 5, "cache_create": 100, "cache_read": 1000,
                                  "cost": pytest.approx((10 * 3 + 5 * 15 + 100 * 3.75
                                                         + 1000 * 0.3) / 1e6)}]
-    code, body = client.get("/api/account?label=gv&session=bad/../x")
+    code, body = client.get("/api/account?label=main&session=bad/../x")
     assert code == 400
 
 
@@ -1224,11 +1224,11 @@ def test_account_window_without_local_use_is_all_external(client, app, tmp_path)
     now = srv.now_i()
     r = now + 3600
     write_sessions(tmp_path / "s.jsonl", [{"ts": now - 6 * 3600, "session_id": "other",
-                                           "label": "gv", "source": "startup"}])
+                                           "label": "main", "source": "startup"}])
     app.sessions_file = tmp_path / "s.jsonl"                        # 훅은 설치돼 있음
-    app.db.record_usage("pro5", usage5(0.23, r), at=now - 5400)
-    app.db.record_usage("pro5", usage5(1.0, r), at=now - 600)
-    _, body = client.get("/api/account?label=pro5")
+    app.db.record_usage("alt5", usage5(0.23, r), at=now - 5400)
+    app.db.record_usage("alt5", usage5(1.0, r), at=now - 600)
+    _, body = client.get("/api/account?label=alt5")
     assert body["insights"]["tokens_per_pct"] is None              # 보정할 로컬 창 없음
     assert body["windows"][0]["external_pct"] == pytest.approx(100.0)
 
@@ -1237,11 +1237,11 @@ def test_account_windows_before_hook_are_unknown(client, app, tmp_path):
     now = srv.now_i()
     r_old, r_cur = now - 20 * 3600, now + 3600
     write_sessions(tmp_path / "s.jsonl", [{"ts": now - 16200, "session_id": "s",
-                                           "label": "gv", "source": "startup"}])
+                                           "label": "main", "source": "startup"}])
     app.sessions_file = tmp_path / "s.jsonl"
-    app.db.record_usage("gv", usage5(0.40, r_old), at=r_old - 100)   # 훅 기록 전 창
-    app.db.record_usage("gv", usage5(0.10, r_cur), at=now - 60)
-    _, body = client.get("/api/account?label=gv")
+    app.db.record_usage("main", usage5(0.40, r_old), at=r_old - 100)   # 훅 기록 전 창
+    app.db.record_usage("main", usage5(0.10, r_cur), at=now - 60)
+    _, body = client.get("/api/account?label=main")
     wins = {w["reset"]: w for w in body["windows"]}
     assert wins[r_old]["external_pct"] is None                       # 귀속 불가 - 추정 안 함
     assert wins[r_cur]["external_pct"] == pytest.approx(10.0)
@@ -1264,31 +1264,31 @@ def test_plan_price_setting_and_month_multiple(client, app, tmp_path, pricing):
               sessionId="s", cwd="/w/a"),                         # 이번 달 $3.00
     ])
     write_sessions(tmp_path / "s.jsonl", [{"ts": ms - 7200, "session_id": "s",
-                                           "label": "gv", "source": "startup"}])
+                                           "label": "main", "source": "startup"}])
     app.sessions_file = tmp_path / "s.jsonl"
     scan_into(app, root)
 
-    _, body = client.get("/api/account?label=gv&days=60")
+    _, body = client.get("/api/account?label=main&days=60")
     assert body["plan"] == {"usd": None, "month_cost": pytest.approx(3.0), "multiple": None}
 
-    code, out = client.post("/api/settings", {"plan_usd": {"label": "gv", "usd": 20}})
-    assert code == 200 and out["settings"]["plan_usd"] == {"gv": 20}
-    _, body = client.get("/api/account?label=gv&days=60")
+    code, out = client.post("/api/settings", {"plan_usd": {"label": "main", "usd": 20}})
+    assert code == 200 and out["settings"]["plan_usd"] == {"main": 20}
+    _, body = client.get("/api/account?label=main&days=60")
     assert body["plan"]["usd"] == 20 and body["plan"]["multiple"] == pytest.approx(0.15)
 
-    for bad in ({"label": "BAD!", "usd": 20}, {"label": "gv", "usd": -1},
-                {"label": "gv", "usd": "20"}, {"label": "gv", "usd": 100000}):
+    for bad in ({"label": "BAD!", "usd": 20}, {"label": "main", "usd": -1},
+                {"label": "main", "usd": "20"}, {"label": "main", "usd": 100000}):
         code, _ = client.post("/api/settings", {"plan_usd": bad})
         assert code == 400
-    code, out = client.post("/api/settings", {"plan_usd": {"label": "gv", "usd": None}})
+    code, out = client.post("/api/settings", {"plan_usd": {"label": "main", "usd": None}})
     assert code == 200 and out["settings"]["plan_usd"] == {}                 # 해제
 
-    client.post("/api/settings", {"plan_usd": {"label": "gv", "usd": 200}})
+    client.post("/api/settings", {"plan_usd": {"label": "main", "usd": 200}})
     again = srv.State(app.state.path)                                         # 재기동 후 유지
-    assert again.settings_view()["plan_usd"] == {"gv": 200}
+    assert again.settings_view()["plan_usd"] == {"main": 200}
 
 
-def _passive_setup(app, tmp_path, sid="s", label="gv", five=42, seven=7):
+def _passive_setup(app, tmp_path, sid="s", label="main", five=42, seven=7):
     now = srv.now_i()
     write_sessions(tmp_path / "s.jsonl", [{"ts": now - 3 * 3600, "session_id": "s",
                                            "label": label, "source": "startup"}])
@@ -1315,19 +1315,19 @@ def wait_account_usage(app, label, timeout=1.5):
 
 
 def test_statusline_updates_session_account_without_probe(app, tmp_path):
-    app.state.set_usage("gv", {"state": "ok", "windows": {
+    app.state.set_usage("main", {"state": "ok", "windows": {
         "5h": {"utilization": 0.1, "reset": 1, "status": "allowed"},
         "7d_oi": {"utilization": 0.33, "reset": 2, "status": "allowed"}}})
     now = _passive_setup(app, tmp_path)
     app.start_scheduler()
-    usage = wait_account_usage(app, "gv")
+    usage = wait_account_usage(app, "main")
     assert usage is not None
     w = usage["windows"]
     assert w["5h"]["utilization"] == pytest.approx(0.42) and w["5h"]["reset"] == now + 3600
     assert w["7d"]["utilization"] == pytest.approx(0.07)
     assert w["7d_oi"]["utilization"] == pytest.approx(0.33)      # statusline 에 없는 창은 유지
     assert calls_of(app, "usage") == []                           # 실호출 0회
-    assert [h[0] for h in app.db.label_history("gv", now - 60)] != []
+    assert [h[0] for h in app.db.label_history("main", now - 60)] != []
     n = app.db.history_count()
     time.sleep(0.2)
     assert app.db.history_count() == n                            # 파일이 그대로면 다시 안 적는다
@@ -1336,7 +1336,7 @@ def test_statusline_updates_session_account_without_probe(app, tmp_path):
 def test_statusline_unknown_session_or_label_ignored(app, tmp_path):
     _passive_setup(app, tmp_path, sid="other")                    # 훅 기록에 없는 세션
     app.start_scheduler()
-    assert wait_account_usage(app, "gv", timeout=0.5) is None
+    assert wait_account_usage(app, "main", timeout=0.5) is None
     _passive_setup(app, tmp_path, label="ghost")                  # 지갑에 없는 라벨
     assert wait_account_usage(app, "ghost", timeout=0.5) is None
     assert calls_of(app, "usage") == []
@@ -1345,12 +1345,12 @@ def test_statusline_unknown_session_or_label_ignored(app, tmp_path):
 def test_statusline_older_than_last_probe_is_ignored_and_dated_by_mtime(app, tmp_path):
     now = _passive_setup(app, tmp_path, five=99)
     os.utime(app.live_file, (now - 7200, now - 7200))          # 2시간 전에 쓰인 캐시
-    app.state.set_usage("gv", {"state": "ok", "windows": {
+    app.state.set_usage("main", {"state": "ok", "windows": {
         "5h": {"utilization": 0.2, "reset": now + 100, "status": "allowed"}}})   # 방금 프로브
     app.start_scheduler()
-    assert wait_account_usage(app, "gv", timeout=0.5) is None   # 더 새 프로브를 덮지 않는다
-    app.state.set_usage("gv", {"state": "ok", "windows": {}}, at=now - 9000)     # 프로브가 더 옛날
+    assert wait_account_usage(app, "main", timeout=0.5) is None   # 더 새 프로브를 덮지 않는다
+    app.state.set_usage("main", {"state": "ok", "windows": {}}, at=now - 9000)     # 프로브가 더 옛날
     app._passive_seen = None
-    usage = wait_account_usage(app, "gv")
-    assert usage is not None and app.state.account("gv")["usage_at"] == now - 7200
-    assert [h[0] for h in app.db.label_history("gv", now - 8000)] == [now - 7200]
+    usage = wait_account_usage(app, "main")
+    assert usage is not None and app.state.account("main")["usage_at"] == now - 7200
+    assert [h[0] for h in app.db.label_history("main", now - 8000)] == [now - 7200]

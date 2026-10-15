@@ -48,7 +48,7 @@ A `setup-token` is the current mechanism for long-lived use, but its lifetime an
 
 | Command | Behavior |
 |---|---|
-| `cct [claude args...]` | Launch the sticky active label, or `CCT_DEFAULT_LABEL` (default `gv`) when none is active |
+| `cct [claude args...]` | Launch the sticky active label, or `CCT_DEFAULT_LABEL` (default `main`) when none is active |
 | `cct <label> [claude args...]` | Launch that account and forward all Claude arguments |
 | `cct run <label> [claude args...]` | Launch even a reserved label such as `rm` |
 | `cct use <label>` | Switch the active label without launching claude |
@@ -78,7 +78,7 @@ Labels use lowercase ASCII letters, digits, and underscores only: `[a-z0-9_][a-z
 |---|---|---|
 | `CCT_STICKY` | `1` | Remember the selected account in the current shell and the active file (mode `600`), so plain `claude` and new terminals keep using it. `0` skips persisting |
 | `CCT_ACTIVE_FILE` | `cct-active` next to `tokens.env` | Active-label file path |
-| `CCT_DEFAULT_LABEL` | `gv` | Label used when nothing is active |
+| `CCT_DEFAULT_LABEL` | `main` | Label used when nothing is active |
 | `CCT_SKIP_PERMS` | `1` | Launch claude with `--dangerously-skip-permissions` |
 | `CCT_CLAUDE_FLAGS` | none | Extra claude flags (space-separated) |
 | `CCT_DISABLE_WEB_FEATURES` | `1` | Block nonessential web calls (Advisor, telemetry, error reporting); auto-update keeps working |

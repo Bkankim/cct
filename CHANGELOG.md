@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased - neutral default label
+
+- The built-in default label (used when `CCT_DEFAULT_LABEL` is unset) is now `main`.
+  Installs that relied on the previous built-in default should set `CCT_DEFAULT_LABEL`
+  explicitly before sourcing `cct.sh`.
+- Examples, docs, and test fixtures now use neutral labels (`main`, `alt1`, `alt2`, ...).
+- Removed an unblurred screenshot from `dashboard/screenshots/`.
+
 ## Unreleased — per-account usage detail
 
 - `cct <label>`, `cct run`, `cct use`, `cct refresh` and new-shell auto-load now pass
@@ -120,7 +128,7 @@ Verified-bug remediation across `cct.sh` and `install.sh`.
   A full `cct check` (no label) returns `1` if **any** account has a problem, else `0`.
   Wrappers that relied on `cct check` always succeeding will change behavior.
 - **Bare `cct` uses a setup-token (no keychain fallback)** — running `cct` with no label now
-  injects the default label's setup-token (`CCT_DEFAULT_LABEL`, default `gv`) instead of
+  injects the default label's setup-token (`CCT_DEFAULT_LABEL`, default `main`) instead of
   clearing the ambient token and falling back to the `claude` keychain / `/login` profile.
   Every `cct` entrypoint now stays on a long-lived `setup-token`, so a stale/expired keychain
   login can no longer surface as a 401. A stale exported `CLAUDE_CODE_OAUTH_TOKEN` is always
@@ -190,7 +198,7 @@ a clean `[a-z0-9_][a-z0-9_]*` label.
   (zero quota consumed) against unofficial internal endpoints and may break if provider
   policy changes; disable with `--no-providers`.
 - **Environment knobs** — `CCT_SKIP_PERMS=0` disables `--dangerously-skip-permissions`;
-  `CCT_CLAUDE_FLAGS` passes extra flags to `claude`; `CCT_DEFAULT_LABEL` (default `gv`) is the
+  `CCT_CLAUDE_FLAGS` passes extra flags to `claude`; `CCT_DEFAULT_LABEL` (default `main`) is the
   fallback label for a bare `cct`; `CCT_STICKY=0` disables the sticky active profile;
   `CCT_ACTIVE_FILE` overrides the active-profile state path.
 - **`cct active` / `cct off`** — show or clear the sticky active profile.

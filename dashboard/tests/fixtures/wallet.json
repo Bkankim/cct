@@ -7,31 +7,31 @@
     "claude": "/Users/bkan/.local/bin/claude",
     "claude_version": "2.1.270"
   },
-  "active": "gv",
-  "default": "gv",
+  "active": "main",
+  "default": "main",
   "accounts": [
     {
-      "label": "gv",
+      "label": "main",
       "has_token": true,
       "check_rc": 0
     },
     {
-      "label": "pro4",
+      "label": "alt4",
       "has_token": true,
       "check_rc": 0
     },
     {
-      "label": "pro5",
+      "label": "alt5",
       "has_token": true,
       "check_rc": 0
     },
     {
-      "label": "max1",
+      "label": "alt2",
       "has_token": true,
       "check_rc": 0
     },
     {
-      "label": "pro4b",
+      "label": "alt4b",
       "has_token": true,
       "check_rc": 0
     },
