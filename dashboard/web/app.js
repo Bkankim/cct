@@ -969,6 +969,7 @@ el('sel-notify').addEventListener('change', function(){
 // ── 계정 상세 (#/account/<라벨>) ─────────────────────────────────────
 // 세션 훅(cct-session-hook.sh) 기록으로 이 맥의 메시지를 계정에 귀속한 /api/account 를 그린다.
 var DET = null, DET_LABEL = null, DET_RANGE = 24, DET_REQ = {};
+var DET_SHOW = 10, DET_MORE = {};   // 긴 표 기본 노출 행 수 · 표별 펼침 상태(win: 5시간 구간, ses: 세션)
 var DET_DAYS = 7, WIN5 = 5*H;
 function modelName(m){
   var s = String(m||'').replace(/^claude-/, '').replace(/-\d{8}$/, '').split('-');
@@ -989,7 +990,7 @@ function detRoute(){
   var m = /^#\/account\/([a-z0-9_]+)$/.exec(location.hash);
   el('main').hidden = !!m; el('detail').hidden = !m;
   if(!m){ DET_LABEL = null; return; }
-  if(DET_LABEL !== m[1]){ DET_LABEL = m[1]; DET = null; DET_REQ = {}; window.scrollTo(0, 0); }
+  if(DET_LABEL !== m[1]){ DET_LABEL = m[1]; DET = null; DET_REQ = {}; DET_MORE = {}; window.scrollTo(0, 0); }
   renderDetail(); loadDetail();
 }
 function loadDetail(){
@@ -1129,8 +1130,16 @@ function detLegend(){
     + '<span><i class="sw" style="background:var(--ext)"></i>외부 사용 추정</span>'
     + '<span><i class="sw" style="background:var(--bad);border-radius:50%"></i>한도 도달</span>';
 }
+// 긴 표는 최근 DET_SHOW 행만 두고 나머지는 접는다. 펼침 상태는 재렌더에도 유지하고 계정이 바뀌면 초기화한다.
+function moreRows(list, key){ return DET_MORE[key] ? list : list.slice(0, DET_SHOW); }
+function moreRow(total, key, cols){
+  if(total <= DET_SHOW) return '';
+  return '<tr class="dt-more"><td colspan="'+cols+'"><button class="btn sm ghost" type="button" data-more="'+key+'">'
+    + (DET_MORE[key] ? '접기' : '나머지 '+(total-DET_SHOW)+'개 펼치기')+'</button></td></tr>';
+}
 function detWindows(){
-  var rows = DET.windows.filter(function(w){ return w.requests || w.peak > 0; }).slice(0, 12).map(function(w){
+  var all = DET.windows.filter(function(w){ return w.requests || w.peak > 0; });
+  var rows = moreRows(all, 'win').map(function(w){
     var st = w.reset*1000 - WIN5, p = Math.floor(w.peak*100), ext = w.external_pct;
     return '<tr><td class="tm">'+mdhm(st)+' - '+hm(w.reset*1000)+(w.active?' <span class="badge acc">진행 중</span>':'')+'</td>'
       + '<td class="'+toneOf(p)+'">'+p+'%</td>'
@@ -1139,7 +1148,7 @@ function detWindows(){
       + '<td class="'+(ext?'warn':'dim')+'">'+(ext===null||ext===undefined ? '기록 전' : ext>=1 ? '+'+Math.round(ext)+'%p' : '-')+'</td>'
       + '<td>'+usd(w.cost)+'</td></tr>';
   }).join('');
-  return rows ? '<div class="dt-scroll"><table class="tok-table dt-table"><thead><tr><th>구간</th><th>최고</th><th>한도</th><th>세션</th><th>로컬 토큰</th><th>외부 추정</th><th>API 환산</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+  return rows ? '<div class="dt-scroll"><table class="tok-table dt-table"><thead><tr><th>구간</th><th>최고</th><th>한도</th><th>세션</th><th>로컬 토큰</th><th>외부 추정</th><th>API 환산</th></tr></thead><tbody>'+rows+moreRow(all.length, 'win', 7)+'</tbody></table></div>'
     : '<p class="hint">조회 기록이 없습니다. 카드에서 갱신하거나 자동 갱신을 켜면 쌓입니다.</p>';
 }
 function mixBar(models){
@@ -1160,7 +1169,7 @@ function detSessions(){
   if(!DET.sessions.length) return '<p class="hint">이 계정으로 귀속된 세션이 아직 없습니다. 세션 훅이 설치된 뒤 <code>cct</code> 로 실행한 세션부터 집계됩니다.</p>';
   var now = Date.now();
   return '<div class="dt-scroll"><table class="tok-table dt-table dt-ses"><thead><tr><th>시작</th><th>프로젝트</th><th>시간</th><th>모델</th><th>요청</th><th>입력</th><th>출력</th><th>캐시 읽기</th><th>API 환산</th><th>한도 에러</th></tr></thead><tbody>'
-    + DET.sessions.map(function(s){
+    + moreRows(DET.sessions, 'ses').map(function(s){
       var open = DET_REQ.hasOwnProperty(s.session) && DET_REQ['open:'+s.session];
       var live = now - s.end*1000 < 10*M;
       return '<tr class="dt-row'+(open?' open':'')+'" data-sid="'+esc(s.session)+'"><td class="tm"><span class="caret">▸</span> '+mdhm(s.start*1000)
@@ -1169,7 +1178,7 @@ function detSessions(){
         + '<td>'+s.requests+'</td><td>'+fmtTok(s.input+s.cache_create)+'</td><td>'+fmtTok(s.output)+'</td><td>'+fmtTok(s.cache_read)+'</td>'
         + '<td class="tc">'+usd(s.cost)+'</td><td class="'+(s.limit_errors?'bad':'dim')+'">'+(s.limit_errors||'-')+'</td></tr>'
         + (open ? '<tr class="dt-sub"><td colspan="10"><div class="dt-req">'+reqTable(s.session)+'</div></td></tr>' : '');
-    }).join('') + '</tbody></table></div>';
+    }).join('') + moreRow(DET.sessions.length, 'ses', 10) + '</tbody></table></div>';
 }
 function hbars(rows, key, colorOf){
   if(!rows.length) return '<p class="hint">데이터 없음</p>';
@@ -1209,6 +1218,8 @@ function renderDetail(){
   detChart();
 }
 el('detail').addEventListener('click', function(e){
+  var mb = e.target.closest('[data-more]');
+  if(mb){ var mk = mb.getAttribute('data-more'); DET_MORE[mk] = !DET_MORE[mk]; renderDetail(); return; }
   var r = e.target.closest('[data-range]');
   if(r){ DET_RANGE = +r.getAttribute('data-range'); renderDetail(); return; }
   var row = e.target.closest('tr.dt-row'); if(!row) return;

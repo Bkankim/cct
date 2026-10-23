@@ -11,6 +11,9 @@
   sparkline redraw, alert-count bump) plus a one-time tile reveal on first load; the
   connection dot pulse is the only loop, and `prefers-reduced-motion` disables all of it.
 - Dashboard: the 65/90 tick marks on meter tracks now follow the configured thresholds.
+- Dashboard detail page: the 5h-window and session tables show the latest 10 rows with a
+  "show N more" toggle (state kept across refreshes, reset when switching accounts); the
+  5h-window table no longer drops rows past 12.
 - Screenshots retaken in fixture mode with the neutral fixture labels (no blur needed).
 
 ## Unreleased - neutral default label
