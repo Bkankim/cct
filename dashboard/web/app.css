@@ -437,6 +437,7 @@ footer{display:flex;flex-wrap:wrap;gap:5px 16px;justify-content:space-between;pa
 .caret{display:inline-block;width:11px;color:var(--fg-dim);transition:transform var(--t)}
 tr.open .caret{transform:rotate(90deg)}
 tr.dt-sub td{background:var(--bg);padding:0}
+.tok-table tr.dt-more td{text-align:center;padding:10px 0 2px}
 .dt-req{padding:4px 10px 10px 26px;max-height:340px;overflow:auto}
 .dt-mix{display:inline-flex;width:110px;height:6px;border-radius:3px;overflow:hidden;background:var(--surface-3);vertical-align:middle}
 .dt-mix i{display:block;height:100%}
