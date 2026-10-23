@@ -2,6 +2,7 @@
 // cct 대시보드 프론트 - /api/state 를 폴링해 렌더하고, 버튼은 실제 엔드포인트를 호출한다.
 // 표시 로직(추천 계정·중복 판정·게이지)은 클라이언트, 사실은 서버가 내려준다.
 // 2026-09-16 Beszel 계열 UI 리팩터링: API·뷰모델·액션 계약은 그대로, 렌더만 교체했다.
+// 2026-10-23 Bento 그리드: 히어로 타일(비용·알림·추천·리셋 임박·진단 요약)을 더하고, 모션은 값이 바뀐 요소에만 건다.
 (function(){
 var M = 60e3, H = 3600e3, D = 86400e3;
 var RESERVED = ['help','ls','list','add','run','rm','rename','status','doctor','check','fp','who','usage','off','active','refresh','use'];
@@ -33,6 +34,74 @@ function fpKey(a){ return (a.org && a.w7 && a.w7.r) ? a.org+'|'+a.w7.r : null; }
 function dupMap(){ var m={}; S.accounts.forEach(function(a){ var k=fpKey(a); if(k){ (m[k]=m[k]||[]).push(a.label); } }); return m; }
 function validLabel(l){ if(!l) return '라벨이 비어 있음'; if(!/^[a-z0-9_]+$/.test(l)) return '라벨은 소문자 영문/숫자/_ 만 허용'; if(RESERVED.indexOf(l)>=0) return l+' 는 예약어(서브커맨드)'; return ''; }
 function writeOn(){ return el('chk-write').checked; }
+
+// ── 모션 - 값이 바뀐 요소에만 재생한다 ─────────────────────────────
+// 렌더가 innerHTML 재빌드라 CSS 전환이 저절로 걸리지 않는다. 키별 직전 값을 기억해 두고
+// 달라진 요소에만 바 전환·카운트업·스파크 draw-on·배지 bump 를 건다. 60초 재렌더처럼
+// 값이 그대로면 아무것도 움직이지 않는다. 처음 보는 키는 0 에서 출발한다(늦게 오는 응답도 같은 연출).
+// 키는 영역 접두사(h: 히어로 · t: 토큰 · a: 계정 · p: 프로바이더)로 나눠 라벨과 겹치지 않게 한다.
+var PREV = {};
+var introDone = false, motionQ = false;
+function reduced(){ return !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches); }
+function fmtNum(f, v){ return f==='usd' ? usd(v) : f==='pct' ? Math.round(v)+'%' : String(Math.round(v)); }
+function tween(node, from, to, f){
+  var t0 = null;
+  function step(now){
+    if(t0===null) t0 = now;
+    var k = Math.min(1, (now-t0)/650), e = 1-Math.pow(1-k, 3);
+    node.textContent = fmtNum(f, from+(to-from)*e);
+    if(k<1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+function each(root, sel, fn){ Array.prototype.forEach.call(root.querySelectorAll(sel), fn); }
+// 한 프레임에 한 번만 돈다 - 렌더 함수 여러 곳에서 불러도 스캔은 한 번이다.
+// rAF 는 페이인트 전에 돌아서 최종값이 한 번 비치는 깜빡임이 없다.
+function motion(){
+  if(motionQ) return;
+  motionQ = true;
+  requestAnimationFrame(function(){ motionQ = false; runMotion(); });
+}
+function runMotion(){
+  var root = el('main'); if(!root || !S) return;
+  var calm = reduced();
+  // 바(width) · 막대(height): 직전 값에서 새 값으로 전환
+  each(root, '[data-bk]', function(n){
+    var prop = n.getAttribute('data-bp') || 'width', k = 'b:'+n.getAttribute('data-bk'), to = n.style[prop], from = PREV[k];
+    PREV[k] = to;
+    if(calm) return;
+    if(from===undefined) from = '0%';
+    if(from===to) return;
+    n.style.transition = 'none'; n.style[prop] = from;
+    void n.offsetWidth;
+    n.style.transition = ''; n.style[prop] = to;
+  });
+  // 숫자: 직전 값에서 새 값까지 카운트
+  each(root, '[data-nk]', function(n){
+    var k = 'n:'+n.getAttribute('data-nk'), to = +n.getAttribute('data-nv'), from = PREV[k];
+    PREV[k] = to;
+    if(calm) return;
+    if(from===undefined) from = 0;
+    if(from!==to) tween(n, from, to, n.getAttribute('data-nf'));
+  });
+  // 스파크라인: 처음 나타나거나 데이터가 바뀌었을 때만 다시 그린다
+  each(root, '[data-sk]', function(n){
+    var k = 's:'+n.getAttribute('data-sk'), sig = n.getAttribute('data-sig'), from = PREV[k];
+    PREV[k] = sig;
+    if(!calm && from!==sig) n.classList.add('draw');
+  });
+  // 개수 배지: 늘었을 때만 bump
+  each(root, '[data-bump]', function(n){
+    var k = 'u:'+n.getAttribute('data-bump'), to = +n.getAttribute('data-nv'), from = PREV[k];
+    PREV[k] = to;
+    if(!calm && from!==undefined && to>from) n.classList.add('bump');
+  });
+  // 첫 로드 1회 - 타일이 차례로 들어온다
+  if(!introDone){
+    introDone = true;
+    if(!calm) each(root, '.t', function(n, i){ n.style.setProperty('--i', Math.min(i, 24)); n.classList.add('rv'); });
+  }
+}
 
 // ── API ───────────────────────────────────────────────────────────
 function api(path, body){
@@ -83,6 +152,8 @@ function toView(st){
   if(st.live){
     v.live = {
       at: ms(st.live.at), stale: !!st.live.stale, label: st.live.label_guess || v.status.active,
+      known: !!st.live.label_guess,   // 세션 훅으로 라벨이 확인됐는지 - 아니면 위 label 은 활성 라벨 추정
+
       model: st.live.model || '-', ctx: st.live.context_pct, cost: st.live.cost_usd,
       fiveH: st.live.five_hour || null, sevenD: st.live.seven_day || null
     };
@@ -90,6 +161,9 @@ function toView(st){
   // 임계값은 서버 설정이 단일 출처 - 미터 색·카드 배지·알림 스트립이 같은 값을 쓴다.
   if(typeof v.settings.alert_warn === 'number') WARN_AT = v.settings.alert_warn;
   if(typeof v.settings.alert_crit === 'number') CRIT_AT = v.settings.alert_crit;
+  // 미터 트랙의 임계 눈금도 같은 값을 따른다
+  document.documentElement.style.setProperty('--warn-at', WARN_AT+'%');
+  document.documentElement.style.setProperty('--crit-at', CRIT_AT+'%');
   return v;
 }
 
@@ -124,7 +198,8 @@ function statusNote(s){ return (s && s!=='allowed') ? s.replace('allowed_','') :
 // 미터 한 줄: [창][사용률][바][리셋까지 남은 시간 · 정확한 리셋 시각].
 // 모든 카드가 같은 좌표에 같은 정보를 놓는다. 창 상태(allowed_warning/rejected)는
 // 리셋 시각을 덮어쓰지 않고 창 이름·사용률의 색과 카드 배지, 툴팁으로 알린다.
-function metric(key, w, withDate){
+// id 를 주면 모션 키가 붙어 값이 바뀔 때 바가 늘고 숫자가 센다.
+function metric(key, w, withDate, id){
   if(!w || w.u===null || w.u===undefined){
     return naMetric(key, w ? '확인 불가' : '미지원', false);
   }
@@ -134,8 +209,10 @@ function metric(key, w, withDate){
   var right = w.r ? resetText(w.r, withDate) : '리셋 -';
   var title = key + ' ' + p + '%' + (note ? ' · 창 상태 ' + w.s : '')
     + ' · ' + (w.r ? '리셋 ' + clock(w.r, true) : '리셋 정보 없음');
-  return '<div class="m" title="'+esc(title)+'"><span class="mk'+sev+'">'+key+'</span><span class="mv'+sev+'">'+p+'%</span>'
-       + '<span class="track"><i class="'+fillClass(p,w)+'" style="width:'+p+'%"></i></span>'
+  var mk = id ? ' data-nk="'+esc(id)+'" data-nv="'+p+'" data-nf="pct"' : '';
+  var bk = id ? ' data-bk="'+esc(id)+'"' : '';
+  return '<div class="m" title="'+esc(title)+'"><span class="mk'+sev+'">'+key+'</span><span class="mv'+sev+'"'+mk+'>'+p+'%</span>'
+       + '<span class="track"><i class="'+fillClass(p,w)+'"'+bk+' style="width:'+p+'%"></i></span>'
        + '<span class="mr">'+esc(right)+'</span></div>';
 }
 // 데이터가 없는 창은 가짜 숫자 대신 사유를 적는다.
@@ -165,8 +242,8 @@ function sparkline(label){
   if(!d5 && !d7) return '';
   var yw = (2+(1-WARN_AT/100)*30).toFixed(1), yc = (2+(1-CRIT_AT/100)*30).toFixed(1);
   var rng = HIST_HOURS>=168 ? '7d' : HIST_HOURS+'h';
-  return '<div class="spark" title="'+esc('최근 '+rng+' 사용률 - 주황 7d · 회색 5h · 가로선 임계 '+WARN_AT+'/'+CRIT_AT+'%')+'">'
-    + '<svg viewBox="0 0 240 34" preserveAspectRatio="none" aria-hidden="true">'
+  return '<div class="spark" title="'+esc('최근 '+rng+' 사용률 - 해록 7d · 회색 5h · 가로선 임계 '+WARN_AT+'/'+CRIT_AT+'%')+'">'
+    + '<svg viewBox="0 0 240 34" preserveAspectRatio="none" aria-hidden="true" data-sk="a:'+esc(label)+'" data-sig="'+esc(rng+'|'+pts.length+'|'+pts[pts.length-1].join(','))+'">'
     + '<line class="gc" x1="0" y1="'+yc+'" x2="240" y2="'+yc+'"/>'
     + '<line class="gw" x1="0" y1="'+yw+'" x2="240" y2="'+yw+'"/>'
     + (d5 ? '<path class="sp5" d="'+d5+'"/>' : '')
@@ -195,47 +272,99 @@ function renderTop(){
   el('cards-hint').innerHTML = '<code>cct usage --all</code> · 사용률 '+WARN_AT+'% 이상 주의, '+CRIT_AT+'% 이상 위험';
 }
 
-function liveBits(){
-  var L = S.live;
-  if(!L) return '<span class="lk">statusline 캐시 없음 <b>-</b></span>';
-  var five = L.fiveH||{}, seven = L.sevenD||{};
-  var out = [];
-  out.push('<span class="lk">5h <b>'+(five.used_percentage===undefined?'-':Math.round(five.used_percentage)+'%')+'</b>'
-    + (five.resets_at?' <span>'+remaining(ms(five.resets_at))+'</span>':'')+'</span>');
-  out.push('<span class="lk">7d <b>'+(seven.used_percentage===undefined?'-':Math.round(seven.used_percentage)+'%')+'</b>'
-    + (seven.resets_at?' <span>'+remaining(ms(seven.resets_at))+'</span>':'')+'</span>');
-  out.push('<span class="lk">모델 <b>'+esc(L.model)+'</b></span>');
-  out.push('<span class="lk">컨텍스트 <b>'+(L.ctx===null||L.ctx===undefined?'-':L.ctx+'%')+'</b></span>');
-  out.push('<span class="lk">세션 <b>$'+(L.cost||0).toFixed(2)+'</b></span>');
-  out.push('<span class="lk'+(L.stale?' stale':'')+'" title="Claude Code statusline 캐시 · 프로브 0회">'
-    + (L.stale?'stale ':'')+'<b>'+ago(L.at)+'</b></span>');
-  return out.join('');
+// 활성 계정 2x2 타일. 큰 숫자는 대화 중인 statusline 값이 우선이고, 없으면 활성 계정의 마지막 프로브다.
+// statusline 이 stale 이거나 이 계정 세션으로 확인되지 않으면 숫자에 쓰지 않는다
+// (오래된 값이 더 최신 프로브를 덮지 않게). 세션 정보는 출처 라벨을 밝혀 그대로 보인다.
+function abBig(key, lw, w){
+  var u = null, r = null, src = '';
+  if(lw && lw.used_percentage!==undefined && lw.used_percentage!==null){ u = lw.used_percentage; r = lw.resets_at ? ms(lw.resets_at) : null; src = 'statusline'; }
+  else if(w && w.u!==null && w.u!==undefined){ u = w.u*100; r = w.r; src = '마지막 프로브'; }
+  if(u===null) return '<div class="k"><span class="kk">'+key+'</span><span class="big na">-</span><span class="sub">미확인</span></div>';
+  var p = Math.round(u), rej = w && w.s==='rejected';
+  return '<div class="k '+(rej ? 'bad' : toneOf(p))+'" title="'+esc(key+' '+p+'% · '+src+' 기준')+'"><span class="kk">'+key+(rej?' 차단':'')+'</span>'
+    + '<span class="big" data-nk="h:'+key+'" data-nv="'+p+'" data-nf="pct">'+p+'%</span>'
+    + '<span class="sub">'+(r ? esc(resetText(r, key==='7d')) : '리셋 -')+'</span></div>';
 }
 function renderActiveBar(){
-  var bar = el('activebar'), st = S.status, a = acc(st.active), r = recommend();
+  var bar = el('activebar'), st = S.status, a = acc(st.active), L = S.live;
+  // 활성 라벨이 있고 statusline 세션 라벨이 그와 같을 때만 내 값이다
+  var mine = !!(L && L.known && st.active && L.label===st.active);
+  var useLive = mine && !L.stale;
   var badges = '';
   if(a){
     if(a.isDefault) badges += '<span class="badge">기본</span>';
     badges += '<span class="badge">sticky '+esc(st.sticky)+'</span>';
+  } else if(!st.active){
+    badges += '<span class="badge">기본 '+esc(st.def||'-')+' 로 실행</span>';
   }
-  var head = st.active
-    ? '<span class="ab-eyebrow">활성 계정</span><span class="ab-label">'+esc(st.active)+'</span>'+badges
-    : '<span class="ab-eyebrow">활성 계정</span><span class="ab-label">없음</span>'
-      + '<span class="badge">기본 '+esc(st.def||'-')+' 로 실행</span>';
-  var act = '', note = '';
+  var src = L
+    ? '<span class="'+(L.stale?'warn':'')+'" title="Claude Code statusline 캐시 · 프로브 0회">'+(mine ? '' : (L.known ? esc(L.label)+' 세션 · ' : '세션 라벨 미상 · '))+(L.stale?'stale ':'')+ago(L.at)+'</span>'
+    : '<span>statusline 캐시 없음</span>';
+  var ctx = (L && L.ctx!==null && L.ctx!==undefined) ? L.ctx : null;
+  bar.className = 't c2 r2 activebar' + (st.active ? '' : ' none');
+  bar.innerHTML = '<div class="cap"><span>활성 계정</span>'+src+'</div>'
+    + '<div class="ab-head"><span class="ab-name">'+esc(st.active || '없음')+'</span>'+badges+'</div>'
+    + '<div class="duo">'+abBig('5h', useLive && L.fiveH, a && a.w5)+abBig('7d', useLive && L.sevenD, a && a.w7)+'</div>'
+    + '<div class="ab-kv push"><span>모델</span><b>'+esc(L ? L.model : '-')+'</b>'
+    + '<span>세션 비용</span><b>'+(L ? '$'+(L.cost||0).toFixed(2) : '-')+'</b>'
+    + '<span>컨텍스트</span><b>'+(ctx===null ? '-' : ctx+'%')+'</b></div>'
+    + '<div class="ctx" title="컨텍스트 사용률"><i data-bk="h:ctx" style="width:'+(ctx===null ? 0 : Math.min(100, ctx))+'%"></i></div>';
+}
+function renderRec(){
+  var host = el('kpi-rec'), st = S.status, r = recommend();
+  var cap = '<div class="cap"><span>추천 전환</span>';
   if(!r){
-    note = '갈아탈 후보 없음 · 프로브된 계정이 없거나 모두 소진·무효입니다';
-  } else if(r.label === st.active){
-    note = '현재 계정이 가장 여유롭습니다 · 병목 <b>'+pct(headroom(r))+'</b>';
-  } else {
-    note = '추천 <b>'+esc(r.label)+'</b> · 병목 '+pct(headroom(r))+' · 5h '+pct(r.w5.u)+' / 7d '+pct(r.w7.u);
-    act = '<button class="btn ghost sm" data-act="copy" data-l="'+esc(r.label)+'" title="cct '+esc(r.label)+'">복사</button>'
-        + '<button class="btn accent" data-act="use" data-l="'+esc(r.label)+'">'+esc(r.label)+' 로 전환</button>';
+    host.innerHTML = cap+'</div><div class="mid na">없음</div><span class="sub">프로브된 계정이 없거나 모두 소진·무효입니다</span>';
+    return;
   }
-  bar.className = 'activebar' + (st.active ? '' : ' none');
-  bar.innerHTML = '<div class="ab-main">'+head+'</div>'
-    + '<div class="ab-live">'+liveBits()+'</div>'
-    + '<div class="ab-act"><span class="ab-rec">'+note+'</span>'+act+'</div>';
+  var top = Math.round(headroom(r)*100), tone = toneOf(top);
+  cap += '<span class="chip '+tone+'">'+(tone==='ok' ? '여유' : tone==='warn' ? '주의' : '위험')+'</span></div>';
+  if(r.label === st.active){
+    host.innerHTML = cap+'<div class="mid">'+esc(r.label)+'</div><span class="sub">현재 계정이 가장 여유롭습니다 · 병목 '+pct(headroom(r))+'</span>';
+    return;
+  }
+  host.innerHTML = cap
+    + '<div class="mid">'+esc(r.label)+' <span class="sub">병목 '+pct(headroom(r))+' · 5h '+pct(r.w5.u)+' / 7d '+pct(r.w7.u)+'</span></div>'
+    + '<div class="row push"><button class="btn ghost sm" data-act="copy" data-l="'+esc(r.label)+'" title="cct '+esc(r.label)+'">복사</button>'
+    + '<button class="btn accent sm" data-act="use" data-l="'+esc(r.label)+'">'+esc(r.label)+' 로 전환</button></div>';
+}
+function renderKpiAlerts(){
+  var act = (S.alerts && S.alerts.active) || [];
+  var n = act.length, nc = act.filter(function(x){ return x.level==='crit'; }).length;
+  el('kpi-alerts').innerHTML = '<div class="cap"><span>알림</span></div>'
+    + '<span class="count '+(n ? (nc ? 'bad' : 'warn') : 'ok')+'" data-bump="h:alerts" data-nv="'+n+'">'+n+'</span>'
+    + '<span class="sub push">'+(n ? '위험 '+nc+' · 주의 '+(n-nc) : '임계 초과 없음')+'</span>';
+}
+// 가장 가까운 리셋 하나. 링은 그 창이 얼마나 지났는지(5h 또는 7d 중 경과 비율)다.
+function renderKpiReset(){
+  var now = Date.now(), best = null;
+  S.accounts.forEach(function(a){
+    if(!a.token || !a.ok) return;
+    [['5h',a.w5,5*H],['7d',a.w7,7*D],['7f',a.wf,7*D]].forEach(function(p){
+      var w = p[1]; if(!w || !w.r || w.r<=now) return;
+      if(!best || w.r<best.r) best = {l:a.label, k:p[0], r:w.r, dur:p[2]};
+    });
+  });
+  var host = el('kpi-reset'), cap = '<div class="cap"><span>리셋 임박</span></div>';
+  if(!best){ host.innerHTML = cap+'<div class="mid na">-</div><span class="sub">프로브된 창이 없습니다</span>'; return; }
+  var frac = Math.max(0, Math.min(1, 1-(best.r-now)/best.dur)), C = 113.1;
+  host.innerHTML = cap + '<div class="rrow push" title="'+esc(best.l+' '+best.k+' 창 '+Math.round(frac*100)+'% 경과 · 리셋 '+clock(best.r, true))+'">'
+    + '<svg class="ring" viewBox="0 0 46 46" aria-hidden="true"><circle class="bg" cx="23" cy="23" r="18"/>'
+    + '<circle class="fg" cx="23" cy="23" r="18" stroke-dasharray="'+C+'" stroke-dashoffset="'+(C*(1-frac)).toFixed(1)+'"/></svg>'
+    + '<div class="rtx"><div class="mid">'+remaining(best.r)+'</div><span class="sub mono">'+esc(best.l)+' '+best.k+' · '+clock(best.r, best.k!=='5h')+'</span></div></div>';
+}
+function renderKpiDiag(){
+  var d = S.doctor, host = el('kpi-diag');
+  var nP = d.filter(function(x){ return x.lv==='PASS'; }).length;
+  var nW = d.filter(function(x){ return x.lv==='WARN'; }).length;
+  var nF = d.filter(function(x){ return x.lv==='FAIL'; }).length;
+  var first = d.filter(function(x){ return x.lv!=='PASS'; })[0];
+  host.innerHTML = '<div class="cap"><span><i class="dot '+(!d.length ? 'idle' : nF ? 'bad' : nW ? 'warn' : 'ok')+'"></i> 진단</span></div>'
+    + (d.length
+        ? '<div class="tri"><span class="ok">'+nP+'<small>PASS</small></span><span class="'+(nW?'warn':'zero')+'">'+nW+'<small>WARN</small></span>'
+          + '<span class="'+(nF?'bad':'zero')+'">'+nF+'<small>FAIL</small></span></div>'
+          + '<span class="sub mono push" title="'+esc(first ? first.msg : '')+'">'+(first ? first.lv+' '+esc(first.msg) : '모두 정상')+'</span>'
+        : '<div class="mid na">-</div><span class="sub">cct doctor 결과 없음</span>');
 }
 
 function checkBit(a){
@@ -258,7 +387,7 @@ function accountCard(a, dups, rec){
   var isRec = rec && rec.label===a.label && !a.isActive;
   var bad = a.token && (a.state==='no_response' || a.state==='parse_error' || (a.check && a.check.res==='invalid'));
   var top = headroom(a);
-  var cls = 'acct' + (a.isActive?' is-active':'') + ((!a.token||!a.ok)?' is-dim':'');
+  var cls = 'acct t c2' + (a.isActive?' is-active':'') + ((!a.token||!a.ok)?' is-dim':'');
   var badges = '';
   if(a.isActive) badges += '<span class="badge acc"><i class="dot on"></i>활성</span>';
   if(a.isDefault) badges += '<span class="badge">기본</span>';
@@ -292,8 +421,8 @@ function accountCard(a, dups, rec){
     body = naMetric('5h','미확인') + naMetric('7d','미확인') + naMetric('7f','미확인');
     note = '<div class="ac-note">아직 프로브하지 않았습니다. 갱신을 누르면 <code>cct usage</code> 를 실행합니다.</div>';
   } else {
-    body = metric('5h', a.w5, false) + metric('7d', a.w7, true);
-    body += a.denied ? naMetric('7f', '프로브 거부 '+a.denied, true) : metric('7f', a.wf, true);
+    body = metric('5h', a.w5, false, 'a:'+a.label+':5h') + metric('7d', a.w7, true, 'a:'+a.label+':7d');
+    body += a.denied ? naMetric('7f', '프로브 거부 '+a.denied, true) : metric('7f', a.wf, true, 'a:'+a.label+':7f');
   }
 
   var probeTxt = a.probeAt ? ago(a.probeAt) : (a.token ? '미확인' : '-');
@@ -312,7 +441,7 @@ function accountCard(a, dups, rec){
     + '<div class="ac-metrics">'+body+'</div>'+sparkline(a.label)+note+meta+act+'</article>';
 }
 function addCard(){
-  return '<article class="acct add"><div class="ac-head"><span class="lbl">새 계정</span>'
+  return '<article class="acct t c2 add"><div class="ac-head"><span class="lbl">새 계정</span>'
     + '<span class="ac-badges"><span class="badge">cct add</span></span></div>'
     + '<form id="form-add">'
     + '<input id="add-label" type="text" placeholder="라벨 (a-z0-9_)" autocomplete="off" required>'
@@ -325,12 +454,13 @@ function addCard(){
 function renderCards(){
   var host = el('cards');
   if(!S.accounts.length){
-    host.innerHTML = '<div class="empty"><b>등록된 계정이 없습니다</b>'
+    host.innerHTML = '<div class="empty t c6"><b>등록된 계정이 없습니다</b>'
       + '<span>터미널에서 <code>cct add &lt;라벨&gt;</code> 로 setup-token 을 등록하면 여기에 카드가 생깁니다.</span></div>' + addCard();
     return;
   }
   var dups = dupMap(), rec = recommend();
   host.innerHTML = S.accounts.map(function(a){ return accountCard(a, dups, rec); }).join('') + addCard();
+  motion();
 }
 
 // ── 프로바이더(GPT·Grok) - OAuth 온보딩 카드 + 사용률 미터 ───────────
@@ -357,7 +487,7 @@ function provJoinCard(p){
   } else {
     body = '<button class="btn accent" data-act="prov-login" data-p="'+esc(p.id)+'">'+esc(p.name)+' 계정 연결</button>';
   }
-  return '<article class="acct prov"><div class="prov-join">'
+  return '<article class="acct prov t c2"><div class="prov-join">'
     + provLogo(p.id)
     + '<span class="pname">'+esc(p.name)+'</span><span class="pvendor">'+esc(p.vendor)+'</span>'
     + body
@@ -373,9 +503,9 @@ function provCard(p){
   if(p.usage_error) badges += '<span class="badge bad" title="'+esc(p.usage_error.message||'')+'">조회 실패</span>';
   var body;
   if(p.id==='openai'){
-    body = metric('5h', provWin(w['5h']), false) + metric('7d', provWin(w['7d']), true);
+    body = metric('5h', provWin(w['5h']), false, 'p:'+p.id+':5h') + metric('7d', provWin(w['7d']), true, 'p:'+p.id+':7d');
   } else {
-    body = metric('wk', provWin(w['weekly']), true);
+    body = metric('wk', provWin(w['weekly']), true, 'p:'+p.id+':wk');
     if(u && u.products && u.products.length){
       body += '<div class="ac-note">'+u.products.map(function(x){
         return esc(x.name)+' '+esc(String(x.used_pct))+'%'; }).join(' · ')+'</div>';
@@ -391,7 +521,7 @@ function provCard(p){
     + '<button class="btn sm" data-act="prov-refresh" data-p="'+esc(p.id)+'" title="메타데이터 조회만 - 사용량 소비 0">갱신</button>'
     + '<button class="btn sm ghost" data-act="prov-logout" data-p="'+esc(p.id)+'">연결 해제</button>'
     + '</div>';
-  return '<article class="acct prov"><div class="ac-head">'+provLogo(p.id)
+  return '<article class="acct prov t c2"><div class="ac-head">'+provLogo(p.id)
     + '<span class="lbl">'+esc(p.name)+'</span>'
     + '<span class="ac-badges">'+badges+'</span></div>'
     + '<div class="ac-metrics">'+body+'</div>'+meta+act+'</article>';
@@ -401,7 +531,7 @@ function renderProviders(){
   if(!host) return;
   var P = S.providers || [];
   host.innerHTML = P.length ? P.map(provCard).join('')
-    : '<div class="empty"><b>프로바이더 추적이 꺼져 있습니다</b><span>서버를 --no-providers 없이 실행하면 GPT·Grok 카드가 표시됩니다.</span></div>';
+    : '<div class="empty t c6"><b>프로바이더 추적이 꺼져 있습니다</b><span>서버를 --no-providers 없이 실행하면 GPT·Grok 카드가 표시됩니다.</span></div>';
 }
 var provPoll = null;
 function startProvPoll(){
@@ -521,7 +651,7 @@ function renderAlerts(){
   if(host.querySelector('details[open]')) return;   // 기록을 보는 중엔 재빌드하지 않는다
   var nc = act.filter(function(x){ return x.level==='crit'; }).length;
   var ev = (A.events||[]).slice(0,10);
-  host.className = 'alertstrip' + (nc ? ' crit' : '');
+  host.className = 't c6 alertstrip' + (nc ? ' crit' : '');
   host.innerHTML = '<span class="as-head '+(nc?'bad':'warn')+'">알림 '+act.length+'</span>'
     + '<div class="as-list">'+act.map(alertPill).join('')+'</div>'
     + '<details class="menu ahist"><summary class="btn sm" title="최근 알림 이벤트 10건">기록</summary><div class="pop">'
@@ -551,13 +681,46 @@ function pushThresholds(){
   }).catch(function(e){ toast('임계 변경 실패: '+e.message, true); syncSettings(); });
 }
 
-// ── 토큰·비용 패널 - ~/.claude/projects JSONL 로컬 집계(프로브 0회) ──
-function tokChip(name, o){
-  var tk = (o.input||0)+(o.output||0)+(o.cache_create||0)+(o.cache_read||0);
-  return '<div class="tchip"><span class="tk">'+esc(name)+'</span><b>'+usd(o.cost)+'</b>'
-    + '<span class="sub">'+fmtTok(tk)+' tok</span></div>';
-}
+// ── 토큰·비용 - ~/.claude/projects JSONL 로컬 집계(프로브 0회) ─────────
+// 히어로 비용 타일 3개 · 일별 비용 차트 · 모델 표로 나눠 그린다.
 function zeroDay(){ return {entries:0,input:0,output:0,cache_create:0,cache_read:0,cost:0,unknown:0}; }
+function dayTok(o){ return (o.input||0)+(o.output||0)+(o.cache_create||0)+(o.cache_read||0); }
+function sumDays(byDate, nowT, from, n){
+  var s = zeroDay();
+  for(var i=from;i<from+n;i++){
+    var dd = byDate[dstr(nowT-i*86400e3)];
+    if(dd) ['entries','input','output','cache_create','cache_read','cost','unknown'].forEach(function(k){ s[k] += dd[k]||0; });
+  }
+  return s;
+}
+function costBig(nk, v){ return '<span class="big" data-nk="'+nk+'" data-nv="'+(v||0)+'" data-nf="usd">'+usd(v)+'</span>'; }
+var ARROW = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// K 가 없으면 사유만 적는다 - 값이 없을 때 $0 을 지어내지 않는다.
+function renderTokKpis(K, why){
+  var ids = [['kpi-today','오늘 비용'], ['kpi-7d','최근 7일'], ['kpi-all','전체']];
+  if(!K){
+    ids.forEach(function(p){ el(p[0]).innerHTML = '<div class="cap"><span>'+p[1]+'</span></div><div class="big na">-</div><span class="sub push">'+esc(why)+'</span>'; });
+    return;
+  }
+  el('kpi-today').innerHTML = '<div class="cap"><span>오늘 비용</span></div>'+costBig('t:today', K.today.cost)
+    + '<span class="sub push">'+fmtTok(dayTok(K.today))+' tok · 어제 '+usd(K.yest.cost)+'</span>';
+  // 증감 배지: 최근 7일 대 그 이전 7일. 집계 기간이 14일 미만이거나 이전 7일이 0 이면 비교하지 않는다.
+  var delta = '';
+  if(K.prev7 && K.prev7.cost>0){
+    // 반올림해서 0% 면 증감 없음 - 화살표·주의색 없이 회색으로
+    var cp = Math.round((K.w7.cost-K.prev7.cost)/K.prev7.cost*100);
+    var dir = cp>0 ? 'up' : cp<0 ? 'down' : 'flat';
+    delta = '<span class="delta '+dir+'" title="이전 7일 '+usd(K.prev7.cost)+' 대비">'+(cp ? ARROW : '')+(cp>0?'+':'')+cp+'%</span>';
+  }
+  var max = Math.max.apply(null, K.spark7) || 1, d = '';
+  K.spark7.forEach(function(c, i){ d += (i?'L':'M')+(i/6*100).toFixed(1)+' '+(26-c/max*22).toFixed(1)+' '; });
+  el('kpi-7d').innerHTML = '<div class="cap"><span>최근 7일</span>'+delta+'</div>'+costBig('t:7d', K.w7.cost)
+    + '<svg class="mini" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true" data-sk="t:7d" data-sig="'+esc(K.spark7.join(','))+'">'
+    + '<path d="'+d.trim()+'"/></svg>'
+    + '<span class="sub">'+fmtTok(dayTok(K.w7))+' tok</span>';
+  el('kpi-all').innerHTML = '<div class="cap"><span>전체 '+K.dw+'일</span></div>'+costBig('t:all', K.T.cost)
+    + '<span class="sub push">일 평균 '+usd(K.T.cost/K.dw)+' · '+fmtTok(dayTok(K.T))+' tok</span>';
+}
 function renderTokMeta(){
   var b = el('btn-tok-scan'), sc = el('tok-scanned');
   if(!TOK){ sc.textContent = ''; return; }
@@ -572,36 +735,43 @@ function renderTokMeta(){
   }
 }
 function renderTok(){
-  var host = el('tok-body');
+  var host = el('tok-body'), hostM = el('tok-models');
   renderTokMeta();
-  if(!TOK){ host.innerHTML = '<p class="hint">불러오는 중…</p>'; return; }
+  if(!TOK){
+    host.innerHTML = hostM.innerHTML = '<p class="hint">불러오는 중…</p>';
+    renderTokKpis(null, '불러오는 중'); return;
+  }
   var T = TOK.total || zeroDay(), days = TOK.days || [];
   if(TOK.scanning && !T.entries){
     var pr = TOK.progress || {};
     host.innerHTML = '<div class="tok-note"><span class="spin"></span> 첫 스캔 중 ('+(pr.done||0)+'/'+(pr.total||0)+') - JSONL 파일을 읽고 있습니다</div>';
-    return;
+    hostM.innerHTML = '<p class="hint">첫 스캔이 끝나면 표시됩니다</p>';
+    renderTokKpis(null, '첫 스캔 중'); return;
   }
   if(!days.length){
     host.innerHTML = '<p class="hint">'+(TOK.error ? '스캔 오류: '+esc(TOK.error)
       : '집계된 사용 기록이 없습니다. 재스캔으로 ~/.claude/projects 를 읽어 보세요.')+'</p>';
-    return;
+    hostM.innerHTML = '<p class="hint">집계 없음</p>';
+    renderTokKpis(null, TOK.error ? '스캔 오류' : '집계 기록 없음'); return;
   }
   var byDate = {}; days.forEach(function(d){ byDate[d.date] = d; });
   var nowT = Date.now(), dw = TOK.days_window || TOK_DAYS;
-  var today = byDate[dstr(nowT)] || zeroDay();
-  var w7 = zeroDay();
-  for(var i=0;i<7;i++){
-    var dd = byDate[dstr(nowT-i*86400e3)];
-    if(dd) ['entries','input','output','cache_create','cache_read','cost','unknown'].forEach(function(k){ w7[k] += dd[k]||0; });
-  }
+  var spark7 = [];
+  for(var s=6;s>=0;s--){ var sd = byDate[dstr(nowT-s*86400e3)]; spark7.push(sd ? sd.cost : 0); }
+  renderTokKpis({
+    today: byDate[dstr(nowT)] || zeroDay(), yest: byDate[dstr(nowT-86400e3)] || zeroDay(),
+    w7: sumDays(byDate, nowT, 0, 7), prev7: dw>=14 ? sumDays(byDate, nowT, 7, 7) : null,
+    T: T, dw: dw, spark7: spark7
+  });
   var maxC = 0; days.forEach(function(d){ if(d.cost>maxC) maxC = d.cost; });
   var bars = '';
   for(var j=dw-1;j>=0;j--){
     var ds = dstr(nowT-j*86400e3), dv = byDate[ds];
     var cost = dv ? dv.cost : 0;
-    var tk = dv ? (dv.input+dv.output+dv.cache_create+dv.cache_read) : 0;
-    var hpx = (maxC>0 && cost>0) ? Math.max(2, Math.round(cost/maxC*68)) : 1;
-    bars += '<i class="'+(j===0?'now':'')+(cost>0?'':' zero')+'" style="height:'+hpx+'px" title="'
+    var tk = dv ? dayTok(dv) : 0;
+    // 높이는 차트 높이 대비 % - 미디어쿼리로 차트가 낮아져도 넘치지 않는다
+    var hp = (maxC>0 && cost>0) ? Math.max(1.5, Math.round(cost/maxC*1000)/10) : 0.8;
+    bars += '<i class="'+(j===0?'now':'')+(cost>0?'':' zero')+'" data-bk="t:'+ds+'" data-bp="height" style="height:'+hp+'%" title="'
       + esc(ds+' · '+usd(cost)+' · '+fmtTok(tk)+' tok'+(dv&&dv.unknown ? ' · 단가 미상 '+dv.unknown+'건' : ''))+'"></i>';
   }
   var cells = function(m, name){
@@ -613,18 +783,15 @@ function renderTok(){
   };
   var mrows = (TOK.models||[]).map(function(m){ return '<tr>'+cells(m, m.model)+'</tr>'; }).join('');
   host.innerHTML =
-      '<div class="tok-left">'
-    +   '<div class="tchips">'+tokChip('오늘', today)+tokChip('최근 7일', w7)+tokChip('전체 '+dw+'일', T)+'</div>'
-    +   '<div class="tok-chart">'+bars+'</div>'
-    +   '<div class="tok-axis"><span>'+esc(dstr(nowT-(dw-1)*86400e3).slice(5))+'</span><span>오늘</span></div>'
-    + '</div>'
-    + '<div class="tok-right">'
-    +   '<table class="tok-table"><thead><tr><th>모델</th><th>입력</th><th>출력</th>'
-    +   '<th class="cc">캐시 생성</th><th class="cc">캐시 읽기</th><th class="cx">캐시</th><th>비용</th></tr></thead>'
-    +   '<tbody>'+mrows+'<tr class="sum">'+cells(T, '합계')+'</tr></tbody></table>'
-    +   (T.unknown ? '<p class="hint tok-unk">단가 미상 엔트리 '+T.unknown+'건 - 해당 비용은 합계에서 제외</p>' : '')
-    +   (TOK.error ? '<p class="hint tok-unk">스캔 오류: '+esc(TOK.error)+'</p>' : '')
-    + '</div>';
+      '<div class="tok-chart">'+bars+'</div>'
+    + '<div class="tok-axis"><span>'+esc(dstr(nowT-(dw-1)*86400e3).slice(5))+'</span><span>오늘</span></div>';
+  hostM.innerHTML =
+      '<table class="tok-table"><thead><tr><th>모델</th><th>입력</th><th>출력</th>'
+    + '<th class="cc">캐시 생성</th><th class="cc">캐시 읽기</th><th class="cx">캐시</th><th>비용</th></tr></thead>'
+    + '<tbody>'+mrows+'<tr class="sum">'+cells(T, '합계')+'</tr></tbody></table>'
+    + (T.unknown ? '<p class="hint tok-unk">단가 미상 엔트리 '+T.unknown+'건 - 해당 비용은 합계에서 제외</p>' : '')
+    + (TOK.error ? '<p class="hint tok-unk">스캔 오류: '+esc(TOK.error)+'</p>' : '');
+  motion();
 }
 
 // ── 히스토리·토큰 로드 - 로컬 저장소만 읽는 GET, 프로브 0회 ──────────
@@ -646,11 +813,13 @@ function loadTok(){
 function menuOpen(){ return !!document.querySelector('#cards details[open]'); }
 function render(skipCards){
   if(!S) return;
-  renderTop(); renderActiveBar(); renderAlerts(); syncSettings();
+  renderTop(); renderHero(); renderAlerts(); syncSettings();
   if(!skipCards) renderCards();
   renderProviders(); renderTimeline(); renderDoctor(); renderLog();
   if(DET_LABEL) renderDetail();
+  motion();
 }
+function renderHero(){ renderActiveBar(); renderRec(); renderKpiAlerts(); renderKpiReset(); renderKpiDiag(); }
 
 // ── 토스트·에러 ───────────────────────────────────────────────────
 var tt;
@@ -1084,7 +1253,7 @@ detRoute();
 loadHist(); loadTok();
 setInterval(function(){ if(!busy) load(true).catch(function(){}); }, 30e3);
 setInterval(provAutoRefresh, 600e3);                                 // 프로바이더 10분 주기 - 소비 0
-setInterval(function(){ if(S){ renderTop(); renderActiveBar(); renderAlerts(); renderTokMeta(); if(!menuOpen()) renderCards(); renderTimeline(); } }, 60e3);
+setInterval(function(){ if(S){ renderTop(); renderHero(); renderAlerts(); renderTokMeta(); if(!menuOpen()) renderCards(); renderTimeline(); motion(); } }, 60e3);
 setInterval(loadHist, 300e3);                                        // 히스토리 5분 주기 - 로컬 sqlite 읽기만
 setInterval(function(){ if(!(TOK && TOK.scanning)) loadTok(); }, 600e3);   // 토큰 10분 주기
 })();

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased - bento dashboard
+
+- Dashboard: redesigned as a bento grid (6 / 4 / 2 columns). A hero row adds tiles for
+  today / 7-day / window cost (7-day shows the change against the previous 7 days when
+  the window covers 14+ days), active alert count, the recommended switch, the nearest
+  reset with a window-elapsed ring, and a doctor summary. The active-account bar is now a
+  2x2 tile; the token panel is split into a daily-cost chart and a model table.
+- Dashboard: motion runs only on elements whose value changed (bar width, number count,
+  sparkline redraw, alert-count bump) plus a one-time tile reveal on first load; the
+  connection dot pulse is the only loop, and `prefers-reduced-motion` disables all of it.
+- Dashboard: the 65/90 tick marks on meter tracks now follow the configured thresholds.
+- Screenshots retaken in fixture mode with the neutral fixture labels (no blur needed).
+
 ## Unreleased - neutral default label
 
 - The built-in default label (used when `CCT_DEFAULT_LABEL` is unset) is now `main`.
