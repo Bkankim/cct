@@ -4,7 +4,7 @@
 
 [![cct dashboard](dashboard/screenshots/desktop-1400.png)](#dashboard-optional)
 
-<sub>The optional [local dashboard](#dashboard-optional) - a fixture-mode demo with account labels blurred. cct itself is a shell tool.</sub>
+<sub>The optional [local dashboard](#dashboard-optional) - a fixture-mode demo with neutral fixture labels. cct itself is a shell tool.</sub>
 
 Authenticate each Claude account once with `claude setup-token`, register the long-lived token in a local wallet, and explicitly select an account with `cct <label>` whenever you need it. Move the wallet securely to use Claude Code in a new environment without repeating browser OAuth login for every account.
 
@@ -112,7 +112,7 @@ It binds to `127.0.0.1` and is read-first by default, and token values never app
 
 </details>
 
-Every screenshot is a fixture-mode (`--fake`) demo with account labels blurred.
+Every screenshot is a fixture-mode (`--fake`) demo; the account labels are the neutral fixture names.
 
 ## Portability and the OSS boundary
 
