@@ -674,6 +674,19 @@ def test_alert_notify_levels_and_no_secret(client, app):
     assert len(sent) == 3                                # off 면 침묵
 
 
+def test_alerts_hidden_for_label_gone_from_wallet(client, app):
+    client.post("/api/refresh", {"label": "alt2"})
+    # 지갑에서 주석 처리된 것처럼 cct ls 에서만 빠진다(대시보드 rm 경로 아님)
+    app.fake_cct.accounts.pop("alt2")
+    app.fake_cct.order.remove("alt2")
+    app.invalidate()
+    code, body = client.get("/api/state")
+    assert code == 200
+    assert not any(a["label"] == "alt2" for a in body["alerts"]["active"])
+    # 상태는 보존 - 라벨이 돌아오면 다시 보인다
+    assert any(k.startswith("alt2|") for k in app.state.data["alerts"]["active"])
+
+
 def test_alerts_persist_across_restart(client, app):
     client.post("/api/refresh", {"label": "alt2"})
     reloaded = srv.State(app.state.path)
