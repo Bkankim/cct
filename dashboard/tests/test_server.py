@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import os
@@ -848,15 +849,18 @@ def test_pricing_change_resets_tokens(tmp_path, pricing):
 
 
 def test_tokens_payload_shape(app, pricing):
+    # 조회 창(30일) 안에 들도록 오늘 기준 상대 날짜를 쓴다
+    d1 = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    d2 = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
     app.db.add_entries([
-        ("1", "2026-09-16", "claude-known-1", 100, 50, 10, 40, 1000, 0.5),
-        ("2", "2026-09-16", "claude-known-1", 100, 50, 0, 0, 0, 0.25),
-        ("3", "2026-09-16", "claude-unknown", 10, 5, 0, 0, 0, None),
-        ("4", "2026-09-15", "claude-known-1", 1, 1, 0, 0, 0, 0.1),
+        ("1", d1, "claude-known-1", 100, 50, 10, 40, 1000, 0.5),
+        ("2", d1, "claude-known-1", 100, 50, 0, 0, 0, 0.25),
+        ("3", d1, "claude-unknown", 10, 5, 0, 0, 0, None),
+        ("4", d2, "claude-known-1", 1, 1, 0, 0, 0, 0.1),
     ])
     payload = app._tokens_payload(30)
     assert payload["ok"] is True and payload["scanning"] is False
-    assert [d["date"] for d in payload["days"]] == ["2026-09-16", "2026-09-15"]
+    assert [d["date"] for d in payload["days"]] == [d1, d2]
     day = payload["days"][0]
     assert day["entries"] == 3 and day["cost"] == pytest.approx(0.75)
     assert day["unknown"] == 1
