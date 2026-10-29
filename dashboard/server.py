@@ -1440,10 +1440,13 @@ class State:
             self.data["alerts"]["events"].insert(0, event)
             del self.data["alerts"]["events"][ALERT_EVENTS_MAX:]
 
-    def alerts_view(self, events_limit: int = 20) -> dict:
+    def alerts_view(self, events_limit: int = 20, labels: list[str] | None = None) -> dict:
+        """labels 를 주면 그 라벨의 활성 알림만 보인다. 지갑에서 빠진 라벨은 다시
+        프로브되지 않아 알림이 해소될 길이 없으므로 화면에서만 거른다(상태는 보존)."""
         with self._lock:
             active = [dict(v) for v in self.data["alerts"]["active"].values()
-                      if isinstance(v, dict)]
+                      if isinstance(v, dict)
+                      and (labels is None or v.get("label") in labels)]
             events = [dict(e) for e in self.data["alerts"]["events"][:events_limit]]
         active.sort(key=lambda x: (-ALERT_RANK.get(x.get("level"), 0),
                                    x.get("label") or "", x.get("win") or ""))
@@ -1682,7 +1685,7 @@ class App:
             "budget": self.state.budget_view(auto, self.next_auto_at),
             "refreshing": self.refreshing,
             "settings": self.state.settings_view(),
-            "alerts": self.state.alerts_view(),
+            "alerts": self.state.alerts_view(labels=[e["label"] for e in entries]),
             "providers": self.providers.view() if self.providers is not None else [],
             "log": self.state.log_view(),
         }
