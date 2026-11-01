@@ -383,6 +383,9 @@ function cardMenu(a){
     + '<button class="mi danger write-only" type="button" data-act="rm" data-l="'+esc(a.label)+'">계정 삭제</button>'
     + '</div></details>';
 }
+// 프로브 결과에 창이 하나라도 있는가. 5h 만 보면 안 된다 - 주간 차단 뒤 5h 창이 끝나면
+// API 가 5h 를 빼고 7d 만 준다(2026-11-01 실측). 그때 7d 100%·차단이 "미확인"에 묻혔다.
+function hasWin(a){ return !!(a.w5 || a.w7 || a.wf); }
 function accountCard(a, dups, rec){
   var isRec = rec && rec.label===a.label && !a.isActive;
   var bad = a.token && (a.state==='no_response' || a.state==='parse_error' || (a.check && a.check.res==='invalid'));
@@ -397,7 +400,7 @@ function accountCard(a, dups, rec){
   if(!a.token) badges += '<span class="badge">미등록</span>';
   else if(a.state==='no_response') badges += '<span class="badge bad">무효</span>';
   else if(a.state==='parse_error') badges += '<span class="badge bad">해석 실패</span>';
-  else if(!a.probeAt || !a.w5) badges += '<span class="badge">미확인</span>';
+  else if(!a.probeAt || !hasWin(a)) badges += '<span class="badge">미확인</span>';
   else if(rej.length) badges += '<span class="badge bad">'+rej.join('/')+' 차단</span>';
   else if(top>=CRIT_AT/100) badges += '<span class="badge bad">'+pct(top)+' 소진</span>';
   else if(top>=WARN_AT/100) badges += '<span class="badge warn">'+pct(top)+' 사용</span>';
@@ -417,11 +420,13 @@ function accountCard(a, dups, rec){
   } else if(a.state==='parse_error'){
     body = naMetric('5h','해석 실패') + naMetric('7d','해석 실패') + naMetric('7f','해석 실패');
     note = '<div class="ac-note bad">usage 출력 해석 실패 - 서버 로그를 확인하세요.</div>';
-  } else if(!a.w5){
+  } else if(!hasWin(a)){
     body = naMetric('5h','미확인') + naMetric('7d','미확인') + naMetric('7f','미확인');
     note = '<div class="ac-note">아직 프로브하지 않았습니다. 갱신을 누르면 <code>cct usage</code> 를 실행합니다.</div>';
   } else {
-    body = metric('5h', a.w5, false, 'a:'+a.label+':5h') + metric('7d', a.w7, true, 'a:'+a.label+':7d');
+    // 5h 가 빠진 건 미지원이 아니라 지금 열린 창이 없다는 뜻이다
+    body = (a.w5 ? metric('5h', a.w5, false, 'a:'+a.label+':5h') : naMetric('5h', '창 없음', false))
+         + metric('7d', a.w7, true, 'a:'+a.label+':7d');
     body += a.denied ? naMetric('7f', '프로브 거부 '+a.denied, true) : metric('7f', a.wf, true, 'a:'+a.label+':7f');
   }
 
@@ -559,7 +564,7 @@ function renderTimeline(){
   var winMs = 24*H, now = Date.now(), axis = '', rows = '', later = [];
   for(var i=0;i<=24;i+=6){ axis += '<span style="left:'+(i/24*100)+'%">'+(i===0?'지금':(i===24?'+24h':'+'+i+'h'))+'</span>'; }
   S.accounts.forEach(function(a){
-    if(!a.token||!a.ok||!a.w5) return;
+    if(!a.token||!a.ok||!hasWin(a)) return;
     var dots = '';
     [['5h',a.w5,'d5',false],['7d',a.w7,'d7',true],['7f',a.wf,'df',true]].forEach(function(p){
       var w=p[1]; if(!w||!w.r) return;
@@ -1253,6 +1258,9 @@ el('cards').addEventListener('click', function(e){
 });
 window.addEventListener('hashchange', detRoute);
 window.addEventListener('resize', function(){ if(DET && DET_LABEL) detChart(); });
+
+// 테스트 하네스(tests/web_harness.js)가 window.__cctTest 를 미리 두면 렌더 함수를 노출한다.
+if(window.__cctTest){ window.__cctTest.toView = toView; window.__cctTest.accountCard = accountCard; }
 
 // ── 기동 ──────────────────────────────────────────────────────────
 var w0 = false;
