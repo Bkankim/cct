@@ -158,6 +158,28 @@ cct doctor
 
 cct는 OAuth refresh 서비스, 프록시, 오케스트레이터, 자동/쿼터 기반 라우터, 로드밸런서, GUI, 데몬이 아니다. 계정 상태를 보고 최적 계정을 고르지 않으며, 사용자의 명시적 선택을 대신하지 않는다. macOS Keychain이나 별도 런타임도 필수로 요구하지 않는다.
 
+## 시험
+
+시험은 네트워크를 쓰지 않는다.<br>
+셸 시험은 `mktemp`로 만든 임시 HOME과 가짜 `claude`로 돌고, 대시보드 시험은 픽스처 모드로만 돌아 실계정 호출이 0회다.
+
+```sh
+shellcheck cct.sh install.sh tests/cct_test.sh cct-token.sh cct-session-hook.sh
+zsh -n cct.sh
+bash tests/cct_test.sh all                     # 셸 동작 전체
+uv run --with pytest pytest dashboard/tests -q # 대시보드 서버·화면
+```
+
+2026-11-13 macOS에서 셸 시험 700건, 대시보드 시험 105건이 모두 통과했다.<br>
+GitHub Actions(`.github/workflows/test.yml`)는 push와 PR마다 macOS와 Ubuntu에서 정적 검사와 셸 시험을 돌린다.<br>
+셸 시험은 `bash tests/cct_test.sh install`처럼 묶음 이름을 주면 그 묶음만 돈다.
+
+## 결정과 절충
+
+- **대시보드는 cct를 직접 부른다.** 서버(`dashboard/server.py`)는 지갑 해석과 사용률 조회를 파이썬으로 다시 짜지 않고 `cct.sh`를 source한 셸을 띄워 명령을 실행한다.<br>조회 로직이 한 곳에만 있게 하려는 선택이고, 호출마다 셸 프로세스를 하나 띄우는 비용을 감수한다.
+- **세션 중 사용률은 statusline 캐시에서 읽는다(2026-09-25).** setup-token으로는 사용량 조회 API를 쓸 수 없어서, 조회 호출 대신 Claude Code가 남기는 캐시를 세션 훅 기록으로 계정에 이어 붙인다.
+- **Claude Code 플러그인으로 내지 않는다(2026-09-25).** cct는 claude를 띄우기 전에 셸 시작 파일과 환경 변수를 바꿔야 해서 플러그인 구조에 맞지 않는다.
+
 ## 관련 프로젝트
 
 - [smartthink](https://github.com/Bkankim/smartthink) - 작업에 필요한 멘탈 모델 레퍼런스만 골라 Claude Code 세션을 먼저 무장시키는 플러그인. [bkankim-plugins](https://github.com/Bkankim/bkankim-plugins) 마켓플레이스로 설치한다.
