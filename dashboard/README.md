@@ -41,7 +41,8 @@ uv run --script server.py --bind 127.0.0.1 --port 8790
 ## 상시 실행과 테일넷 공개
 
 ```sh
-cp launchd/com.bkan.cct-dash.plist ~/Library/LaunchAgents/
+# plist 견본의 /Users/you 를 내 홈으로 바꿔 설치한다 (리포가 ~/cct 에 있다고 가정)
+sed "s|/Users/you|$HOME|g" launchd/com.bkan.cct-dash.plist > ~/Library/LaunchAgents/com.bkan.cct-dash.plist
 plutil -lint ~/Library/LaunchAgents/com.bkan.cct-dash.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bkan.cct-dash.plist
 
